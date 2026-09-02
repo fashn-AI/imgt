@@ -70,7 +70,10 @@ async function transform(
   options: TransformOptions,
 ): Promise<void> {
   try {
+    const inputStarted = performance.now();
     const input = await readBody(request);
+    const inputMs = performance.now() - inputStarted;
+    const sharpStarted = performance.now();
     const data = await sharp(input, {
       failOn: "warning",
       limitInputPixels: 50_000_000,
@@ -80,10 +83,12 @@ async function transform(
       .resize({ width: options.width, withoutEnlargement: true, fit: "inside" })
       .webp({ quality: options.quality, effort: 4 })
       .toBuffer();
+    const sharpMs = performance.now() - sharpStarted;
 
     response.writeHead(200, {
       "content-type": "image/webp",
       "content-length": data.length,
+      "server-timing": `source_body;dur=${inputMs.toFixed(1)}, sharp;dur=${sharpMs.toFixed(1)}`,
     });
     response.end(data);
   } catch (cause) {

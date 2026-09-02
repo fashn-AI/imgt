@@ -33,6 +33,7 @@ interface ResizeResult {
   etag: string;
   maxAge: number;
   cacheStatus: "R2" | "MISS";
+  serverTiming?: string;
 }
 
 class ResizeError extends Error {
@@ -80,15 +81,15 @@ export class ImgtImageTransformer extends Container<Env> {
     const promise = this.#singleFlight.run(job.outputKey, () => this.resize(job));
     try {
       const result = await promise;
-      return new Response(result.body, {
-        headers: {
-          "content-type": "image/webp",
-          "content-length": String(result.body.byteLength),
-          etag: result.etag,
-          "x-imgt-max-age": String(result.maxAge),
-          "x-imgt-cache": result.cacheStatus,
-        },
+      const headers = new Headers({
+        "content-type": "image/webp",
+        "content-length": String(result.body.byteLength),
+        etag: result.etag,
+        "x-imgt-max-age": String(result.maxAge),
+        "x-imgt-cache": result.cacheStatus,
       });
+      if (result.serverTiming) headers.set("server-timing", result.serverTiming);
+      return new Response(result.body, { headers });
     } catch (cause) {
       if (cause instanceof ResizeError) {
         return error(
@@ -166,7 +167,10 @@ export class ImgtImageTransformer extends Container<Env> {
   }
 
   private async resize(job: ResizeJob): Promise<ResizeResult> {
+    const jobStarted = performance.now();
+    const r2Started = performance.now();
     const stored = await this.env.DERIVATIVES.get(job.outputKey);
+    const r2Ms = performance.now() - r2Started;
     const storedMaxAge = stored ? remainingMaxAge(stored.uploaded, stored.customMetadata) : 0;
     if (stored && storedMaxAge > 0) {
       return {
@@ -180,7 +184,9 @@ export class ImgtImageTransformer extends Container<Env> {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), TRANSFORM_TIMEOUT_MS);
     try {
+      const originStarted = performance.now();
       const source = await this.fetchSource(job.sourceUrl, abortController.signal);
+      const originHeadersMs = performance.now() - originStarted;
       const contentLengthHeader = source.headers.get("content-length");
       const contentLength = contentLengthHeader === null ? undefined : Number(contentLengthHeader);
       if (contentLength !== undefined && Number.isFinite(contentLength) && contentLength > MAX_SOURCE_BYTES) {
@@ -195,6 +201,7 @@ export class ImgtImageTransformer extends Container<Env> {
       if (!source.body) throw new ResizeError("source image has an empty body", 502);
       const maxAge = effectiveMaxAge(source.headers.get("cache-control"));
 
+      const containerStarted = performance.now();
       const transform = await this.containerFetch(
         new Request(
           `http://container/transform?w=${job.width}&q=${job.quality}`,
@@ -211,16 +218,30 @@ export class ImgtImageTransformer extends Container<Env> {
       }
 
       const body = await transform.arrayBuffer();
+      const containerMs = performance.now() - containerStarted;
       clearTimeout(timeout);
+      const writeStarted = performance.now();
       const saved = await this.env.DERIVATIVES.put(job.outputKey, body, {
         httpMetadata: { contentType: "image/webp", cacheControl: cacheControl(maxAge) },
         customMetadata: maxAgeMetadata(maxAge),
       });
+      const writeMs = performance.now() - writeStarted;
+      const serverTiming = [
+        `do_r2;dur=${r2Ms.toFixed(1)}`,
+        `origin_headers;dur=${originHeadersMs.toFixed(1)}`,
+        transform.headers.get("server-timing"),
+        `container;dur=${containerMs.toFixed(1)}`,
+        `r2_write;dur=${writeMs.toFixed(1)}`,
+        `job;dur=${(performance.now() - jobStarted).toFixed(1)}`,
+      ]
+        .filter(Boolean)
+        .join(", ");
       return {
         body,
         etag: saved?.httpEtag ?? `"${job.outputKey.split("/").at(-1)?.replace(".webp", "")}"`,
         maxAge,
         cacheStatus: "MISS",
+        serverTiming,
       };
     } catch (cause) {
       if (abortController.signal.aborted) throw new ResizeError("image transformation timed out", 504);
@@ -243,15 +264,16 @@ function imageResponse(
   etag: string,
   cacheStatus: "R2" | "MISS" | "STALE",
   maxAge: number,
+  serverTiming?: string,
 ): Response {
-  return new Response(body, {
-    headers: {
-      "content-type": `image/${OUTPUT_FORMAT}`,
-      "cache-control": cacheControl(maxAge),
-      etag,
-      "x-imgt-cache": cacheStatus,
-    },
+  const headers = new Headers({
+    "content-type": `image/${OUTPUT_FORMAT}`,
+    "cache-control": cacheControl(maxAge),
+    etag,
+    "x-imgt-cache": cacheStatus,
   });
+  if (serverTiming) headers.set("server-timing", serverTiming);
+  return new Response(body, { headers });
 }
 
 function resizeJob(outputKey: string, options: ReturnType<typeof parseImageOptions>): ResizeJob {
@@ -291,7 +313,13 @@ async function responseFromResize(jobResponse: Response, outputKey: string): Pro
   const maxAge = Number(jobResponse.headers.get("x-imgt-max-age"));
   if (!Number.isSafeInteger(maxAge) || maxAge < 1) return error("invalid transformation cache metadata", 500);
   const cacheStatus = jobResponse.headers.get("x-imgt-cache") === "R2" ? "R2" : "MISS";
-  return imageResponse(output, etag, cacheStatus, maxAge);
+  return imageResponse(
+    output,
+    etag,
+    cacheStatus,
+    maxAge,
+    jobResponse.headers.get("server-timing") ?? undefined,
+  );
 }
 
 async function refreshDerivative(job: ResizeJob, env: Env, edgeKey: Request): Promise<void> {
@@ -316,6 +344,7 @@ async function handleImage(request: Request, env: Env, ctx: ExecutionContext): P
   if (edgeHit) {
     const response = new Response(edgeHit.body, edgeHit);
     response.headers.set("x-imgt-cache", "EDGE");
+    response.headers.delete("server-timing");
     return response;
   }
 
