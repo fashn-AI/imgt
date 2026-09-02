@@ -75,12 +75,73 @@ levels against both that source and a conventional 3840x2160 crop:
 | 8MP → 3840px | 232 ms / 673 KB | 402 ms / 549 KB | 918 ms / 517 KB |
 
 Effort 2 used 27–56% less transform time than effort 4 while producing files
-only 4–11% larger. It is the best candidate if miss latency matters more than
-the last few percent of derivative size.
+only 4–11% larger. It remains an available latency/size tradeoff, but it is not
+the default because effort 4 matched Vercel's WebP output exactly in the
+comparison below. Against a lossless resize, effort 2 versus effort 4 measured
+0.963 versus 0.965 SSIM at 1920px and 0.974 versus 0.976 at 3840px.
+
+## Vercel comparison
+
+Measured from Brazil on 2026-09-02 against the public Next.js deployment at
+https://gagan-image-gallery.vercel.app. Both services received the same
+3840x5760 JPEG source, `Accept: image/webp`, and quality 75. A unique source
+query was used for each of three cache-miss runs. These are end-to-end
+measurements of the deployed services, not a controlled comparison of their
+underlying CPUs.
+
+| Output | Vercel miss median | imgt miss median |
+|---|---:|---:|
+| 1920px | 2.23 s | 3.71 s |
+| 3840px | 3.55 s | 5.66 s |
+
+One of the three 1920px imgt requests paid a container cold start. On warm
+cache delivery, five repeated 3840px requests had a 135ms median on Vercel and
+a 105ms median on imgt.
+
+A follow-up test routed six distinct misses at each width to the same imgt
+shard, keeping one container warm throughout. Median client time was 3.71s at
+1920px and 5.16s at 3840px. Median Sharp time was 1.70s and 2.90s respectively;
+the synchronous R2 write then added about 0.5s and the remaining response path
+after the Durable Object job added roughly 0.8–0.9s. This exposed response-path
+latency rather than a multi-container cold-start problem.
+
+The Worker now forwards the Durable Object response body as a stream and starts
+the R2 write in the background, while retaining the single-flight entry until
+that write settles. This removes those waits from the client path without
+allowing a second resize during persistence. Production timing still needs to
+be repeated after this version is deployed.
+
+At quality 75 and WebP effort 4, Vercel and imgt produced byte-identical files
+for both the 22MP portrait source and a 3840x2160 crop. This does not guarantee
+that every input will be identical, but it confirms that the current settings
+match Vercel's default quality and compression behavior for the tested JPEGs.
+Vercel documents 75 as the default image quality:
+https://vercel.com/docs/build-output-api/configuration
+
+## CPU allocation
+
+The 22MP source was also tested locally with the same Sharp, libvips, and WebP
+versions. Values are medians of three transforms at quality 75 and effort 4 on
+native Apple Silicon Docker; they measure relative CPU scaling, not Cloudflare
+absolute performance.
+
+| Allocation | Sharp concurrency | 1920px | 3840px |
+|---|---:|---:|---:|
+| 1 vCPU | 1 | 1118 ms | 2425 ms |
+| 2 vCPU | 2 | 1070 ms | 2276 ms |
+| 4 vCPU | 4 | 1057 ms | 2262 ms |
+
+Two vCPUs improved single-image latency by only 4–6%, and four vCPUs provided
+almost no further benefit. The WebP encode is predominantly single-core. On
+Cloudflare, custom instances require at least 3 GiB of memory per vCPU, so a
+2-vCPU instance would also require 6 GiB of provisioned memory:
+https://developers.cloudflare.com/containers/platform/limits/
 
 ## Decision
 
-Use Node.js 24 with Sharp 0.35.4, one active transform per 1-vCPU container,
-four deterministic container shards, WebP output, R2-backed derivatives, and
-single-flight deduplication in each Container Durable Object. Cloudflare Images
-is not part of the request path.
+Use Node.js 24 with Sharp 0.35.4, quality 75 and WebP effort 4, one active
+transform per 1-vCPU/3-GiB container, four deterministic container shards,
+R2-backed derivatives, and single-flight deduplication in each Container
+Durable Object. Four is the maximum instance count, not a permanently running
+fleet; instances sleep after inactivity. Cloudflare Images is not part of the
+request path.

@@ -43,8 +43,9 @@ next stale window tries again.
 
 The derivative key is hashed to one of four stable Container Durable Objects.
 Each object keeps an in-memory single-flight map, so concurrent misses for the
-same derivative await one resize and one R2 write. Unrelated derivatives remain
-parallel across shards.
+same derivative share one resize. The transformed response starts immediately;
+its single-flight entry remains registered until the one background R2 write
+finishes. Unrelated derivatives remain parallel across shards.
 
 Within each Linux container, Sharp runs one CPU-active resize at a time. Up to
 four distinct misses may be active or waiting; excess misses receive `429` with

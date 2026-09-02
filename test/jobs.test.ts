@@ -63,3 +63,39 @@ test("clears failed work so it can be retried", async () => {
   const retry = singleFlight.run("key", async () => "recovered");
   assert.equal(await retry, "recovered");
 });
+
+test("keeps completed work coalesced until background persistence finishes", async () => {
+  const singleFlight = new SingleFlight<string>();
+  let calls = 0;
+  let releasePersistence!: () => void;
+  const persistence = new Promise<void>((resolve) => {
+    releasePersistence = resolve;
+  });
+
+  assert.equal(
+    await singleFlight.run(
+      "key",
+      async () => {
+        calls += 1;
+        return "result";
+      },
+      () => persistence,
+    ),
+    "result",
+  );
+  assert.equal(singleFlight.size, 1);
+
+  assert.equal(
+    await singleFlight.run("key", async () => {
+      calls += 1;
+      return "duplicate";
+    }),
+    "result",
+  );
+  assert.equal(calls, 1);
+
+  releasePersistence();
+  await persistence;
+  await Promise.resolve();
+  assert.equal(singleFlight.size, 0);
+});

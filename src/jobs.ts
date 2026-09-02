@@ -16,7 +16,11 @@ export class SingleFlight<T> {
     return this.#jobs.has(key);
   }
 
-  run(key: string, task: () => Promise<T>): Promise<T> {
+  run(
+    key: string,
+    task: () => Promise<T>,
+    retainUntil?: (value: T) => PromiseLike<unknown> | undefined,
+  ): Promise<T> {
     const existing = this.#jobs.get(key);
     if (existing) return existing;
 
@@ -25,7 +29,17 @@ export class SingleFlight<T> {
     const cleanup = () => {
       if (this.#jobs.get(key) === promise) this.#jobs.delete(key);
     };
-    void promise.then(cleanup, cleanup);
+    void promise.then(
+      (value) => {
+        const retained = retainUntil?.(value);
+        if (!retained) {
+          cleanup();
+          return;
+        }
+        void Promise.resolve(retained).then(cleanup, cleanup);
+      },
+      cleanup,
+    );
     return promise;
   }
 }
