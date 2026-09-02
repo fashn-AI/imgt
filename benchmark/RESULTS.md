@@ -132,6 +132,20 @@ widths. Quality 77/effort 2 had higher SSIM in all eight comparisons, encoded
 larger. It is the default profile; `webpEffort` remains configurable in
 `imgt.config.ts` for deployments that prefer smaller files over miss latency.
 
+The quality-77/effort-2 profile was then deployed and measured with seven warm,
+same-shard cache misses per width:
+
+| Output | Quality 75 / effort 4 | Quality 77 / effort 2 | Change |
+|---|---:|---:|---:|
+| 1920px | 2.85 s | 2.54 s | 11% faster |
+| 3840px | 4.69 s | 4.63 s | 1% faster |
+
+Cloudflare's 3840px Sharp timings varied from 2.70 to 3.51 seconds, so the
+small end-to-end difference at that width is not significant. The local
+four-image suite isolates encoder CPU more reliably; the production test shows
+that the new profile improves the common 1920px case and does not regress the
+large-output median.
+
 At quality 75 and WebP effort 4, Vercel and imgt produced byte-identical files
 for both the 22MP portrait source and a 3840x2160 crop. This does not guarantee
 that every input will be identical, but it confirms that the current settings
