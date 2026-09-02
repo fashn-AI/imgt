@@ -108,8 +108,29 @@ latency rather than a multi-container cold-start problem.
 The Worker now forwards the Durable Object response body as a stream and starts
 the R2 write in the background, while retaining the single-flight entry until
 that write settles. This removes those waits from the client path without
-allowing a second resize during persistence. Production timing still needs to
-be repeated after this version is deployed.
+allowing a second resize during persistence.
+
+After deploying that change, the controlled same-shard warm test was repeated:
+
+| Output | Before | After | Vercel | imgt improvement |
+|---|---:|---:|---:|---:|
+| 1920px | 3.71 s | 2.85 s | 2.23 s | 23% |
+| 3840px | 5.16 s | 4.69 s | 3.55 s | 9% |
+
+The trace showed that the client entered Cloudflare at GIG in Rio de Janeiro,
+while the Container Durable Object ran at IAD in Washington. Vercel handled the
+comparison request in GRU in São Paulo. The remaining warm latency therefore
+includes a South America–North America Durable Object round trip. Cloudflare
+documents that Durable Objects do not currently spawn in South America and
+that a `sam` location hint falls back to Eastern North America:
+https://developers.cloudflare.com/durable-objects/reference/data-location/
+
+A final encoder experiment compared the Vercel-identical quality-75/effort-4
+output with quality 77/effort 2. The latter scored slightly higher SSIM against
+the lossless resize at both widths, ran 30% faster at 1920px and 50% faster at
+3840px, and produced files 13% and 23% larger respectively. This is the next
+candidate if matching Vercel's miss latency is more important than matching its
+exact bytes and derivative size.
 
 At quality 75 and WebP effort 4, Vercel and imgt produced byte-identical files
 for both the 22MP portrait source and a 3840x2160 crop. This does not guarantee
