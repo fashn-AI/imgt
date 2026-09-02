@@ -43,6 +43,41 @@ transform at a time and bounds each shard to four distinct active or waiting
 misses. Identical derivative requests do not consume another slot because the
 Container Durable Object coalesces them into one in-flight job.
 
+## Cloudflare production timing
+
+Measured on 2026-09-02 with native Worker tracing and container timing. The
+source was a 3840x5760 JPEG: 22.1 megapixels and 3.3 MB. These are cache-miss
+times from a client in Brazil after the container was warm.
+
+| Stage | 1920px output | 3840px output |
+|---|---:|---:|
+| R2 miss check | 96 ms | 101 ms |
+| Origin headers and body | 564 ms | 73 ms |
+| Sharp | **2461 ms** | **4535 ms** |
+| Container call, including Sharp | 2684 ms | 4649 ms |
+| R2 write | 455 ms | 520 ms |
+| Durable Object job | 3611 ms | 5285 ms |
+| Client-observed total | 4356 ms | 6160 ms |
+
+A cold 1920px request took 6215 ms. Sharp was nearly unchanged at 2565 ms,
+while the container call grew from 2684 ms to 4324 ms, putting observed cold
+startup overhead around 1.7 seconds.
+
+The production bottleneck is WebP work on the unusually tall 22MP source, not
+the source download. A follow-up one-vCPU comparison measured WebP effort
+levels against both that source and a conventional 3840x2160 crop:
+
+| Source and output | Effort 0 | Effort 2 | Effort 4 |
+|---|---:|---:|---:|
+| 22MP → 1920px | 832 ms / 612 KB | 1006 ms / 508 KB | 1384 ms / 486 KB |
+| 22MP → 3840px | 1397 ms / 1677 KB | 1987 ms / 1338 KB | 3305 ms / 1210 KB |
+| 8MP → 1920px | 159 ms / 270 KB | 191 ms / 231 KB | 328 ms / 221 KB |
+| 8MP → 3840px | 232 ms / 673 KB | 402 ms / 549 KB | 918 ms / 517 KB |
+
+Effort 2 used 27–56% less transform time than effort 4 while producing files
+only 4–11% larger. It is the best candidate if miss latency matters more than
+the last few percent of derivative size.
+
 ## Decision
 
 Use Node.js 24 with Sharp 0.35.4, one active transform per 1-vCPU container,
