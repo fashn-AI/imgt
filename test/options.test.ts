@@ -24,7 +24,7 @@ test("parses an allowlisted HTTPS image URL", () => {
 });
 
 test("denies every source when the configured allowlist is empty", () => {
-  assert.throws(() => parseImageOptions(imageUrl("https://cdn.example.com/photo.jpg")));
+  assert.throws(() => parseImageOptions(imageUrl("https://cdn.example.com/photo.jpg"), []));
 });
 
 test("supports wildcard subdomains but not the parent host", () => {

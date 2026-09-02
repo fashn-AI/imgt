@@ -92,6 +92,22 @@ Then deploy:
 npm run deploy
 ```
 
+The default configuration includes `images.unsplash.com` so this fixed source
+can be used for a production smoke test. It is a 3840 x 5760 JPEG covered by the
+[Unsplash License](https://unsplash.com/license):
+
+```bash
+curl --get 'https://imgt.relferreira.workers.dev/image' \
+  --data-urlencode 'url=https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840' \
+  --data 'w=640' \
+  --data 'q=75' \
+  --dump-header - \
+  --output test.webp
+```
+
+Replace `images.unsplash.com` with the real source hosts before exposing your
+deployment to production traffic.
+
 Derivative identity includes the complete normalized source URL and transform
 options. Replacing an origin image at the same URL becomes visible after its
 cache lifetime and background refresh. Changing a query parameter such as
