@@ -55,6 +55,7 @@ export class ImgtImageTransformer extends Container<Env> {
     MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
     MAX_IN_FLIGHT: String(MAX_DISTINCT_JOBS_PER_SHARD),
     VIPS_CONCURRENCY: "1",
+    WEBP_EFFORT: String(config.transforms.webpEffort),
   };
   readonly #singleFlight = new SingleFlight<ResizeResult>();
 

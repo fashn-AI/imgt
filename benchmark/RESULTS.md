@@ -126,11 +126,11 @@ that a `sam` location hint falls back to Eastern North America:
 https://developers.cloudflare.com/durable-objects/reference/data-location/
 
 A final encoder experiment compared the Vercel-identical quality-75/effort-4
-output with quality 77/effort 2. The latter scored slightly higher SSIM against
-the lossless resize at both widths, ran 30% faster at 1920px and 50% faster at
-3840px, and produced files 13% and 23% larger respectively. This is the next
-candidate if matching Vercel's miss latency is more important than matching its
-exact bytes and derivative size.
+output with quality 77/effort 2 across four 4K photographs and both output
+widths. Quality 77/effort 2 had higher SSIM in all eight comparisons, encoded
+19–31% faster at 1920px and 45–52% faster at 3840px, and produced files 9–23%
+larger. It is the default profile; `webpEffort` remains configurable in
+`imgt.config.ts` for deployments that prefer smaller files over miss latency.
 
 At quality 75 and WebP effort 4, Vercel and imgt produced byte-identical files
 for both the 22MP portrait source and a 3840x2160 crop. This does not guarantee
@@ -160,7 +160,7 @@ https://developers.cloudflare.com/containers/platform/limits/
 
 ## Decision
 
-Use Node.js 24 with Sharp 0.35.4, quality 75 and WebP effort 4, one active
+Use Node.js 24 with Sharp 0.35.4, quality 77 and WebP effort 2, one active
 transform per 1-vCPU/3-GiB container, four deterministic container shards,
 R2-backed derivatives, and single-flight deduplication in each Container
 Durable Object. Four is the maximum instance count, not a permanently running

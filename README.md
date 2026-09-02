@@ -4,7 +4,7 @@ Lean, self-hosted image optimization on Cloudflare. There is no Cloudflare
 Images path or fallback.
 
 ```text
-GET /image?url=https://cdn.example.com/photo.jpg&w=1920&q=75
+GET /image?url=https://cdn.example.com/photo.jpg&w=1920&q=77
              │
              ├─ local edge cache
              ├─ persistent R2 derivative
@@ -24,7 +24,7 @@ the same allowlist. Originals are streamed to the transformer and are never
 written to R2.
 
 The output is always WebP, widths are restricted to common Next.js sizes, and
-quality is restricted to `60`, `75`, or `85`. These limits bound cache
+quality is restricted to `60`, `75`, `77`, or `85`. These limits bound cache
 cardinality and keep the public API small.
 
 ## Caching
@@ -70,15 +70,23 @@ sources: {
     "*.images.example.com",
   ],
 },
+transforms: {
+  // Keep the widths array from the checked-in config.
+  qualities: [60, 75, 77, 85],
+  defaultQuality: 77,
+  webpEffort: 2,
+},
 ```
 
 An exact entry matches only that host. A `*.` entry matches its subdomains but
-not the parent host. The default allowlist is empty so a new deployment cannot
-be used as an open image proxy accidentally.
+not the parent host. Keep this list explicit so a deployment cannot be used as
+an open image proxy accidentally.
 
-The public configuration intentionally contains only source hosts, transform
-choices, and the container shard count. Source size, redirect, timeout, cache,
-and queue limits use conservative internal defaults.
+`webpEffort` accepts `0` through `6`: lower values encode faster, while higher
+values spend more CPU reducing file size. The default quality-77/effort-2
+profile scored slightly higher than Vercel's quality-75 output across the test
+set, with somewhat larger files. Source size, redirect, timeout, cache, and
+queue limits use conservative internal defaults.
 
 Create the derivative buckets named in `wrangler.jsonc`:
 
@@ -101,7 +109,7 @@ can be used for a production smoke test. It is a 3840 x 5760 JPEG covered by the
 curl --get 'https://imgt.relferreira.workers.dev/image' \
   --data-urlencode 'url=https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840' \
   --data 'w=640' \
-  --data 'q=75' \
+  --data 'q=77' \
   --dump-header - \
   --output test.webp
 ```
@@ -121,7 +129,7 @@ variations on an allowed source can still create new transformations.
 For a Next.js custom loader:
 
 ```ts
-export default function imageLoader({ src, width, quality = 75 }) {
+export default function imageLoader({ src, width, quality = 77 }) {
   // src must be an absolute URL on a host allowed by imgt.config.ts.
   const query = new URLSearchParams({ url: src, w: String(width), q: String(quality) });
   return `https://images.example.com/image?${query}`;
@@ -135,7 +143,7 @@ const nextConfig = {
   images: {
     loader: "custom",
     loaderFile: "./image-loader.ts",
-    qualities: [60, 75, 85],
+    qualities: [60, 75, 77, 85],
   },
 };
 ```

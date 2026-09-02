@@ -45,7 +45,7 @@ test("normalizes source URLs and removes fragments", () => {
 test("uses the configured default quality", () => {
   assert.equal(
     parseImageOptions(imageUrl("https://cdn.example.com/photo.jpg", "&w=640"), ALLOWED_HOSTS).quality,
-    75,
+    77,
   );
 });
 
@@ -91,5 +91,6 @@ test("canonicalizes edge cache keys to normalized public parameters", () => {
     ["url", "https://cdn.example.com/x.jpg"],
     ["w", "640"],
     ["q", "75"],
+    ["e", "2"],
   ]);
 });

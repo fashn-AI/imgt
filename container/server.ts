@@ -2,6 +2,8 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import process from "node:process";
 import sharp from "sharp";
 
+type WebpEffort = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
 interface TransformOptions {
   width: number;
   quality: number;
@@ -12,6 +14,15 @@ type TransformJob = () => Promise<void>;
 const port = Number.parseInt(process.env.PORT ?? "8080", 10);
 const maxInputBytes = Number.parseInt(process.env.MAX_INPUT_BYTES ?? `${25 * 1024 * 1024}`, 10);
 const maxInFlight = Number.parseInt(process.env.MAX_IN_FLIGHT ?? "4", 10);
+const webpEffort = parseWebpEffort(process.env.WEBP_EFFORT ?? "4");
+
+function parseWebpEffort(value: string): WebpEffort {
+  const effort = Number(value);
+  if (!Number.isInteger(effort) || effort < 0 || effort > 6) {
+    throw new Error("WEBP_EFFORT must be an integer from 0 to 6");
+  }
+  return effort as WebpEffort;
+}
 
 sharp.concurrency(Number.parseInt(process.env.VIPS_CONCURRENCY ?? "1", 10));
 sharp.cache({ memory: 64, files: 0, items: 100 });
@@ -81,7 +92,7 @@ async function transform(
     })
       .rotate()
       .resize({ width: options.width, withoutEnlargement: true, fit: "inside" })
-      .webp({ quality: options.quality, effort: 4 })
+      .webp({ quality: options.quality, effort: webpEffort })
       .toBuffer();
     const sharpMs = performance.now() - sharpStarted;
 

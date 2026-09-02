@@ -7,6 +7,9 @@ export const ALLOWED_QUALITIES = new Set<number>(config.transforms.qualities);
 if (!ALLOWED_QUALITIES.has(config.transforms.defaultQuality)) {
   throw new Error("defaultQuality must be included in transforms.qualities");
 }
+if (!Number.isInteger(config.transforms.webpEffort) || config.transforms.webpEffort < 0 || config.transforms.webpEffort > 6) {
+  throw new Error("webpEffort must be an integer from 0 to 6");
+}
 
 export interface ImageOptions {
   sourceUrl: string;
@@ -74,7 +77,13 @@ export function withPrefix(prefix: string, key: string): string {
 }
 
 export async function derivativeKey(prefix: string, options: ImageOptions): Promise<string> {
-  const identity = [options.sourceUrl, options.width, options.quality, OUTPUT_FORMAT].join("\0");
+  const identity = [
+    options.sourceUrl,
+    options.width,
+    options.quality,
+    OUTPUT_FORMAT,
+    config.transforms.webpEffort,
+  ].join("\0");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
   const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return withPrefix(prefix, `${hex.slice(0, 2)}/${hex}.${OUTPUT_FORMAT}`);
@@ -87,6 +96,7 @@ export function canonicalCacheRequest(request: Request, options: ImageOptions): 
     url: options.sourceUrl,
     w: String(options.width),
     q: String(options.quality),
+    e: String(config.transforms.webpEffort),
   }).toString();
   return new Request(url, { method: "GET" });
 }
