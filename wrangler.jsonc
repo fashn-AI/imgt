@@ -3,6 +3,12 @@
   "name": "imgt",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
+  "observability": {
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
   "containers": [
     {
       "name": "imgt-transformer",
