@@ -1,0 +1,9 @@
+{
+  "name": "imgt-container",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "sharp": "0.35.4"
+  }
+}

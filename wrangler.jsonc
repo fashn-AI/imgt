@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "imgt",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "containers": [
+    {
+      "name": "imgt-transformer",
+      "class_name": "ImgtImageTransformer",
+      "image": "./container/Dockerfile",
+      "max_instances": 4,
+      "instance_type": {
+        "vcpu": 1,
+        "memory_mib": 3072,
+        "disk_mb": 2000
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "IMGT_TRANSFORMER",
+        "class_name": "ImgtImageTransformer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ImgtImageTransformer"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DERIVATIVES",
+      "bucket_name": "imgt-derivatives",
+      "preview_bucket_name": "imgt-derivatives-dev"
+    }
+  ]
+}

@@ -1,1 +1,137 @@
 # imgt
+
+Lean, self-hosted image optimization on Cloudflare. There is no Cloudflare
+Images path or fallback.
+
+```text
+GET /image?url=https://cdn.example.com/photo.jpg&w=1920&q=75
+             │
+             ├─ local edge cache
+             ├─ persistent R2 derivative
+             └─ fetch remote original → deterministic container shard
+```
+
+Only generated derivatives and their cache lifetime are stored in the private
+R2 bucket:
+
+```text
+derivatives/v1/ab/ab…ef.webp
+```
+
+Sources must be absolute HTTPS URLs on a host configured in
+[`imgt.config.ts`](imgt.config.ts). Redirect destinations are checked against
+the same allowlist. Originals are streamed to the transformer and are never
+written to R2.
+
+The output is always WebP, widths are restricted to common Next.js sizes, and
+quality is restricted to `60`, `75`, or `85`. These limits bound cache
+cardinality and keep the public API small.
+
+## Caching
+
+The source image's `s-maxage` or `max-age` controls the derivative lifetime,
+with a four-hour minimum. Fresh derivatives are served from the local Cloudflare
+edge cache or R2 without starting a container.
+
+When an R2 derivative expires, imgt serves it immediately for a 60-second stale
+window and refreshes it in the background. Requests for the same derivative are
+coalesced by the Durable Object, so only one refresh downloads and transforms
+the source. If refresh fails, the stale derivative remains available and the
+next stale window tries again.
+
+## Resize coordination
+
+The derivative key is hashed to one of four stable Container Durable Objects.
+Each object keeps an in-memory single-flight map, so concurrent misses for the
+same derivative await one resize and one R2 write. Unrelated derivatives remain
+parallel across shards.
+
+Within each Linux container, Sharp runs one CPU-active resize at a time. Up to
+four distinct misses may be active or waiting; excess misses receive `429` with
+`Retry-After: 1`. Cache hits never enter a container.
+
+The fixed shard count is configured in `imgt.config.ts`. It must not exceed
+`max_instances` in `wrangler.jsonc`; keep it stable between deployments to
+preserve deterministic routing. The queue limit and other safety limits are
+internal defaults rather than deployment configuration. See
+[`benchmark/RESULTS.md`](benchmark/RESULTS.md) for the container comparison and
+one-vCPU concurrency measurements.
+
+## Setup
+
+First, configure the source hosts that this deployment may fetch:
+
+```ts
+// imgt.config.ts
+sources: {
+  allowedHosts: [
+    "cdn.example.com",
+    "*.images.example.com",
+  ],
+},
+```
+
+An exact entry matches only that host. A `*.` entry matches its subdomains but
+not the parent host. The default allowlist is empty so a new deployment cannot
+be used as an open image proxy accidentally.
+
+The public configuration intentionally contains only source hosts, transform
+choices, and the container shard count. Source size, redirect, timeout, cache,
+and queue limits use conservative internal defaults.
+
+Create the derivative buckets named in `wrangler.jsonc`:
+
+```bash
+npx wrangler r2 bucket create imgt-derivatives
+npx wrangler r2 bucket create imgt-derivatives-dev
+```
+
+Then deploy:
+
+```bash
+npm run deploy
+```
+
+Derivative identity includes the complete normalized source URL and transform
+options. Replacing an origin image at the same URL becomes visible after its
+cache lifetime and background refresh. Changing a query parameter such as
+`?v=2` creates a new derivative immediately.
+
+Before exposing the endpoint publicly, apply a Cloudflare rate-limit rule to
+`/image`. The host allowlist prevents open-proxy use, but arbitrary query-string
+variations on an allowed source can still create new transformations.
+
+For a Next.js custom loader:
+
+```ts
+export default function imageLoader({ src, width, quality = 75 }) {
+  // src must be an absolute URL on a host allowed by imgt.config.ts.
+  const query = new URLSearchParams({ url: src, w: String(width), q: String(quality) });
+  return `https://images.example.com/image?${query}`;
+}
+```
+
+Point Next.js at that file and mirror the API quality allowlist:
+
+```ts
+const nextConfig = {
+  images: {
+    loader: "custom",
+    loaderFile: "./image-loader.ts",
+    qualities: [60, 75, 85],
+  },
+};
+```
+
+## Development
+
+```bash
+npm install
+npm run typecheck
+npm test
+npm run dev
+```
+
+The Worker is in [`src/index.ts`](src/index.ts), the transformer is in
+[`container/server.ts`](container/server.ts), and the benchmark decision is
+documented in [`benchmark/RESULTS.md`](benchmark/RESULTS.md).
