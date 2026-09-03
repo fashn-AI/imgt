@@ -15,7 +15,7 @@ Only generated derivatives and their cache lifetime are stored in the private
 R2 bucket:
 
 ```text
-derivatives/v1/ab/ab…ef.webp
+derivatives/v1/ab…ef.webp
 ```
 
 Sources must be absolute HTTPS URLs on a host configured in

@@ -86,7 +86,7 @@ export async function derivativeKey(prefix: string, options: ImageOptions): Prom
   ].join("\0");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
   const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return withPrefix(prefix, `${hex.slice(0, 2)}/${hex}.${OUTPUT_FORMAT}`);
+  return withPrefix(prefix, `${hex}.${OUTPUT_FORMAT}`);
 }
 
 export function canonicalCacheRequest(request: Request, options: ImageOptions): Request {

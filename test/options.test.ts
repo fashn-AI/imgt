@@ -70,13 +70,13 @@ test("derivative identity changes with source URL and options", async () => {
   const secondOptions = parseImageOptions(imageUrl("https://cdn.example.com/x.jpg?version=2", "&w=640&q=75"), ALLOWED_HOSTS);
   const first = await derivativeKey("derived/v1", firstOptions);
   const second = await derivativeKey("derived/v1", secondOptions);
-  assert.match(first, /^derived\/v1\/[a-f0-9]{2}\/[a-f0-9]{64}\.webp$/);
+  assert.match(first, /^derived\/v1\/[a-f0-9]{64}\.webp$/);
   assert.notEqual(first, second);
 });
 
 test("normalizes R2 prefixes", () => {
-  assert.equal(withPrefix("/derivatives/v1/", "ab/image.webp"), "derivatives/v1/ab/image.webp");
-  assert.equal(withPrefix("", "ab/image.webp"), "ab/image.webp");
+  assert.equal(withPrefix("/derivatives/v1/", "image.webp"), "derivatives/v1/image.webp");
+  assert.equal(withPrefix("", "image.webp"), "image.webp");
 });
 
 test("canonicalizes Workers Cache keys to normalized public parameters", () => {

@@ -4,7 +4,7 @@ import test from "node:test";
 import { containerNameForKey, SingleFlight } from "../src/jobs";
 
 test("routes a derivative key to a stable container shard", () => {
-  const key = "derivatives/v1/ab/abcdef.webp";
+  const key = "derivatives/v1/abcdef.webp";
   assert.equal(containerNameForKey(key, 4), containerNameForKey(key, 4));
   assert.match(containerNameForKey(key, 4), /^instance-[0-3]$/);
 
