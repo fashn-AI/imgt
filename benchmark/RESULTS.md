@@ -146,6 +146,21 @@ four-image suite isolates encoder CPU more reliably; the production test shows
 that the new profile improves the common 1920px case and does not regress the
 large-output median.
 
+## Workers Cache
+
+The manual, data-center-local Cache API layer was replaced with a canonical
+gateway and a cache-enabled Worker entrypoint. R2 remains private. In the
+production smoke test, a fresh 640px derivative returned
+`Cf-Cache-Status: MISS`; the next request returned `HIT` in 74 ms without
+entering the R2 or transform path. Reordering the public query parameters and
+adding an ignored parameter still hit the same canonical cache entry.
+
+For an existing 1.34 MB 3840px derivative, the first request missed Workers
+Cache and read R2 in 647 ms. Five subsequent CDN hits had a 119 ms median.
+This is similar to the previous same-location Cache API timing; the benefit is
+the tiered, pre-entrypoint CDN path and avoiding independent R2 reads as new
+edge locations warm.
+
 At quality 75 and WebP effort 4, Vercel and imgt produced byte-identical files
 for both the 22MP portrait source and a 3840x2160 crop. This does not guarantee
 that every input will be identical, but it confirms that the current settings
