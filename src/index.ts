@@ -28,6 +28,7 @@ interface Env {
 }
 
 const ALLOWED_SOURCE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif"]);
+const CDN_CACHE_HIT_STATUSES = new Set(["HIT", "STALE", "UPDATING", "REVALIDATED"]);
 
 interface ResizeResult {
   body: ArrayBuffer;
@@ -405,6 +406,14 @@ export default {
     }
 
     const imageCache = (ctx.exports as unknown as { ImgtImageCache: Fetcher }).ImgtImageCache;
-    return imageCache.fetch(canonicalCacheRequest(request, options));
+    const response = await imageCache.fetch(canonicalCacheRequest(request, options));
+    if (!CDN_CACHE_HIT_STATUSES.has(response.headers.get("cf-cache-status") ?? "")) {
+      return response;
+    }
+
+    const cached = new Response(response.body, response);
+    cached.headers.set("x-imgt-cache", "EDGE");
+    cached.headers.delete("server-timing");
+    return cached;
   },
 } satisfies ExportedHandler<Env>;

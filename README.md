@@ -52,6 +52,10 @@ without invoking the image entrypoint. Cache entries are shared across Worker
 versions because the canonical key includes the derivative version and encoder
 effort.
 
+Use the response headers to see which layer served a request:
+`Cf-Cache-Status: HIT` is a Workers Cache/CDN hit, while `x-imgt-cache`
+reports `EDGE`, `R2`, `MISS`, or `STALE` for the imgt path.
+
 ## Resize coordination
 
 The derivative key is hashed to one of four stable Container Durable Objects.
