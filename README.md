@@ -6,7 +6,7 @@ Images path or fallback.
 ```text
 GET /image?url=https://cdn.example.com/photo.jpg&w=1920&q=77
              │
-             ├─ local edge cache
+             ├─ normalized, tiered Workers Cache
              ├─ persistent R2 derivative
              └─ fetch remote original → deterministic container shard
 ```
@@ -29,6 +29,12 @@ cardinality and keep the public API small.
 
 ## Caching
 
+The public entrypoint validates and normalizes the transform parameters, then
+calls a cache-enabled image entrypoint. Cloudflare's Workers Cache sits in
+front of that entrypoint, so a CDN hit skips the R2 and transformation path.
+The gateway remains uncached because it canonicalizes equivalent public URLs
+to one cache key.
+
 The source image's `s-maxage` or `max-age` controls the derivative lifetime,
 with a four-hour minimum. Fresh derivatives are served from the local Cloudflare
 edge cache or R2 without starting a container.
@@ -38,6 +44,13 @@ window and refreshes it in the background. Requests for the same derivative are
 coalesced by the Durable Object, so only one refresh downloads and transforms
 the source. If refresh fails, the stale derivative remains available and the
 next stale window tries again.
+
+R2 remains private and acts as the persistent global backing store. A CDN miss
+reads an existing derivative from R2 and repopulates Workers Cache; only an R2
+miss starts a transform. Workers Cache uses tiered caching and can return hits
+without invoking the image entrypoint. Cache entries are shared across Worker
+versions because the canonical key includes the derivative version and encoder
+effort.
 
 ## Resize coordination
 

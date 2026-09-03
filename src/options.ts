@@ -1,5 +1,5 @@
 import { config } from "../imgt.config";
-import { MAX_SOURCE_URL_LENGTH, OUTPUT_FORMAT } from "./constants";
+import { DERIVATIVE_PREFIX, MAX_SOURCE_URL_LENGTH, OUTPUT_FORMAT } from "./constants";
 
 export const ALLOWED_WIDTHS = new Set<number>(config.transforms.widths);
 export const ALLOWED_QUALITIES = new Set<number>(config.transforms.qualities);
@@ -97,6 +97,7 @@ export function canonicalCacheRequest(request: Request, options: ImageOptions): 
     w: String(options.width),
     q: String(options.quality),
     e: String(config.transforms.webpEffort),
+    v: DERIVATIVE_PREFIX,
   }).toString();
   return new Request(url, { method: "GET" });
 }

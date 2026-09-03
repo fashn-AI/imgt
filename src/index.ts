@@ -1,4 +1,5 @@
 import { Container, getContainer } from "@cloudflare/containers";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { config } from "../imgt.config";
 import { cacheControl, effectiveMaxAge, maxAgeMetadata, remainingMaxAge } from "./cache";
 import {
@@ -334,13 +335,13 @@ async function responseFromResize(jobResponse: Response, outputKey: string): Pro
   );
 }
 
-async function refreshDerivative(job: ResizeJob, env: Env, edgeKey: Request): Promise<void> {
+async function refreshDerivative(job: ResizeJob, env: Env): Promise<void> {
   const response = await responseFromResize(await requestResize(job, env), job.outputKey);
   if (!response.ok) {
     console.error(`background image refresh failed: ${response.status} ${await response.text()}`);
     return;
   }
-  await caches.default.put(edgeKey, response);
+  await response.body?.cancel();
 }
 
 async function handleImage(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -349,15 +350,6 @@ async function handleImage(request: Request, env: Env, ctx: ExecutionContext): P
     options = parseImageOptions(new URL(request.url));
   } catch (cause) {
     return error(cause instanceof Error ? cause.message : "invalid image options");
-  }
-
-  const edgeKey = canonicalCacheRequest(request, options);
-  const edgeHit = await caches.default.match(edgeKey);
-  if (edgeHit) {
-    const response = new Response(edgeHit.body, edgeHit);
-    response.headers.set("x-imgt-cache", "EDGE");
-    response.headers.delete("server-timing");
-    return response;
   }
 
   const outputKey = await derivativeKey(DERIVATIVE_PREFIX, options);
@@ -373,24 +365,26 @@ async function handleImage(request: Request, env: Env, ctx: ExecutionContext): P
         STALE_CACHE_TTL_SECONDS,
       );
       ctx.waitUntil(
-        caches.default
-          .put(edgeKey, response.clone())
-          .catch((cause) => console.error("failed to cache stale image", cause))
-          .then(() => refreshDerivative(job, env, edgeKey))
-          .catch((cause) => console.error("background image refresh failed", cause)),
+        refreshDerivative(job, env).catch((cause) =>
+          console.error("background image refresh failed", cause),
+        ),
       );
       return response;
     }
 
-    const response = imageResponse(stored.body, derivativeEtag(outputKey), "R2", maxAge);
-    ctx.waitUntil(caches.default.put(edgeKey, response.clone()));
-    return response;
+    return imageResponse(stored.body, derivativeEtag(outputKey), "R2", maxAge);
   }
 
-  const response = await responseFromResize(await requestResize(job, env), outputKey);
-  if (!response.ok) return response;
-  ctx.waitUntil(caches.default.put(edgeKey, response.clone()));
-  return response;
+  return responseFromResize(await requestResize(job, env), outputKey);
+}
+
+export class ImgtImageCache extends WorkerEntrypoint<Env> {
+  fetch(request: Request): Promise<Response> {
+    if (request.method !== "GET" || new URL(request.url).pathname !== "/image") {
+      return Promise.resolve(error("not found", 404));
+    }
+    return handleImage(request, this.env, this.ctx);
+  }
 }
 
 export default {
@@ -402,6 +396,15 @@ export default {
     if (request.method !== "GET" || url.pathname !== "/image") {
       return error("not found", 404);
     }
-    return handleImage(request, env, ctx);
+
+    let options;
+    try {
+      options = parseImageOptions(url);
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : "invalid image options");
+    }
+
+    const imageCache = (ctx.exports as unknown as { ImgtImageCache: Fetcher }).ImgtImageCache;
+    return imageCache.fetch(canonicalCacheRequest(request, options));
   },
 } satisfies ExportedHandler<Env>;

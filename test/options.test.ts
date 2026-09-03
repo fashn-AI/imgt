@@ -79,7 +79,7 @@ test("normalizes R2 prefixes", () => {
   assert.equal(withPrefix("", "ab/image.webp"), "ab/image.webp");
 });
 
-test("canonicalizes edge cache keys to normalized public parameters", () => {
+test("canonicalizes Workers Cache keys to normalized public parameters", () => {
   const options = parseImageOptions(imageUrl("https://cdn.example.com/x.jpg", "&w=640&q=75"), ALLOWED_HOSTS);
   const cacheRequest = canonicalCacheRequest(
     new Request("https://img.example/image?q=75&w=640&url=https%3A%2F%2Fcdn.example.com%2Fx.jpg&ignored=value"),
@@ -92,5 +92,6 @@ test("canonicalizes edge cache keys to normalized public parameters", () => {
     ["w", "640"],
     ["q", "75"],
     ["e", "2"],
+    ["v", "derivatives/v1"],
   ]);
 });
