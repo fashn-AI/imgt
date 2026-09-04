@@ -112,6 +112,21 @@ npx wrangler r2 bucket create imgt-derivatives
 npx wrangler r2 bucket create imgt-derivatives-dev
 ```
 
+Treat these buckets as bounded secondary caches rather than permanent storage.
+In each bucket's **Settings → Object Lifecycle Rules**, add an expiration rule
+for all objects (or the `derivatives/` prefix):
+
+- `imgt-derivatives`: delete objects after 30 days.
+- `imgt-derivatives-dev`: delete objects after 7 days.
+
+If an expired derivative is no longer in Workers Cache, imgt generates it again
+on the next request. R2 lifecycle rules expire objects by age, not by last
+access; tracking access in the application would also miss requests served
+directly by Workers Cache. Keep derivatives in Standard storage rather than
+Infrequent Access, which adds retrieval charges and a 30-day minimum storage
+duration. See Cloudflare's documentation for [R2 object lifecycles][r2-lifecycle]
+and [R2 pricing][r2-pricing].
+
 Then deploy:
 
 ```bash
@@ -164,6 +179,9 @@ const nextConfig = {
   },
 };
 ```
+
+[r2-lifecycle]: https://developers.cloudflare.com/r2/buckets/object-lifecycles/
+[r2-pricing]: https://developers.cloudflare.com/r2/pricing/
 
 ## Development
 
