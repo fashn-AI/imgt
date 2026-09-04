@@ -92,6 +92,6 @@ test("canonicalizes Workers Cache keys to normalized public parameters", () => {
     ["w", "640"],
     ["q", "75"],
     ["e", "2"],
-    ["v", "derivatives/v1"],
+    ["v", "derivatives/v2"],
   ]);
 });

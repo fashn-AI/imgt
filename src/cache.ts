@@ -1,45 +1,36 @@
-import { MIN_CACHE_TTL_SECONDS } from "./constants";
+import { config } from "../imgt.config";
 
-const MAX_AGE_METADATA = "maxAge";
+for (const [name, value] of Object.entries(config.cache)) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cache.${name} must be a nonnegative integer`);
+}
 
-export function originMaxAge(cacheControl: string | null): number {
-  if (!cacheControl) return 0;
-
-  const directives = new Map<string, string>();
-  for (const part of cacheControl.split(",")) {
-    const [rawName, rawValue] = part.trim().split("=", 2);
-    if (rawName && rawValue) directives.set(rawName.toLowerCase(), rawValue.replace(/^"|"$/g, ""));
+// A null lifetime means the source forbids public storage. Zero permits
+// transformation, but the result must be returned without caching.
+export function sourceMaxAge(cacheControl: string | null, age = 0): number | null {
+  const values = new Map<string, string>();
+  for (const part of (cacheControl ?? "").split(",")) {
+    const [name, value = ""] = part.trim().split("=", 2);
+    if (name) values.set(name.trim().toLowerCase(), value.trim().replace(/^"|"$/g, ""));
   }
+  if (values.has("private") || values.has("no-store")) return null;
+  if (values.has("no-cache")) return 0;
 
+  let originAge = 0;
   for (const name of ["s-maxage", "max-age"]) {
-    const value = directives.get(name);
-    if (!value || !/^\d+$/.test(value)) continue;
-    const seconds = Number(value);
-    if (Number.isSafeInteger(seconds)) return seconds;
+    const value = values.get(name);
+    if (value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) {
+      originAge = Number(value);
+      break;
+    }
   }
-  return 0;
+  const lifetime = Math.max(originAge, config.cache.minFreshSeconds);
+  return Math.max(0, lifetime - (Number.isSafeInteger(age) && age > 0 ? age : 0));
 }
 
-export function effectiveMaxAge(cacheControl: string | null): number {
-  return Math.max(originMaxAge(cacheControl), MIN_CACHE_TTL_SECONDS);
-}
-
-export function maxAgeMetadata(maxAge: number): Record<string, string> {
-  return { [MAX_AGE_METADATA]: String(maxAge) };
-}
-
-export function remainingMaxAge(
-  uploaded: Date,
-  metadata: Record<string, string> | undefined,
-  now = Date.now(),
-): number {
-  const value = metadata?.[MAX_AGE_METADATA];
-  if (!value || !/^\d+$/.test(value)) return 0;
-  const maxAge = Number(value);
-  if (!Number.isSafeInteger(maxAge)) return 0;
-  return Math.max(0, Math.ceil((uploaded.getTime() + maxAge * 1000 - now) / 1000));
+export function remainingSeconds(deadline: number, now = Date.now()): number {
+  return Math.max(0, Math.floor((deadline - now) / 1000));
 }
 
 export function cacheControl(maxAge: number): string {
-  return `public, max-age=${Math.max(0, Math.floor(maxAge))}, must-revalidate`;
+  return maxAge > 0 ? `public, max-age=${Math.floor(maxAge)}, must-revalidate` : "no-store";
 }

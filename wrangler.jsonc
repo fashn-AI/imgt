@@ -18,11 +18,19 @@
     }
   },
   "observability": {
+    "logs": { "enabled": true },
     "traces": {
       "enabled": true,
       "head_sampling_rate": 0.05
     }
   },
+  "ratelimits": [
+    {
+      "name": "IMAGE_RATE_LIMITER",
+      "namespace_id": "2026090401",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
   "containers": [
     {
       "name": "imgt-transformer",

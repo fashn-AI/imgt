@@ -1,144 +1,19 @@
-import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import process from "node:process";
 import sharp from "sharp";
+import { createTransformServer } from "./app.ts";
+import type { TransformOptions } from "./transform.ts";
 
-type WebpEffort = 0 | 1 | 2 | 3 | 4 | 5 | 6;
-
-interface TransformOptions {
-  width: number;
-  quality: number;
-}
-
-type TransformJob = () => Promise<void>;
-
-const port = Number.parseInt(process.env.PORT ?? "8080", 10);
-const maxInputBytes = Number.parseInt(process.env.MAX_INPUT_BYTES ?? `${25 * 1024 * 1024}`, 10);
-const maxInFlight = Number.parseInt(process.env.MAX_IN_FLIGHT ?? "4", 10);
-const webpEffort = parseWebpEffort(process.env.WEBP_EFFORT ?? "4");
-
-function parseWebpEffort(value: string): WebpEffort {
-  const effort = Number(value);
-  if (!Number.isInteger(effort) || effort < 0 || effort > 6) {
-    throw new Error("WEBP_EFFORT must be an integer from 0 to 6");
-  }
-  return effort as WebpEffort;
-}
-
-sharp.concurrency(Number.parseInt(process.env.VIPS_CONCURRENCY ?? "1", 10));
+const effort = Number(process.env.WEBP_EFFORT ?? "2");
+if (!Number.isInteger(effort) || effort < 0 || effort > 6) throw new Error("WEBP_EFFORT must be an integer from 0 to 6");
+sharp.concurrency(Number(process.env.VIPS_CONCURRENCY ?? "1"));
 sharp.cache({ memory: 64, files: 0, items: 100 });
 sharp.simd(true);
 
-let active = false;
-let inFlight = 0;
-const queue: TransformJob[] = [];
-
-function parseOptions(requestUrl: string): TransformOptions {
-  const url = new URL(requestUrl, "http://container");
-  const width = Number(url.searchParams.get("w"));
-  const quality = Number(url.searchParams.get("q"));
-  if (!Number.isSafeInteger(width) || width < 1) throw new Error("invalid width");
-  if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new Error("invalid quality");
-  return { width, quality };
-}
-
-async function readBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > maxInputBytes) throw new Error("input too large");
-    chunks.push(buffer);
-  }
-  if (size === 0) throw new Error("empty input");
-  return Buffer.concat(chunks, size);
-}
-
-function runNext(): void {
-  if (active) return;
-  const run = queue.shift();
-  if (!run) return;
-
-  active = true;
-  void run().finally(() => {
-    active = false;
-    inFlight -= 1;
-    runNext();
-  });
-}
-
-function admit(job: TransformJob): boolean {
-  if (inFlight >= maxInFlight) return false;
-  inFlight += 1;
-  queue.push(job);
-  runNext();
-  return true;
-}
-
-async function transform(
-  request: IncomingMessage,
-  response: ServerResponse,
-  options: TransformOptions,
-): Promise<void> {
-  try {
-    const inputStarted = performance.now();
-    const input = await readBody(request);
-    const inputMs = performance.now() - inputStarted;
-    const sharpStarted = performance.now();
-    const data = await sharp(input, {
-      failOn: "warning",
-      limitInputPixels: 50_000_000,
-      sequentialRead: true,
-    })
-      .rotate()
-      .resize({ width: options.width, withoutEnlargement: true, fit: "inside" })
-      .webp({ quality: options.quality, effort: webpEffort })
-      .toBuffer();
-    const sharpMs = performance.now() - sharpStarted;
-
-    response.writeHead(200, {
-      "content-type": "image/webp",
-      "content-length": data.length,
-      "server-timing": `source_body;dur=${inputMs.toFixed(1)}, sharp;dur=${sharpMs.toFixed(1)}`,
-    });
-    response.end(data);
-  } catch (cause) {
-    const status = cause instanceof Error && cause.message === "input too large" ? 413 : 400;
-    response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
-    response.end(cause instanceof Error ? cause.message : "transform failed");
-  }
-}
-
-const server = http.createServer((request, response) => {
-  if (request.method === "GET" && request.url === "/health") {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, active, queued: queue.length, inFlight }));
-    return;
-  }
-  if (request.method !== "POST" || !request.url?.startsWith("/transform?")) {
-    response.writeHead(404).end();
-    return;
-  }
-
-  let options: TransformOptions;
-  try {
-    options = parseOptions(request.url);
-  } catch (cause) {
-    response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-    response.end(cause instanceof Error ? cause.message : "invalid options");
-    return;
-  }
-
-  if (!admit(() => transform(request, response, options))) {
-    request.resume();
-    response.writeHead(429, {
-      "content-type": "text/plain; charset=utf-8",
-      "retry-after": "1",
-    });
-    response.end("transform queue is full");
-  }
+const server = createTransformServer({
+  maxInputBytes: Number(process.env.MAX_INPUT_BYTES ?? 25 * 1024 * 1024),
+  maxInFlight: Number(process.env.MAX_IN_FLIGHT ?? "4"),
+  timeoutMs: Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000"),
+  effort: effort as TransformOptions["effort"],
 });
-
-server.listen(port, "0.0.0.0", () => {
-  console.log(`imgt container listening on ${port}`);
-});
+const port = Number(process.env.PORT ?? "8080");
+server.listen(port, "0.0.0.0", () => console.log(`imgt container listening on ${port}`));

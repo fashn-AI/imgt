@@ -9,7 +9,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts=false \
     && npm cache clean --force
-COPY server.ts ./
+COPY *.ts ./
 
 ENV NODE_ENV=production \
     PORT=8080 \

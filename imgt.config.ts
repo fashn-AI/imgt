@@ -13,6 +13,10 @@ export interface ImgtConfig {
   containers: {
     shards: number;
   };
+  cache: {
+    minFreshSeconds: number;
+    maxStaleSeconds: number;
+  };
 }
 
 export const config = {
@@ -32,5 +36,9 @@ export const config = {
   containers: {
     // Routing count. Keep this at or below max_instances in wrangler.jsonc.
     shards: 4,
+  },
+  cache: {
+    minFreshSeconds: 4 * 60 * 60,
+    maxStaleSeconds: 24 * 60 * 60,
   },
 } satisfies ImgtConfig;

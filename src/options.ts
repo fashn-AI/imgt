@@ -1,3 +1,4 @@
+import { ImageError } from "./http";
 import { config } from "../imgt.config";
 import { DERIVATIVE_PREFIX, MAX_SOURCE_URL_LENGTH, OUTPUT_FORMAT } from "./constants";
 
@@ -30,19 +31,19 @@ export function normalizeSourceUrl(
   rawSource: string,
   allowedHosts: readonly string[] = config.sources.allowedHosts,
 ): string {
-  if (rawSource.length > MAX_SOURCE_URL_LENGTH) throw new Error("source URL is too long");
+  if (rawSource.length > MAX_SOURCE_URL_LENGTH) throw new ImageError("source URL is too long", 400);
 
   let source: URL;
   try {
     source = new URL(rawSource);
   } catch {
-    throw new Error("url must be an absolute HTTPS URL");
+    throw new ImageError("url must be an absolute HTTPS URL", 400);
   }
-  if (source.protocol !== "https:") throw new Error("url must use HTTPS");
-  if (source.username || source.password) throw new Error("url must not include credentials");
-  if (source.port) throw new Error("url must use the default HTTPS port");
+  if (source.protocol !== "https:") throw new ImageError("url must use HTTPS", 400);
+  if (source.username || source.password) throw new ImageError("url must not include credentials", 400);
+  if (source.port) throw new ImageError("url must use the default HTTPS port", 400);
   if (!allowedHosts.some((pattern) => hostMatches(source.hostname, pattern))) {
-    throw new Error(`source host is not allowed: ${source.hostname}`);
+    throw new ImageError(`source host is not allowed: ${source.hostname}`, 400);
   }
 
   source.hash = "";
@@ -54,18 +55,18 @@ export function parseImageOptions(
   allowedHosts: readonly string[] = config.sources.allowedHosts,
 ): ImageOptions {
   const rawSource = url.searchParams.get("url");
-  if (!rawSource) throw new Error("url is required");
+  if (!rawSource) throw new ImageError("url is required", 400);
   const sourceUrl = normalizeSourceUrl(rawSource, allowedHosts);
 
   const width = Number(url.searchParams.get("w"));
   if (!Number.isInteger(width) || !ALLOWED_WIDTHS.has(width)) {
-    throw new Error(`w must be one of: ${[...ALLOWED_WIDTHS].join(", ")}`);
+    throw new ImageError(`w must be one of: ${[...ALLOWED_WIDTHS].join(", ")}`, 400);
   }
 
   const qualityValue = url.searchParams.get("q");
   const quality = qualityValue === null ? config.transforms.defaultQuality : Number(qualityValue);
   if (!Number.isInteger(quality) || !ALLOWED_QUALITIES.has(quality)) {
-    throw new Error(`q must be one of: ${[...ALLOWED_QUALITIES].join(", ")}`);
+    throw new ImageError(`q must be one of: ${[...ALLOWED_QUALITIES].join(", ")}`, 400);
   }
 
   return { sourceUrl, width, quality };
