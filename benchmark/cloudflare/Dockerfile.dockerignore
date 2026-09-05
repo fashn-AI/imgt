@@ -1,0 +1,10 @@
+**
+!container/
+!container/package.json
+!container/package-lock.json
+!container/*.ts
+!benchmark/
+!benchmark/engines/
+!benchmark/engines/native.cpp
+!benchmark/cloudflare/
+!benchmark/cloudflare/container.ts

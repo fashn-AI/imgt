@@ -1,7 +1,8 @@
 # Engine investigation
 
 Measured September 5, 2026 UTC. Goal: minimize complete image delivery time on
-Cloudflare while keeping imgt independently deployable. An engine's language,
+Cloudflare while keeping imgt independently deployable. Cloudflare Images is
+excluded as a production dependency by the project's cost requirement. An engine's language,
 Docker image size, resize-only benchmark, or matching quality number is not
 enough to decide this.
 
@@ -67,7 +68,7 @@ Only candidates explicitly marked measured have been benchmarked here.
 | [FFmpeg](https://github.com/FFmpeg/FFmpeg) | Strong multimedia tooling, including scaling/codecs; imgt currently processes still images with color/orientation semantics. | Reviewed; a video-thumbnail feature could justify it, current evidence does not. |
 | Custom [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo) + resizer + libwebp | Tight control over decode scaling, SIMD and encoder allocation. Essentially assembling a new engine, with non-JPEG and ICC support to maintain. | Rust prototype partly explores this family; defer a fully bespoke C engine. |
 | WebAssembly inside a Worker | Removes the container, but a 50 MP RGBA buffer alone needs ~191 MiB, beyond the documented [128 MiB Worker memory limit](https://developers.cloudflare.com/workers/platform/limits/), before extra buffers/codecs. | Reviewed; unsuitable as a general drop-in with today's input contract. Streaming/shrink-on-decode could support a constrained subset. |
-| [Cloudflare Images binding](https://developers.cloudflare.com/images/optimization/binding/) | Managed processing directly from a Worker byte stream, avoiding imgt's container startup and DO routing path. Different billing and input limits; returned images still need imgt caching. | Isolated deployment experiment in `benchmark/cloudflare`; not a production backend yet. |
+| [Cloudflare Images binding](https://developers.cloudflare.com/images/optimization/binding/) | Managed processing directly from a Worker byte stream, avoiding imgt's container startup and DO routing path. Different billing and input limits; returned images still need imgt caching. | Nine reference requests completed; excluded on cost grounds. The lab's Images binding and route were removed. |
 | Larger CPU, placement and keeping containers warm | Architecture choices can change end-to-end latency more than wrapper language. Larger allocation does not guarantee one WebP job scales linearly. | Keep the measured 1 CPU baseline; quarter-CPU/lite profiles failed latency goals. Investigate placement and startup independently. |
 | Precompute derivatives on upload / anticipated widths | Removes first-view transform latency by moving it before the request. Works best when imgt participates in an upload pipeline; arbitrary remote URLs cannot guarantee that. | Useful optional integration, not a replacement for on-demand performance. |
 
@@ -114,8 +115,8 @@ and the DO shard location influence misses. Changing languages cannot remove
 an extra geographic round trip. Measure gateway, R2, origin, startup, upload,
 queue, encode and response transfer separately before changing shard routing.
 
-Production qualification order: cache/overlap improvements, managed-engine
-comparison, then a native libvips adapter if its complete HTTP/cloud performance
+Production qualification order: cache/overlap improvements, then a native
+libvips adapter if its complete HTTP/cloud performance
 still wins. Retain source validation, pixel/byte limits, color/orientation/alpha,
 absolute deadlines, queued cancellation and deduplication. An encoder change
 requires a new derivative namespace. Do not silently replace unsupported input

@@ -3,7 +3,16 @@
   "name": "imgt-engine-lab",
   "main": "worker.ts",
   "compatibility_date": "2026-09-01",
-  "images": { "binding": "IMAGES" },
+  "containers": [{
+    "name": "imgt-engine-lab",
+    "class_name": "EngineLab",
+    "image": "./Dockerfile",
+    "image_build_context": "../..",
+    "max_instances": 2,
+    "instance_type": { "vcpu": 1, "memory_mib": 3072, "disk_mb": 2000 }
+  }],
+  "durable_objects": { "bindings": [{ "name": "LAB", "class_name": "EngineLab" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["EngineLab"] }],
   "ratelimits": [{
     "name": "LIMITER",
     "namespace_id": "2026090502",
