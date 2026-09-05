@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { cpus } from 'node:os';
+import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 
 const input=resolve(process.env.FIXTURES ?? '/tmp/imgt-engine-fixtures');
@@ -11,6 +12,13 @@ const output=resolve(process.env.ENGINE_OUTPUT_DIR ?? '/tmp/imgt-engine-results'
 await mkdir(output,{recursive:true});
 const manifest=JSON.parse(await readFile(join(input,'manifest.json'),'utf8'));
 const count=Number(process.env.ENGINE_SAMPLES ?? 3);
+if (!Number.isInteger(count) || count < 1 || count > 10) throw new Error('ENGINE_SAMPLES must be 1–10');
+const cpuLimit=Number(process.env.ENGINE_CPUS ?? 1);
+const vipsThreads=Number(process.env.ENGINE_VIPS_CONCURRENCY ?? 1);
+if (![1,2].includes(cpuLimit) || ![1,2].includes(vipsThreads)) throw new Error('CPU/thread screen supports 1 or 2');
+const memoryMiB=cpuLimit*3072;
+const fixtures=manifest.files.filter(f=>!process.env.ENGINE_FIXTURES||process.env.ENGINE_FIXTURES.split(',').includes(f.name));
+if (!fixtures.length) throw new Error('No matching fixtures');
 const profiles=[
  {name:'sharp-cache64',image:'imgt-engines:local',command:['node','/app/benchmark/engines/sharp.mjs'],env:[]},
  {name:'sharp-cache0',image:'imgt-engines:local',command:['node','/app/benchmark/engines/sharp.mjs'],env:['SHARP_CACHE=0']},
@@ -20,12 +28,13 @@ const profiles=[
 ].filter(p=>!process.env.ENGINE_PROFILE||process.env.ENGINE_PROFILE.split(',').includes(p.name));
 if(!profiles.length)throw new Error('Unknown ENGINE_PROFILE');
 const docker=(...args)=>execFileSync('docker',args,{encoding:'utf8',timeout:60000}).trim();
-const report={date:new Date().toISOString(),cpu:cpus()[0].model,limits:{cpu:1,memoryMiB:3072},count,manifest,profiles:[]};
+const report={date:new Date().toISOString(),cpu:cpus()[0].model,hostCpus:cpus().length,limits:{cpu:cpuLimit,memoryMiB},vipsThreads,count,manifest,profiles:[]};
 for(const profile of profiles){
  const name=`imgt-engine-${profile.name}-${process.pid}`;
  const result={name:profile.name,image:profile.image,architecture:docker('image','inspect',profile.image,'--format','{{.Architecture}}'),rows:[]};
- const args=['run','--rm','-i','--name',name,'--cpus','1','--memory','3072m','--memory-swap','3072m',
-  '-v',`${input}:/fixtures:ro`,'-v',`${output}:/results`,...profile.env.flatMap(v=>['-e',v]),profile.image,...profile.command];
+ const args=['run','--rm','-i','--name',name,'--cpus',String(cpuLimit),'--memory',`${memoryMiB}m`,'--memory-swap',`${memoryMiB}m`,
+  '-v',`${input}:/fixtures:ro`,'-v',`${output}:/results`,...profile.env.flatMap(v=>['-e',v]),
+  '-e',`VIPS_CONCURRENCY=${vipsThreads}`,profile.image,...profile.command];
  const child=spawn('docker',args,{stdio:['pipe','pipe','pipe']});
  let pending,lines=[],failure;
  const reader=createInterface({input:child.stdout});
@@ -42,8 +51,9 @@ for(const profile of profiles){
  }
  try{
   result.ready=JSON.parse(await next());
+  if (!result.ready.ready) throw new Error(result.ready.error ?? 'Engine did not become ready');
   result.idleMemoryMiB=Number(docker('exec',name,'cat','/sys/fs/cgroup/memory.current'))/1048576;
-  for(const fixture of manifest.files){
+  for(const fixture of fixtures){
    const widths=fixture.name.startsWith('portrait')||fixture.name.startsWith('landscape')?[640,1920,3840]:[384];
    for(const width of widths){
     const runs=[];
@@ -52,7 +62,9 @@ for(const profile of profiles){
      child.stdin.write(`/fixtures/${fixture.name}\t${width}\t77\t2\t/results/${filename}\n`);
      const row=JSON.parse(await next());
      if(row.ok){
-      const metadata=await sharp(join(output,filename)).metadata();
+      const body=await readFile(join(output,filename));
+      row.hash=createHash('sha256').update(body).digest('hex');
+      const metadata=await sharp(body).metadata();
       row.width=metadata.width;row.height=metadata.height;row.alpha=metadata.hasAlpha;row.format=metadata.format;
       const oriented=[5,6,7,8].includes(fixture.orientation);
       const sourceW=oriented?fixture.height:fixture.width,sourceH=oriented?fixture.width:fixture.height;
@@ -71,4 +83,7 @@ for(const profile of profiles){
  finally{child.stdin.end();try{docker('rm','-f',name);}catch{}}
  report.profiles.push(result);
  await writeFile(process.env.ENGINE_REPORT ?? 'benchmark/engines-local.json',JSON.stringify(report,null,2)+'\n');
+}
+if (report.profiles.some(p=>p.error||p.rows.some(row=>row.runs.some(run=>!run.ok||run.validationError)))) {
+ process.exitCode=1;
 }
