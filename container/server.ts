@@ -17,4 +17,23 @@ const server = createTransformServer({
   effort: effort as TransformOptions["effort"],
 });
 const port = Number(process.env.PORT ?? "8080");
-server.listen(port, "0.0.0.0", () => console.log(`imgt container listening on ${port}`));
+server.listen(port, "0.0.0.0", () => console.log(`imgt container listening on ${(server.address() as { port: number }).port}`));
+
+// Node as container PID 1 needs an explicit signal handler. Stop accepting
+// work, drain requests within their existing deadline, then release the VM.
+let draining = false;
+server.on("request", (request, response) => {
+  response.once("finish", () => {
+    // A request that was active at shutdown must not retain a keep-alive socket.
+    if (draining) request.socket.end();
+  });
+});
+function shutdown() {
+  if (draining) return;
+  draining = true;
+  server.close(() => process.exit(0));
+  server.closeIdleConnections();
+  setTimeout(() => process.exit(1), Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000") + 1000).unref();
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

@@ -198,3 +198,33 @@ demonstrated. This keeps the same two-shard routing/deduplication policy while
 allocating fresh instances for an incompatible renderer. Old instances can finish
 and sleep; the four-instance cap leaves room for the two generations during
 rollout. The response handshake remains the authority for cache safety.
+
+
+## Production verification
+
+[Six production misses](production-v3.json) after promotion checked both renderer
+shards, widths 640/1920/3840, exact output bytes against the qualified local
+pipeline using the prewarmed source, content-hash ETags, edge reuse and 304s.
+All passed. The first two requests started new instances (1.7–2.3 seconds of
+startup). Warm 1920px requests took 1.88–2.28 seconds end to end. Full-size requests
+varied from 2.96 to 4.55 seconds; their encode spans differed nearly twofold
+between shards. Five cache hits took 33–62 ms and one 243 ms. This variability
+is retained in the report, not hidden in a single headline number.
+
+The Vercel parity goal is **not yet demonstrated**. The measured cache-hit path
+is competitive with the reference, but cold starts, region/host variability and
+13–23% larger output bytes remain. A local q75/effort4 screen reduced bytes but
+roughly doubled full-size encoding time, so the q77/effort2 default is unchanged.
+There is no controlled owned Vercel endpoint or multi-region p95 load result yet.
+
+A separate lifecycle experiment reproduced the old production image staying
+alive after SIGTERM when Node is PID 1. Cloudflare's documented rollout drain
+window can last up to 15 minutes before SIGKILL. The server now handles SIGTERM
+and SIGINT, stops accepting work, drains accepted requests and closes their
+keep-alive connections, with a hard fallback just beyond the transform deadline.
+A regression test signals during an admitted upload and verifies its image
+response completes before a clean process exit. This addresses a concrete
+shutdown problem; the exact production billing reduction is not measured.
+
+The isolated lab's public transform route is disabled after the run. Managed
+Images remains absent from both the production dependency and active lab bindings.
