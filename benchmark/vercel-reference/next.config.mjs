@@ -2,6 +2,8 @@ export default {
   turbopack: { root: import.meta.dirname },
   outputFileTracingRoot: import.meta.dirname,
   images: {
+    // Opt in only during an owned benchmark; keep public transformation off otherwise.
+    unoptimized: process.env.IMGT_BENCHMARK_ENABLED !== '1',
     formats: ['image/webp'],
     deviceSizes: [640, 1920, 3840],
     imageSizes: [],

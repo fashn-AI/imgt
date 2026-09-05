@@ -21,8 +21,8 @@ export const config = {
   transforms: {
     widths: [32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840],
     qualities: [60, 75, 77, 85],
-    // 0 is fastest and 6 is smallest. Effort 2 plus quality 77 retained at
-    // least the measured quality of Vercel's quality-75 output while encoding faster.
+    // 0 is fastest and 6 is smallest. Effort 2 / quality 77 balanced encoding
+    // time and the measured SSIM proxy; see benchmark/ENGINE_DECISION.md.
     defaultQuality: 77,
     webpEffort: 2,
   },

@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import assert from 'node:assert/strict';
 import { RENDERER_VERSION } from '../container/renderer.ts';
 const endpoints = {
-  imgt: process.env.IMGT_ENDPOINT ?? 'https://imgt.relferreira.workers.dev',
+  imgt: process.env.IMGT_ENDPOINT,
   vercel: process.env.VERCEL_ENDPOINT,
 };
 const count = Number(process.env.SAMPLES ?? 3);
@@ -13,7 +13,7 @@ if (!Number.isInteger(count) || count < 1 || count > 10) throw new Error('SAMPLE
 const reportPath=process.env.SERVICE_OUTPUT ?? 'benchmark/services-baseline.json';
 const settleOnly=process.argv.includes('--settle');
 const prewarm = process.env.SOURCE_PREWARM !== '0';
-if (!settleOnly && !endpoints.vercel) throw new Error('Set VERCEL_ENDPOINT to a deployment you control; no public-demo default is used.');
+if (!settleOnly && (!endpoints.imgt || !endpoints.vercel)) throw new Error('Set IMGT_ENDPOINT and VERCEL_ENDPOINT to deployments you control; no public defaults are used.');
 const outputDir = process.env.SERVICE_IMAGE_DIR;
 if (outputDir) await mkdir(outputDir, { recursive: true });
 const report = settleOnly ? JSON.parse(await readFile(reportPath,'utf8')) : { date: new Date().toISOString(), endpoints, client: process.env.CLIENT_REGION ?? 'single client; region in response headers',

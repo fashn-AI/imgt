@@ -157,6 +157,31 @@ repeats the same bounded protocol from GitHub Actions, retaining raw timings,
 response POP headers and output images. Runner geography must be determined from
 actual response headers, not inferred from the `ubuntu-latest` label.
 
+The [second completed run](services-owned-runner.json), from a GitHub runner
+whose responses identify Cloudflare IAD and Vercel iad1, used the same ten pairs
+per width. [Workflow execution](https://github.com/relferreira/imgt/actions/runs/33940895387).
+
+| Width | imgt first request | Vercel first request | imgt EDGE | Vercel HIT |
+| --- | ---: | ---: | ---: | ---: |
+| 640 | 786 ms | 486.5 ms | 21 ms | 18.5 ms |
+| 1920 | 1,355 ms | 1,464 ms | 22 ms | 21 ms |
+| 3840 | 2,669.5 ms | 2,804.5 ms | 26 ms | 36 ms |
+
+Two 640px and one 1920px imgt request reported nonzero startup. imgt's worst
+observed first requests were 2,799 / 3,773 / 3,176 ms, versus Vercel's
+626 / 1,626 / 2,962 ms. Faster large-image medians do not erase these startup
+tails or the thumbnail deficit. The outer R2 lookup medians were 48–58 ms in
+IAD; one separate instrumented Brazil request measured 140 ms there plus
+325 ms between coordinator job and remote resize completion. This supports
+investigating request placement/round trips rather than assuming a language
+rewrite removes the remaining overhead.
+
+Both runs include two prewarmed JPEG source hashes. Variants are paired by URL;
+output hashes/byte counts vary consistently with the recorded source hash.
+The bytes in the Brazil table are medians. The corpus remains one scene,
+not thirty distinct photographs. The reference is disabled by default after
+these measurements; explicitly enable it before another owned comparison.
+
 The older [public-demo run](services-baseline.json) remains historical exploratory
 evidence only. No further traffic is needed against third-party demos. Broad
 Vercel parity still needs quality-matched output, more regions/fixtures and

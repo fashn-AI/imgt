@@ -43,7 +43,7 @@ CPU, disk, and applicable network traffic beyond included allowances. R2 has
 storage and operation charges. Workers Cache, requests, and build usage also
 have their own allowances and billing rules; this is not a flat $5 hosting plan.
 Use the current [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
-[Containers pricing](https://developers.cloudflare.com/containers/pricing/),
+[Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/),
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
 The default routes work to two 1-vCPU/3-GiB containers and sleeps each after
@@ -53,6 +53,19 @@ The idle timeout is 80% shorter. These are configuration changes, not guaranteed
 bill reductions. More frequent cold starts are
 the tradeoff; image requests served from Workers Cache or R2 do not start a
 container. An idle, awake container can still incur memory charges.
+
+At September 5, 2026 overage rates, a 3-GiB/2-GB instance costs about $0.00092
+for a two-minute idle tail in memory and disk alone. Two such instances awake
+continuously for 30 days would cost about $39.61 for memory/disk before included
+allowances, CPU and other services. This is a cost model, not a measured bill.
+Bursts amortize the idle tail; isolated transformations do not.
+
+For context, [Cloudflare Images transformations](https://developers.cloudflare.com/images/pricing/)
+cost $0.50 per 1,000 monthly unique transformations after the first 5,000:
+100,000 would be $47.50 and one million $497.50 for transformation charges.
+The hosted Images storage/delivery prices are separate. imgt avoids this
+dependency, but self-hosting is not automatically cheaper at low volume. Compare
+unique variants, cache reuse, active CPU time and awake hours for your workload.
 
 The 120-request/minute IP limiter is approximate and local to a Cloudflare
 location. It includes cache hits and is not a spending cap. Set account billing
