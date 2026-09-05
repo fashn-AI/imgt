@@ -1,6 +1,7 @@
 import { DerivativeStore, type DerivativeBucket } from "../src/store";
 import { TransformCoordinator, type Transform } from "../src/coordinator";
-import { handleImage } from "../src/service";
+import { handleImageJob, routeImage } from "../src/service";
+import { jobRequest } from "../src/jobs";
 import { handleGateway } from "../src/gateway";
 import type { SourceFetch } from "../src/source";
 
@@ -59,12 +60,13 @@ export function createHarness(options: { rendererVersion?: string; allowedHosts?
       return new Response(`webp-${transforms}`);
     },
   });
-  const resize = (job: Parameters<Transform>[1]) => coordinator.fetch(new Request("http://coordinator/job", {
-    method: "POST", body: JSON.stringify(job),
-  }));
-  const imageCache = { fetch: (request: Request) => handleImage(request, { allowedHosts, store, resize, waitUntil }) };
+  const resize = (job: Parameters<Transform>[1]) => coordinator.fetch(jobRequest(job));
+  const imageJob = (request: Request) => handleImageJob(request, { allowedHosts, store, resize, waitUntil });
+  const imageCache = { fetch: (request: Request) => routeImage(request, {
+    allowedHosts, resize: (job) => imageJob(jobRequest(job)),
+  }) };
   const gateway = (request: Request) => handleGateway(request, { allowedHosts, imageCache, rateLimiter: { limit: async () => ({ success: true }) } });
-  return { bucket, store, coordinator, imageCache, gateway,
+  return { bucket, store, coordinator, imageCache, imageJob, gateway,
     get downloads() { return downloads; }, get transforms() { return transforms; },
     async drain() { while (background.length) await Promise.all(background.splice(0)); },
   };

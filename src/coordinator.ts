@@ -1,8 +1,7 @@
 import { remainingSeconds } from "./cache";
-import { DERIVATIVE_PREFIX, MAX_DISTINCT_JOBS_PER_SHARD, TRANSFORM_TIMEOUT_MS } from "./constants";
+import { MAX_DISTINCT_JOBS_PER_SHARD, TRANSFORM_TIMEOUT_MS } from "./constants";
 import { errorResponse, failureResponse, ImageError, imageResponse } from "./http";
-import { containerNameForKey, type ResizeJob, SingleFlight } from "./jobs";
-import { derivativeKey, normalizeSourceUrl, ALLOWED_QUALITIES, ALLOWED_WIDTHS } from "./options";
+import { containerNameForKey, parseResizeJob, type ResizeJob, SingleFlight } from "./jobs";
 import { fetchSource, type SourceFetch } from "./source";
 import { contentEtag, DerivativeStore } from "./store";
 import { config } from "../imgt.config";
@@ -39,7 +38,7 @@ export class TransformCoordinator {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/job") return errorResponse("not found", 404);
     let job: ResizeJob;
     try {
-      job = await this.parseJob(await request.json());
+      job = await parseResizeJob(await request.json(), this.deps.allowedHosts);
     } catch {
       return errorResponse("invalid resize job");
     }
@@ -60,15 +59,6 @@ export class TransformCoordinator {
         status: cause instanceof ImageError ? cause.status : 500 }));
       return failureResponse(cause);
     }
-  }
-
-  private async parseJob(value: unknown): Promise<ResizeJob> {
-    if (!value || typeof value !== "object") throw new Error("invalid job");
-    const job = value as ResizeJob;
-    if (typeof job.sourceUrl !== "string" || normalizeSourceUrl(job.sourceUrl, this.deps.allowedHosts) !== job.sourceUrl ||
-      !ALLOWED_WIDTHS.has(job.width) || !ALLOWED_QUALITIES.has(job.quality) ||
-      job.outputKey !== await derivativeKey(DERIVATIVE_PREFIX, job)) throw new Error("invalid job");
-    return job;
   }
 
   private async resize(job: ResizeJob): Promise<ResizeResult> {

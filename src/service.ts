@@ -1,14 +1,17 @@
 import { remainingSeconds } from "./cache";
 import { DERIVATIVE_PREFIX, STALE_CACHE_TTL_SECONDS } from "./constants";
 import { errorResponse, failureResponse, imageResponse } from "./http";
-import { type ResizeJob } from "./jobs";
+import { parseResizeJob, type ResizeJob } from "./jobs";
 import { derivativeKey, parseImageOptions } from "./options";
 import { DerivativeStore } from "./store";
 
-interface ImageServiceDependencies {
+interface ImageRouterDependencies {
   allowedHosts: readonly string[];
-  store: DerivativeStore;
   resize: (job: ResizeJob) => Promise<Response>;
+}
+
+interface ImageServiceDependencies extends ImageRouterDependencies {
+  store: DerivativeStore;
   waitUntil: (promise: Promise<void>) => void;
 }
 
@@ -18,15 +21,33 @@ async function refresh(job: ResizeJob, resize: ImageServiceDependencies["resize"
   else await response.body?.cancel();
 }
 
-export async function handleImage(request: Request, deps: ImageServiceDependencies): Promise<Response> {
+export async function handleImageJob(request: Request, deps: ImageServiceDependencies): Promise<Response> {
+  if (request.method !== "POST" || new URL(request.url).pathname !== "/job") return errorResponse("not found", 404);
+  let job: ResizeJob;
+  try { job = await parseResizeJob(await request.json(), deps.allowedHosts); }
+  catch { return errorResponse("invalid resize job"); }
+  return serveImage(job, deps);
+}
+
+export async function routeImage(request: Request, deps: ImageRouterDependencies): Promise<Response> {
   const url = new URL(request.url);
   if (request.method !== "GET" || url.pathname !== "/image") return errorResponse("not found", 404);
   try {
     const options = parseImageOptions(url, deps.allowedHosts);
     const outputKey = await derivativeKey(DERIVATIVE_PREFIX, options);
     const job = { outputKey, ...options };
+    return await deps.resize(job);
+  } catch (cause) {
+    return failureResponse(cause);
+  }
+}
+
+// Run alongside the coordinator so R2 reads do not add a separate edge-to-R2 trip.
+// Fresh/stale derivatives still skip container startup entirely.
+async function serveImage(job: ResizeJob, deps: ImageServiceDependencies): Promise<Response> {
+  try {
     const r2Started = Date.now();
-    const stored = await deps.store.get(outputKey);
+    const stored = await deps.store.get(job.outputKey);
     const r2Ms = Date.now() - r2Started;
     if (stored) {
       const maxAge = remainingSeconds(stored.freshUntil);
@@ -41,7 +62,7 @@ export async function handleImage(request: Request, deps: ImageServiceDependenci
     const resizeStarted = Date.now();
     const response = await deps.resize(job);
     const measured = new Response(response.body, response);
-    // resize includes the remote coordinator's job span plus routing/transfer.
+    // resize includes the local coordinator's job span. Remote routing is timed by the caller.
     measured.headers.append("server-timing", `r2;dur=${r2Ms}, resize;dur=${Date.now() - resizeStarted}`);
     return measured;
   } catch (cause) {

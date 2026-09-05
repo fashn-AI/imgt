@@ -7,8 +7,8 @@ import { MAX_DISTINCT_JOBS_PER_SHARD, MAX_SOURCE_BYTES, TRANSFORM_TIMEOUT_MS } f
 import { TransformCoordinator } from "./coordinator";
 import { handleGateway } from "./gateway";
 import { ImageError } from "./http";
-import { containerNameForKey, type ResizeJob } from "./jobs";
-import { handleImage } from "./service";
+import { containerNameForKey, jobRequest, type ResizeJob } from "./jobs";
+import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
 
 interface Env {
@@ -29,10 +29,12 @@ export class ImgtImageTransformer extends Container<Env> {
     VIPS_CONCURRENCY: "1",
     WEBP_EFFORT: String(config.transforms.webpEffort),
   };
+  readonly #allowedHosts = parseAllowedHosts(this.env.ALLOWED_HOSTS);
+  readonly #store = new DerivativeStore(this.env.DERIVATIVES);
   readonly #coordinator = new TransformCoordinator({
     rendererVersion: RENDERER_VERSION,
-    allowedHosts: parseAllowedHosts(this.env.ALLOWED_HOSTS),
-    store: new DerivativeStore(this.env.DERIVATIVES),
+    allowedHosts: this.#allowedHosts,
+    store: this.#store,
     waitUntil: (promise) => this.ctx.waitUntil(promise),
     prepare: async (signal) => {
       if ((await this.getState()).status !== "healthy") {
@@ -48,7 +50,12 @@ export class ImgtImageTransformer extends Container<Env> {
   });
 
   fetch(request: Request): Promise<Response> {
-    return this.#coordinator.fetch(request);
+    return handleImageJob(request, {
+      allowedHosts: this.#allowedHosts,
+      store: this.#store,
+      resize: (job) => this.#coordinator.fetch(jobRequest(job)),
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
+    });
   }
 
   onStop(params: StopParams) {
@@ -57,20 +64,20 @@ export class ImgtImageTransformer extends Container<Env> {
 
 }
 
-function requestResize(job: ResizeJob, env: Env): Promise<Response> {
+async function requestResize(job: ResizeJob, env: Env): Promise<Response> {
   const container = getContainer(env.IMGT_TRANSFORMER, containerNameForKey(job.outputKey, config.containers.shards));
-  return container.fetch(new Request("http://container/job", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(job),
-  }));
+  const started = Date.now();
+  const response = await container.fetch(jobRequest(job));
+  const measured = new Response(response.body, response);
+  measured.headers.append("server-timing", `route;dur=${Date.now() - started}`);
+  return measured;
 }
 
 export class ImgtImageCache extends WorkerEntrypoint<Env> {
   fetch(request: Request): Promise<Response> {
-    return handleImage(request, {
+    return routeImage(request, {
       allowedHosts: parseAllowedHosts(this.env.ALLOWED_HOSTS),
-      store: new DerivativeStore(this.env.DERIVATIVES),
       resize: (job) => requestResize(job, this.env),
-      waitUntil: (promise) => this.ctx.waitUntil(promise),
     });
   }
 }

@@ -251,6 +251,17 @@ test("coordinator rejects mismatched output keys before storage or origin access
   assert.equal(response.status, 400); assert.equal(h.downloads, 0); assert.equal(h.bucket.reads, 0);
 });
 
+test("the routed image service validates jobs before its R2 lookup", async () => {
+  const h = createHarness();
+  const options = parseImageOptions(new URL(imageRequest().url), ["images.unsplash.com"]);
+  const response = await h.imageJob(new Request("http://container/job", {
+    method: "POST", body: JSON.stringify({ ...options, outputKey: "wrong" }),
+  }));
+  assert.equal(response.status, 400);
+  assert.equal(h.bucket.reads, 0);
+  assert.equal(h.downloads, 0);
+});
+
 
 test("rollout rejects old renderer bytes without caching and recovers on the new renderer", async () => {
   let current = false;
