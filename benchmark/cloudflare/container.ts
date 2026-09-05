@@ -1,5 +1,6 @@
 // Fixed-fixture benchmark adapter, never used by the production imgt Worker.
 import { spawn } from "node:child_process";
+import http from "node:http";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import sharp from "sharp";
 import { createTransformServer } from "./app.ts";
@@ -38,12 +39,19 @@ const encodeNative: typeof encodeImage = async (input, options, _deadline, signa
     return await readFile(`${dir}/output`);
   } finally { await rm(dir, { recursive: true, force: true }); }
 };
-for (const [port, encode, effort] of [
-  [8080, encodeImage, 2], [8081, encodeNative, 2],
-  [8082, encodeNative, 4], [8083, encodeImage, 4],
-  [8084, encodeOptimized, 2],
+const servers = new Map<string, http.Server>();
+for (const [engine, encode, effort] of [
+  ["sharp", encodeImage, 2], ["native", encodeNative, 2],
+  ["native-e4", encodeNative, 4], ["sharp-e4", encodeImage, 4],
+  ["sharp-late-icc", encodeOptimized, 2],
 ] as const) {
   const server = createTransformServer({ ...settings, effort }, encode);
-  server.prependListener("request", (_request, response) => response.setHeader("x-benchmark-build", "late-icc-v1"));
-  server.listen(port, "0.0.0.0");
+  servers.set(engine, server);
 }
+http.createServer((request, response) => {
+  response.setHeader("x-benchmark-build", "late-icc-v2");
+  const engine = new URL(request.url!, "http://container").searchParams.get("engine") ?? "sharp";
+  const server = servers.get(engine);
+  if (!server) { response.writeHead(400); response.end("invalid engine"); return; }
+  server.emit("request", request, response);
+}).listen(8080, "0.0.0.0");

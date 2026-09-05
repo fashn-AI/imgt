@@ -1,0 +1,384 @@
+{
+  "metric": "ssim.js 3.5.0, Weber SSIM, window 11, no downsampling; white/black alpha composites",
+  "reference": "Lossless Sharp oriented Lanczos3 resize (existing renderer reference); SSIM alone does not establish perceptual equivalence.",
+  "rows": [
+    {
+      "profile": "sharp-cache0",
+      "source": "portrait-original.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 68796,
+      "hash": "bd20e55b6800718138a9ec377a07d79c962c8d121ab499ce2eb08ea3a3335fcd",
+      "ssim": 0.9519352401458735
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "portrait-original.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 68796,
+      "hash": "bd20e55b6800718138a9ec377a07d79c962c8d121ab499ce2eb08ea3a3335fcd",
+      "ssim": 0.9519352401458735
+    },
+    {
+      "profile": "native-vips",
+      "source": "portrait-original.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 71872,
+      "hash": "8edc0ccb9d009071e67e3e336554e5e8f85c91c800f73590b8eb9990c25809f7",
+      "ssim": 0.9517296161587697
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "portrait-original.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 548324,
+      "hash": "d7f85618b6cd2e65e81aa4ceddb22fc61c3232d1163901b38bdbabf46a25171a",
+      "ssim": 0.9565097066503665
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "portrait-original.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 548324,
+      "hash": "d7f85618b6cd2e65e81aa4ceddb22fc61c3232d1163901b38bdbabf46a25171a",
+      "ssim": 0.9565097066503665
+    },
+    {
+      "profile": "native-vips",
+      "source": "portrait-original.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 548324,
+      "hash": "d7f85618b6cd2e65e81aa4ceddb22fc61c3232d1163901b38bdbabf46a25171a",
+      "ssim": 0.9565097066503665
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "portrait-original.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 1486220,
+      "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+      "ssim": 0.9696906920109675
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "portrait-original.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 1486220,
+      "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+      "ssim": 0.9696906920109675
+    },
+    {
+      "profile": "native-vips",
+      "source": "portrait-original.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 1486220,
+      "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+      "ssim": 0.9696906920109675
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "landscape-baseline.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 48858,
+      "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+      "ssim": 0.968359541095576
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "landscape-baseline.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 48858,
+      "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+      "ssim": 0.968359541095576
+    },
+    {
+      "profile": "native-vips",
+      "source": "landscape-baseline.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 50616,
+      "hash": "ba74eeaddd8c71b2372104115e7a65e86c729d60e13e555289b7eb4071f458a7",
+      "ssim": 0.9674765153229613
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "landscape-baseline.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 354524,
+      "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+      "ssim": 0.9653552962273205
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "landscape-baseline.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 354524,
+      "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+      "ssim": 0.9653552962273205
+    },
+    {
+      "profile": "native-vips",
+      "source": "landscape-baseline.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 354524,
+      "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+      "ssim": 0.9653552962273205
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "landscape-baseline.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 843576,
+      "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+      "ssim": 0.9723707925523857
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "landscape-baseline.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 843576,
+      "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+      "ssim": 0.9723707925523857
+    },
+    {
+      "profile": "native-vips",
+      "source": "landscape-baseline.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 843576,
+      "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+      "ssim": 0.9723707925523857
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "landscape-progressive.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 48858,
+      "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+      "ssim": 0.968359541095576
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "landscape-progressive.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 48858,
+      "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+      "ssim": 0.968359541095576
+    },
+    {
+      "profile": "native-vips",
+      "source": "landscape-progressive.jpg",
+      "width": 640,
+      "background": "white",
+      "bytes": 50616,
+      "hash": "ba74eeaddd8c71b2372104115e7a65e86c729d60e13e555289b7eb4071f458a7",
+      "ssim": 0.9674765153229613
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "landscape-progressive.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 354524,
+      "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+      "ssim": 0.9653552962273205
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "landscape-progressive.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 354524,
+      "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+      "ssim": 0.9653552962273205
+    },
+    {
+      "profile": "native-vips",
+      "source": "landscape-progressive.jpg",
+      "width": 1920,
+      "background": "white",
+      "bytes": 354524,
+      "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+      "ssim": 0.9653552962273205
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "landscape-progressive.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 843576,
+      "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+      "ssim": 0.9723707925523857
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "landscape-progressive.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 843576,
+      "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+      "ssim": 0.9723707925523857
+    },
+    {
+      "profile": "native-vips",
+      "source": "landscape-progressive.jpg",
+      "width": 3840,
+      "background": "white",
+      "bytes": 843576,
+      "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+      "ssim": 0.9723707925523857
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "transparent.png",
+      "width": 384,
+      "background": "white",
+      "bytes": 27900,
+      "hash": "31aace14eddfa32b21a4f8a4ddad8675cad0876c7de8a7b53822ac992329c769",
+      "ssim": 0.9738291699257421
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "transparent.png",
+      "width": 384,
+      "background": "white",
+      "bytes": 27900,
+      "hash": "31aace14eddfa32b21a4f8a4ddad8675cad0876c7de8a7b53822ac992329c769",
+      "ssim": 0.9738291699257421
+    },
+    {
+      "profile": "native-vips",
+      "source": "transparent.png",
+      "width": 384,
+      "background": "white",
+      "bytes": 27900,
+      "hash": "31aace14eddfa32b21a4f8a4ddad8675cad0876c7de8a7b53822ac992329c769",
+      "ssim": 0.9738291699257421
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "transparent.png",
+      "width": 384,
+      "background": "black",
+      "bytes": 27900,
+      "hash": "31aace14eddfa32b21a4f8a4ddad8675cad0876c7de8a7b53822ac992329c769",
+      "ssim": 0.9737696415047974
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "transparent.png",
+      "width": 384,
+      "background": "black",
+      "bytes": 27900,
+      "hash": "31aace14eddfa32b21a4f8a4ddad8675cad0876c7de8a7b53822ac992329c769",
+      "ssim": 0.9737696415047974
+    },
+    {
+      "profile": "native-vips",
+      "source": "transparent.png",
+      "width": 384,
+      "background": "black",
+      "bytes": 27900,
+      "hash": "31aace14eddfa32b21a4f8a4ddad8675cad0876c7de8a7b53822ac992329c769",
+      "ssim": 0.9737696415047974
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "orientation6.jpg",
+      "width": 384,
+      "background": "white",
+      "bytes": 41264,
+      "hash": "1d46abab9bba1d695ae84555e93f04dc22f5ae09fdfe4972ed5b7af4d57c629e",
+      "ssim": 0.9684130067231683
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "orientation6.jpg",
+      "width": 384,
+      "background": "white",
+      "bytes": 41264,
+      "hash": "1d46abab9bba1d695ae84555e93f04dc22f5ae09fdfe4972ed5b7af4d57c629e",
+      "ssim": 0.9684130067231683
+    },
+    {
+      "profile": "native-vips",
+      "source": "orientation6.jpg",
+      "width": 384,
+      "background": "white",
+      "bytes": 41264,
+      "hash": "1d46abab9bba1d695ae84555e93f04dc22f5ae09fdfe4972ed5b7af4d57c629e",
+      "ssim": 0.9684130067231683
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "photo.webp",
+      "width": 384,
+      "background": "white",
+      "bytes": 24464,
+      "hash": "c66e0ed811600156a606dd4c4867a302cb2fc50c0f8e754892f72c9577925d63",
+      "ssim": 0.952970528366719
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "photo.webp",
+      "width": 384,
+      "background": "white",
+      "bytes": 24464,
+      "hash": "c66e0ed811600156a606dd4c4867a302cb2fc50c0f8e754892f72c9577925d63",
+      "ssim": 0.952970528366719
+    },
+    {
+      "profile": "native-vips",
+      "source": "photo.webp",
+      "width": 384,
+      "background": "white",
+      "bytes": 24464,
+      "hash": "c66e0ed811600156a606dd4c4867a302cb2fc50c0f8e754892f72c9577925d63",
+      "ssim": 0.952970528366719
+    },
+    {
+      "profile": "sharp-cache0",
+      "source": "photo.avif",
+      "width": 384,
+      "background": "white",
+      "bytes": 24708,
+      "hash": "5d0648721e43d03348c5ae49385c5f57ea6e16a115ca9961229a09924e8356c3",
+      "ssim": 0.9543531847350629
+    },
+    {
+      "profile": "sharp-late-icc",
+      "source": "photo.avif",
+      "width": 384,
+      "background": "white",
+      "bytes": 24708,
+      "hash": "5d0648721e43d03348c5ae49385c5f57ea6e16a115ca9961229a09924e8356c3",
+      "ssim": 0.9543531847350629
+    },
+    {
+      "profile": "native-vips",
+      "source": "photo.avif",
+      "width": 384,
+      "background": "white",
+      "bytes": 24708,
+      "hash": "5d0648721e43d03348c5ae49385c5f57ea6e16a115ca9961229a09924e8356c3",
+      "ssim": 0.9543531847350629
+    }
+  ]
+}

@@ -70,6 +70,28 @@ test("startup failure aborts the concurrent source and releases the job for retr
   await h.drain();
 });
 
+test("waiting for startup does not extend the source's remaining freshness", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const starting = deferred();
+  const ready = deferred();
+  const h = createHarness({
+    sourceFetch: async () => new Response("source", { headers: {
+      "content-type": "image/jpeg", "cache-control": "public, max-age=14400", age: "14399",
+    } }),
+    prepare: async () => { starting.resolve(); await ready.promise; },
+  });
+  const request = h.gateway(imageRequest());
+  await starting.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(2000);
+  ready.resolve();
+  const response = await request;
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  await h.drain();
+  assert.equal(h.bucket.objects.size, 0);
+});
+
 test("the shared deadline cancels startup and an origin body waiting for it", async () => {
   let startupAborted = false;
   let bodyCancelled = false;

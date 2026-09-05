@@ -625,6 +625,1076 @@
       },
       "idleMemoryMiB": 76.90625,
       "peakMemoryMiB": 333.265625
+    },
+    {
+      "name": "sharp-late-icc",
+      "image": "imgt-engines:local",
+      "architecture": "arm64",
+      "rows": [
+        {
+          "source": "portrait-original.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 234.61899999999997,
+              "readMs": 3.112957999999992,
+              "bytes": 68796,
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 258.08295899999996,
+              "readMs": 3.397666999999956,
+              "bytes": 68796,
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 234.5057079999999,
+              "readMs": 2.578875000000039,
+              "bytes": 68796,
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "portrait-original.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 580.304459,
+              "readMs": 2.7598749999999654,
+              "bytes": 548324,
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 578.408792,
+              "readMs": 2.998542000000043,
+              "bytes": 548324,
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 596.364501,
+              "readMs": 2.8863750000000437,
+              "bytes": 548324,
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "portrait-original.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 1283.320459,
+              "readMs": 2.527208999999857,
+              "bytes": 1486220,
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1279.452792,
+              "readMs": 3.7987499999999272,
+              "bytes": 1486220,
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1302.9249180000006,
+              "readMs": 3.4223339999998643,
+              "bytes": 1486220,
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 44.69366599999921,
+              "readMs": 1.983832999999322,
+              "bytes": 48858,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 43.02379199999996,
+              "readMs": 1.5579170000000886,
+              "bytes": 48858,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 42.178375000000415,
+              "readMs": 1.577541000000565,
+              "bytes": 48858,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 182.5995409999996,
+              "readMs": 1.3725830000003043,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 183.11083299999973,
+              "readMs": 1.5349159999996118,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 185.41379200000029,
+              "readMs": 1.736917000000176,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 463.66054200000053,
+              "readMs": 1.2621250000001965,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 530.8147079999999,
+              "readMs": 2.603374999999687,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 455.19616700000006,
+              "readMs": 1.4211660000000848,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 99.81324999999924,
+              "readMs": 1.3234169999996084,
+              "bytes": 48858,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 97.03279199999997,
+              "readMs": 1.6266670000004524,
+              "bytes": 48858,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 109.02716700000019,
+              "readMs": 1.337374999999156,
+              "bytes": 48858,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 245.54812599999968,
+              "readMs": 1.4657919999990554,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 244.39004199999908,
+              "readMs": 1.5974999999998545,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 237.12345800000003,
+              "readMs": 1.469875000000684,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 523.2142920000006,
+              "readMs": 2.3041660000017146,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 521.6842919999999,
+              "readMs": 1.5007499999992433,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 501.3365840000006,
+              "readMs": 1.8149579999990237,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "transparent.png",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 84.52966600000036,
+              "readMs": 0.7566249999999854,
+              "bytes": 27900,
+              "width": 384,
+              "height": 288,
+              "alpha": true,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 84.25312499999927,
+              "readMs": 0.5419999999994616,
+              "bytes": 27900,
+              "width": 384,
+              "height": 288,
+              "alpha": true,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 86.25808300000062,
+              "readMs": 0.6678330000013375,
+              "bytes": 27900,
+              "width": 384,
+              "height": 288,
+              "alpha": true,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "orientation6.jpg",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 21.83362500000112,
+              "readMs": 0.5103750000016589,
+              "bytes": 41264,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 21.94329100000141,
+              "readMs": 0.35270800000034797,
+              "bytes": 41264,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 21.112709000000905,
+              "readMs": 0.3354170000002341,
+              "bytes": 41264,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "photo.webp",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 102.87045799999942,
+              "readMs": 0.9483749999999418,
+              "bytes": 24464,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 112.6033750000006,
+              "readMs": 1.4061250000013388,
+              "bytes": 24464,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 91.36804099999972,
+              "readMs": 1.1615829999991547,
+              "bytes": 24464,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "photo.avif",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 40.47266599999966,
+              "readMs": 0.38545800000065356,
+              "bytes": 24708,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 39.52195799999936,
+              "readMs": 0.33754099999896425,
+              "bytes": 24708,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 40.42491599999994,
+              "readMs": 0.4227499999997235,
+              "bytes": 24708,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        }
+      ],
+      "ready": {
+        "ready": true,
+        "versions": {
+          "aom": "3.15.0",
+          "archive": "3.8.9",
+          "cairo": "1.18.4",
+          "cgif": "0.5.3",
+          "exif": "0.6.26",
+          "expat": "2.8.3",
+          "ffi": "3.8.0",
+          "fontconfig": "2.18.3",
+          "freetype": "2.14.3",
+          "fribidi": "1.0.16",
+          "glib": "2.89.4",
+          "harfbuzz": "14.3.1",
+          "heif": "1.23.2",
+          "highway": "1.4.0",
+          "imagequant": "2.4.1",
+          "lcms": "2.19.1",
+          "mozjpeg": "0826579",
+          "pango": "1.58.2",
+          "pixman": "0.46.4",
+          "png": "1.6.58",
+          "proxy-libintl": "0.5",
+          "rsvg": "2.62.91",
+          "tiff": "4.7.2",
+          "uhdr": "2.0.2",
+          "vips": "8.18.6",
+          "webp": "1.6.0",
+          "xml2": "2.15.3",
+          "zlib-ng": "2.3.3",
+          "sharp": "0.35.4"
+        }
+      },
+      "idleMemoryMiB": 78.546875,
+      "peakMemoryMiB": 330.78515625
+    },
+    {
+      "name": "native-vips",
+      "image": "imgt-engines:local",
+      "architecture": "arm64",
+      "rows": [
+        {
+          "source": "portrait-original.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 261.055,
+              "readMs": 12.8182,
+              "bytes": 71872,
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 254.965,
+              "readMs": 12.8318,
+              "bytes": 71872,
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 259.848,
+              "readMs": 13.061,
+              "bytes": 71872,
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "portrait-original.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 588.187,
+              "readMs": 12.9196,
+              "bytes": 548324,
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 579.836,
+              "readMs": 12.8142,
+              "bytes": 548324,
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 594.734,
+              "readMs": 12.9748,
+              "bytes": 548324,
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "portrait-original.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 1278.94,
+              "readMs": 13.3003,
+              "bytes": 1486220,
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1289.04,
+              "readMs": 11.6048,
+              "bytes": 1486220,
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1273.13,
+              "readMs": 11.3536,
+              "bytes": 1486220,
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 77.6157,
+              "readMs": 5.72654,
+              "bytes": 50616,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 77.8492,
+              "readMs": 6.11158,
+              "bytes": 50616,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 77.5151,
+              "readMs": 5.3895,
+              "bytes": 50616,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 412.457,
+              "readMs": 6.52392,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 407.213,
+              "readMs": 6.41371,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 402.444,
+              "readMs": 6.78658,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 1346.54,
+              "readMs": 6.59467,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1557.21,
+              "readMs": 6.87742,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1353.33,
+              "readMs": 6.65913,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 144.214,
+              "readMs": 7.012,
+              "bytes": 50616,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 159.286,
+              "readMs": 7.02508,
+              "bytes": 50616,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 143.956,
+              "readMs": 5.84542,
+              "bytes": 50616,
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 487.152,
+              "readMs": 5.77762,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 472.27,
+              "readMs": 6.42554,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 475.852,
+              "readMs": 6.23304,
+              "bytes": 354524,
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 1433.22,
+              "readMs": 6.85467,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1414.1,
+              "readMs": 7.58321,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1391.57,
+              "readMs": 6.47713,
+              "bytes": 843576,
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "transparent.png",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 102.144,
+              "readMs": 1.43804,
+              "bytes": 27900,
+              "width": 384,
+              "height": 288,
+              "alpha": true,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 103.527,
+              "readMs": 1.36546,
+              "bytes": 27900,
+              "width": 384,
+              "height": 288,
+              "alpha": true,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 101.108,
+              "readMs": 1.36613,
+              "bytes": 27900,
+              "width": 384,
+              "height": 288,
+              "alpha": true,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "orientation6.jpg",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 21.8022,
+              "readMs": 0.478042,
+              "bytes": 41264,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 20.7236,
+              "readMs": 0.407709,
+              "bytes": 41264,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 20.4258,
+              "readMs": 0.443375,
+              "bytes": 41264,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "photo.webp",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 116.272,
+              "readMs": 3.56188,
+              "bytes": 24464,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 137.211,
+              "readMs": 3.75117,
+              "bytes": 24464,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 125.266,
+              "readMs": 3.596,
+              "bytes": 24464,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "photo.avif",
+          "width": 384,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 64.4748,
+              "readMs": 0.52975,
+              "bytes": 24708,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 62.9353,
+              "readMs": 0.479625,
+              "bytes": 24708,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 69.9447,
+              "readMs": 0.421292,
+              "bytes": 24708,
+              "width": 384,
+              "height": 576,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        }
+      ],
+      "ready": {
+        "ready": true,
+        "vips": "8.18.6"
+      },
+      "idleMemoryMiB": 12.6875,
+      "peakMemoryMiB": 246.98046875
     }
   ]
 }

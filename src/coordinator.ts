@@ -88,6 +88,7 @@ export class TransformCoordinator {
       const originStarted = performance.now();
       let originMs = 0;
       let startupMs = 0;
+      let freshUntil = 0;
       // Boot only after a validated cache miss, overlapping the origin request.
       const [source] = await Promise.all([
         fetchSource(job.sourceUrl, controller.signal, this.deps.allowedHosts, this.deps.sourceFetch).then(async (source) => {
@@ -97,13 +98,13 @@ export class TransformCoordinator {
             controller.signal.throwIfAborted();
           }
           originMs = performance.now() - originStarted;
+          freshUntil = source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
           return source;
         }),
         Promise.resolve().then(() => this.deps.prepare?.(controller.signal)).then(() => {
           startupMs = performance.now() - originStarted;
         }),
       ]);
-      const freshUntil = source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
       const containerStarted = performance.now();
       const response = await this.deps.transform(source.body, job, controller.signal, deadline);
       if (!response.ok) throw new ImageError((await response.text()) || "image transformation failed", response.status, response.headers.get("retry-after") ?? undefined);
