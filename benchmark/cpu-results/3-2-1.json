@@ -1,0 +1,531 @@
+{
+  "date": "2026-09-05T03:18:45.301Z",
+  "cpu": "AMD EPYC 7763 64-Core Processor",
+  "hostCpus": 2,
+  "limits": {
+    "cpu": 2,
+    "memoryMiB": 6144
+  },
+  "vipsThreads": 1,
+  "count": 3,
+  "manifest": {
+    "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840",
+    "files": [
+      {
+        "name": "portrait-original.jpg",
+        "bytes": 3292210,
+        "sha256": "dc64453da0fc29566faaa8d2a6f5d5588a13355b8ac747038f61e05c3c2a8a47",
+        "width": 3840,
+        "height": 5760,
+        "progressive": true,
+        "alpha": false
+      },
+      {
+        "name": "landscape-baseline.jpg",
+        "bytes": 1874486,
+        "sha256": "a5bbf15c00add05fc16b48dc3710f8d68a201700d58019a62d1471edd4506e30",
+        "width": 3840,
+        "height": 2160,
+        "progressive": false,
+        "alpha": false
+      },
+      {
+        "name": "landscape-progressive.jpg",
+        "bytes": 1794428,
+        "sha256": "c177610c6eb24f2cee36e2c0457b75ffb2e9e7cac45fe5c0ccfaf7d54e5d8fb6",
+        "width": 3840,
+        "height": 2160,
+        "progressive": true,
+        "alpha": false
+      },
+      {
+        "name": "transparent.png",
+        "bytes": 411564,
+        "sha256": "f99647948e9208091210e614703d9fc7429a6cb186bb1edb7d2b7600135b23d3",
+        "width": 2048,
+        "height": 1536,
+        "progressive": false,
+        "alpha": true
+      },
+      {
+        "name": "orientation6.jpg",
+        "bytes": 86012,
+        "sha256": "3a3006441152be21b182b58d6b9bd993a5f482c7f8e1a24b7db869b70caf5359",
+        "width": 600,
+        "height": 400,
+        "orientation": 6,
+        "progressive": false,
+        "alpha": false
+      },
+      {
+        "name": "photo.webp",
+        "bytes": 1060986,
+        "sha256": "36dae3fd2b631b0d03cf1c4537d5e06a149db1b43ab31fbd9d4394af7ce5644e",
+        "width": 1920,
+        "height": 2880,
+        "progressive": false,
+        "alpha": false
+      },
+      {
+        "name": "photo.avif",
+        "bytes": 90988,
+        "sha256": "b4af54f94a304243bb53ed7418460d90423b1c7ca9d07df42f3b7481c0571655",
+        "width": 640,
+        "height": 960,
+        "progressive": false,
+        "alpha": false
+      }
+    ]
+  },
+  "profiles": [
+    {
+      "name": "sharp-late-icc",
+      "image": "imgt-engines:local",
+      "architecture": "amd64",
+      "rows": [
+        {
+          "source": "portrait-original.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 252.87610400000003,
+              "cpuMs": 251.184,
+              "readMs": 2.488342000000017,
+              "bytes": 68796,
+              "hash": "bd20e55b6800718138a9ec377a07d79c962c8d121ab499ce2eb08ea3a3335fcd",
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 243.55901300000005,
+              "cpuMs": 244.256,
+              "readMs": 1.8002119999999877,
+              "bytes": 68796,
+              "hash": "bd20e55b6800718138a9ec377a07d79c962c8d121ab499ce2eb08ea3a3335fcd",
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 239.98735,
+              "cpuMs": 241.784,
+              "readMs": 1.121691999999939,
+              "bytes": 68796,
+              "hash": "bd20e55b6800718138a9ec377a07d79c962c8d121ab499ce2eb08ea3a3335fcd",
+              "width": 640,
+              "height": 960,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "portrait-original.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 586.6633969999999,
+              "cpuMs": 592.039,
+              "readMs": 1.2771089999999958,
+              "bytes": 548324,
+              "hash": "d7f85618b6cd2e65e81aa4ceddb22fc61c3232d1163901b38bdbabf46a25171a",
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 585.7012869999999,
+              "cpuMs": 592.729,
+              "readMs": 2.2844800000000305,
+              "bytes": 548324,
+              "hash": "d7f85618b6cd2e65e81aa4ceddb22fc61c3232d1163901b38bdbabf46a25171a",
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 584.8327869999998,
+              "cpuMs": 590.762,
+              "readMs": 1.1100769999998192,
+              "bytes": 548324,
+              "hash": "d7f85618b6cd2e65e81aa4ceddb22fc61c3232d1163901b38bdbabf46a25171a",
+              "width": 1920,
+              "height": 2880,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "portrait-original.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 1375.5069199999998,
+              "cpuMs": 1387.574,
+              "readMs": 1.2094860000001972,
+              "bytes": 1486220,
+              "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1362.656967,
+              "cpuMs": 1376.716,
+              "readMs": 2.139157000000523,
+              "bytes": 1486220,
+              "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 1353.4861849999998,
+              "cpuMs": 1364.986,
+              "readMs": 0.9306529999994382,
+              "bytes": 1486220,
+              "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+              "width": 3840,
+              "height": 5760,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 42.00944900000013,
+              "cpuMs": 42.471,
+              "readMs": 0.7549639999997453,
+              "bytes": 48858,
+              "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 42.42556300000069,
+              "cpuMs": 43.195,
+              "readMs": 0.5370660000007774,
+              "bytes": 48858,
+              "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 41.63201200000003,
+              "cpuMs": 42.094,
+              "readMs": 0.5744759999997768,
+              "bytes": 48858,
+              "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 171.13042700000005,
+              "cpuMs": 172.99,
+              "readMs": 1.2504419999995662,
+              "bytes": 354524,
+              "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 171.12922200000048,
+              "cpuMs": 172.648,
+              "readMs": 0.6072979999999006,
+              "bytes": 354524,
+              "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 170.63571300000058,
+              "cpuMs": 172,
+              "readMs": 0.5483570000005784,
+              "bytes": 354524,
+              "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-baseline.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 416.5975589999998,
+              "cpuMs": 418.991,
+              "readMs": 1.9865820000004533,
+              "bytes": 843576,
+              "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 418.6123839999991,
+              "cpuMs": 432.35,
+              "readMs": 0.7167829999998503,
+              "bytes": 843576,
+              "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 414.66775400000006,
+              "cpuMs": 418.898,
+              "readMs": 0.5805170000003272,
+              "bytes": 843576,
+              "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 640,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 105.20601199999874,
+              "cpuMs": 105.673,
+              "readMs": 0.6206029999993916,
+              "bytes": 48858,
+              "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 108.13373299999876,
+              "cpuMs": 108.496,
+              "readMs": 0.5619129999995494,
+              "bytes": 48858,
+              "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 107.82468700000027,
+              "cpuMs": 108.285,
+              "readMs": 0.6145940000005794,
+              "bytes": 48858,
+              "hash": "a701a72e2a721ebadcc24062f530e8ea7aa32ff9f437c5c0d4d367e281b61993",
+              "width": 640,
+              "height": 360,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 1920,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 241.05999899999915,
+              "cpuMs": 241.46,
+              "readMs": 1.6518339999984164,
+              "bytes": 354524,
+              "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 238.0425610000002,
+              "cpuMs": 240.504,
+              "readMs": 0.4988040000007459,
+              "bytes": 354524,
+              "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 245.01963299999989,
+              "cpuMs": 246.72,
+              "readMs": 0.5329379999984667,
+              "bytes": 354524,
+              "hash": "835dce0d2be6b6b9644efca7d7bd43237b353092cbe0769a325e380a58e451e5",
+              "width": 1920,
+              "height": 1080,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        },
+        {
+          "source": "landscape-progressive.jpg",
+          "width": 3840,
+          "runs": [
+            {
+              "ok": true,
+              "ms": 482.3508440000005,
+              "cpuMs": 489.555,
+              "readMs": 4.58376700000008,
+              "bytes": 843576,
+              "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 483.84326299999884,
+              "cpuMs": 489.034,
+              "readMs": 0.6786919999995007,
+              "bytes": 843576,
+              "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            },
+            {
+              "ok": true,
+              "ms": 479.0874939999994,
+              "cpuMs": 484.315,
+              "readMs": 0.6045859999994718,
+              "bytes": 843576,
+              "hash": "a3d031029c5b67d07e70b0bbc42a41af577c33754f85f666ff85c446423a13a5",
+              "width": 3840,
+              "height": 2160,
+              "alpha": false,
+              "format": "webp",
+              "dimensionsCorrect": true
+            }
+          ]
+        }
+      ],
+      "ready": {
+        "ready": true,
+        "versions": {
+          "aom": "3.15.0",
+          "archive": "3.8.9",
+          "cairo": "1.18.4",
+          "cgif": "0.5.3",
+          "exif": "0.6.26",
+          "expat": "2.8.3",
+          "ffi": "3.8.0",
+          "fontconfig": "2.18.3",
+          "freetype": "2.14.3",
+          "fribidi": "1.0.16",
+          "glib": "2.89.4",
+          "harfbuzz": "14.3.1",
+          "heif": "1.23.2",
+          "highway": "1.4.0",
+          "imagequant": "2.4.1",
+          "lcms": "2.19.1",
+          "mozjpeg": "0826579",
+          "pango": "1.58.2",
+          "pixman": "0.46.4",
+          "png": "1.6.58",
+          "proxy-libintl": "0.5",
+          "rsvg": "2.62.91",
+          "tiff": "4.7.2",
+          "uhdr": "2.0.2",
+          "vips": "8.18.6",
+          "webp": "1.6.0",
+          "xml2": "2.15.3",
+          "zlib-ng": "2.3.3",
+          "sharp": "0.35.4"
+        },
+        "concurrency": 1
+      },
+      "idleMemoryMiB": 78.4375,
+      "peakMemoryMiB": 321.3203125
+    }
+  ]
+}

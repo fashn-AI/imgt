@@ -65,3 +65,25 @@ requests run sequentially with rotating order. Run `node benchmark/cloudflare/ru
 only against an enabled lab whose build marker matches the script. A mismatched
 marker stops the run; never label responses from an old image as a new engine.
 The 27-request run fits the 30/minute limiter when no other probes overlap it.
+
+## CPU/thread screen
+
+The manual `CPU scaling screen` GitHub workflow runs the optimized Sharp pipeline
+under one/two CPUs and one/two libvips threads, in forward and reverse order.
+It records process CPU time separately from wall time and asserts identical
+output hashes across settings. This isolates allocation effects; it is not a
+Cloudflare cold-start, request-path or concurrent-throughput benchmark.
+
+For an individual local screen, after building the image and generating fixtures:
+
+```sh
+ENGINE_PROFILE=sharp-late-icc ENGINE_CPUS=2 ENGINE_VIPS_CONCURRENCY=2 \
+ENGINE_FIXTURES=portrait-original.jpg ENGINE_SAMPLES=3 \
+ENGINE_REPORT=/tmp/imgt-cpu-screen.json node benchmark/engines/run.mjs
+```
+
+Memory is set to 3 GiB per CPU with swap disabled, matching the current Cloudflare
+custom-instance floor. Only Sharp honors the threading setting; the native
+prototype explicitly fixes libvips concurrency to one. To summarize the full
+workflow's eight raw reports, run `node benchmark/engines/summarize-scaling.mjs
+RESULTS_DIRECTORY` (with the command on one line).

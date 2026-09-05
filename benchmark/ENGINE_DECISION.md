@@ -91,6 +91,38 @@ miss latency. The first lab request may include boot; do not use it as a warm
 end-to-end comparison. The lab has no R2/derivative cache and cannot stand in for
 the production gateway's cache-hit path.
 
+## CPU allocation screen
+
+A separate [AMD64 screen](cpu-scaling-summary.json) compared 1/2 CPUs and 1/2
+libvips threads on the same two-vCPU AMD EPYC 7763 GitHub runner. The four
+settings ran in forward and reverse order, with three samples each time: six
+samples per setting/input/width. All 216 outputs had matching hashes across
+settings. Three JPEG inputs cover the portrait, a baseline landscape crop and
+a progressive encoding of that crop; this is still one photographic scene.
+[Raw reports](cpu-results), [workflow](https://github.com/relferreira/imgt/actions/runs/33941446419).
+
+| Portrait width | 1 CPU / 1 thread | 2 CPUs / 1 thread | 2 CPUs / 2 threads | CPU time, 1/1 → 2/2 |
+| --- | ---: | ---: | ---: | ---: |
+| 640 | 245 ms | 244 ms | 242 ms | 247 → 257 ms |
+| 1920 | 588 ms | 587 ms | 552 ms | 590 → 672 ms |
+| 3840 | 1,373 ms | 1,369 ms | 1,306 ms | 1,373 → 1,561 ms |
+
+Two threads on one CPU worsened portrait processing to 310 / 676 / 1,555 ms.
+The two-CPU/two-thread configuration does not solve the thumbnail deficit and
+only improves the larger portrait medians by 5–6%, while consuming ~14% more
+CPU time there. It would require 6 GiB provisioned memory per instance under
+Cloudflare's custom-instance constraints. This screen does not justify a
+production allocation increase for the cost-sensitive default; keep one CPU
+and one libvips thread. Aggregate concurrent throughput is a separate question:
+this screen measures one image at a time, matching the current scheduler.
+
+Most landscape cases changed little. The progressive full-size baseline varied
+between forward/reverse runs, so do not use that cell to claim a general scaling
+factor. These are Docker quota results, not direct Cloudflare two-CPU timings;
+the candidate failed the local screening criterion before a larger cloud
+allocation was needed. The benchmark now fails on engine errors and records
+actual process CPU time as well as wall time and output hashes.
+
 ## The options
 
 These cover the relevant engine families and Cloudflare execution choices.
