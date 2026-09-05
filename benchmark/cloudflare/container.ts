@@ -8,8 +8,7 @@ import { encodeImage } from "./transform.ts";
 sharp.cache(false);
 sharp.concurrency(1);
 const settings = { maxInputBytes: 25 * 1024 * 1024, maxInFlight: 4, timeoutMs: 20000, effort: 2 as const };
-createTransformServer(settings, encodeImage).listen(8080, "0.0.0.0");
-createTransformServer(settings, async (input, options, _deadline, signal) => {
+const encodeNative: typeof encodeImage = async (input, options, _deadline, signal) => {
   signal.throwIfAborted();
   const dir = await mkdtemp("/tmp/imgt-native-");
   try {
@@ -37,4 +36,12 @@ createTransformServer(settings, async (input, options, _deadline, signal) => {
     });
     return await readFile(`${dir}/output`);
   } finally { await rm(dir, { recursive: true, force: true }); }
-}).listen(8081, "0.0.0.0");
+};
+for (const [port, encode, effort] of [
+  [8080, encodeImage, 2], [8081, encodeNative, 2],
+  [8082, encodeNative, 4], [8083, encodeImage, 4],
+] as const) {
+  const server = createTransformServer({ ...settings, effort }, encode);
+  server.prependListener("request", (_request, response) => response.setHeader("x-benchmark-build", "color-v1"));
+  server.listen(port, "0.0.0.0");
+}

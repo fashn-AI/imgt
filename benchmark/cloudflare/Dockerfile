@@ -23,5 +23,5 @@ COPY container/*.ts ./
 COPY benchmark/cloudflare/container.ts ./lab.ts
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2 VIPS_CONCURRENCY=1 UV_THREADPOOL_SIZE=2
 USER node
-EXPOSE 8080 8081
+EXPOSE 8080 8081 8082 8083
 CMD ["node", "lab.ts"]
