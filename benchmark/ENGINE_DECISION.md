@@ -6,59 +6,90 @@ excluded as a production dependency by the project's cost requirement. An engine
 Docker image size, resize-only benchmark, or matching quality number is not
 enough to decide this.
 
-## Current evidence
+## Decision and qualified evidence
+
+Keep Sharp/libvips. The strongest replacement candidate's resize improvement can
+be obtained in the existing Sharp pipeline by deferring embedded ICC conversion
+until after resize for 8-bit RGB inputs. CMYK, grayscale and higher-depth inputs
+retain the original path. Conversion is explicit; profiles are not ignored in
+the output. This avoids adopting a competing image server or maintaining a new
+Rust/C++ service just to access a different operation order.
 
 The reproducible [common-input harness](engines/README.md) runs each engine in
 its own native-architecture container with 1 CPU, 3 GiB RAM and no swap. The
-AMD64 run used an AMD EPYC 7763 GitHub runner, five samples per case. Results
-include decode, orientation, resize and WebP encode, excluding HTTP, origin,
-Cloudflare startup, and output-file writes. These are medians, not tail latency.
+latest AMD64 run used an AMD EPYC 7763 GitHub runner and five samples per case.
+Results include decode, orientation, resize and WebP encode, excluding HTTP,
+origin, Cloudflare startup and output-file writes. These are medians, not tails.
 
 | Engine | 22 MP portrait → 640 | → 1920 | → 3840 | Peak cgroup memory |
 | --- | ---: | ---: | ---: | ---: |
-| Sharp, operation cache 64 MiB | 388 ms | 972 ms | 1,370 ms | 983 MiB |
-| Sharp, operation cache disabled | 262 ms | 966 ms | 1,363 ms | 354 MiB |
-| Direct libvips thumbnail, C++ | 249 ms | 523 ms | 1,098 ms | 256 MiB |
-| Rust image + fast_image_resize + libwebp | 282 ms | 475 ms | 942 ms | 322 MiB |
+| Sharp, cache disabled, original pipeline | 279 ms | 1,438 ms | 1,369 ms | 332 MiB |
+| Sharp, cache disabled, late ICC | 241 ms | 592 ms | 1,371 ms | 329 MiB |
+| Direct libvips, explicit sRGB output | 260 ms | 596 ms | 1,370 ms | 259 MiB |
 
-[Raw x86 results](engines-amd64.json), [quality results](engines-quality-amd64.json),
-[CI execution](https://github.com/relferreira/imgt/actions/runs/33935703781).
-All Sharp/native libvips runs use the same libvips 8.18.6 / WebP 1.6.0 bundle.
-The Rust codec stack differs. Five samples and a fixed profile order can retain
-host drift; qualify finalists with interleaved Cloudflare measurements.
+[Latest x86 results](engines-late-amd64.json),
+[quality/hash results](engines-quality-late-amd64.json),
+[CI execution](https://github.com/relferreira/imgt/actions/runs/33937835267).
+All three use libvips 8.18.6 and WebP 1.6.0. On ARM, the paired 1920px medians
+were 789 ms original, 580 ms late ICC and 588 ms native
+([local results](engines-late-local.json)). The measured resize improvement was
+26% on ARM and 59% in this x86 run; host variance and a fixed microbenchmark
+profile order mean these are not universal speedup guarantees. The previous
+x86 original-pipeline measurement was 975 ms, illustrating that variance.
 
-Disabling Sharp's operation cache preserved every tested output hash and reduced
-peak memory by 64%. R2 and edge caching already retain completed derivatives;
-libvips' operation cache is a separate intermediate-image cache. This is the
-first production change. It does not require a derivative namespace change.
+Every common-fixture output hash matched between original and optimized Sharp,
+including WebP/AVIF inputs, alpha on white/black and EXIF rotation. Regression
+tests also cover all eight orientations, CMYK, grayscale, 16-bit input, P3
+interior colors, limits and cancellation. P3 resize boundaries can differ because
+color conversion and filtering do not commute. A renderer/cache version change
+is therefore required; do not claim universal byte or perceptual equivalence.
 
-Direct libvips reduced the 1920px portrait time by 46% versus uncached Sharp.
-These initial timings preceded an explicit output-profile fix discovered by
-the later P3/CMYK tests; they must be remeasured with that fix before adoption.
-All tested 1920px/full-size photo outputs were byte-identical. Some thumbnails
-differed, so this is a pipeline change, not evidence of JavaScript overhead.
-The [libvips thumbnail pipeline](https://github.com/libvips/libvips/wiki/HOWTO----Image-shrinking)
-combines optimized loading, shrinking, color conversion and orientation.
+Earlier [operation-cache measurements](engines-amd64.json) showed a 64% peak
+memory reduction when disabling libvips' intermediate-image cache. R2 and edge
+caches retain completed derivatives independently. This already-deployed change
+preserved all tested output hashes but does not reduce provisioned-memory billing.
 
-Rust was fastest on large x86 JPEGs, but was slower than Sharp for 640px on ARM
-(516 vs 232 ms). It currently lacks AVIF and ICC conversion. Its WebP-input
-SSIM was approximately 0.005 below the existing renderer reference. It is an
-experimental candidate, not a production-compatible replacement. Color-profile,
-CMYK, malformed-input and cancellation qualification remain necessary for any
-new native adapter, including the C++ prototype.
+The initial native prototype omitted an explicit output profile. Its apparently
+large full-size advantage disappeared after correcting color handling. Use the
+[color-corrected results](engines-color-amd64.json), not the preliminary native
+numbers, to evaluate it. P3/CMYK resized outputs still differ from Sharp's old
+pipeline; see [qualification](native-compatibility-local.json).
 
-The C++ prototype now explicitly converts to sRGB using perceptual intent.
-P3/CMYK outputs match Sharp without resizing, but resizing before conversion
-still differs from Sharp's conversion-before-resize path (decoded-output SSIM
-0.979 and 0.962 in the tested thumbnails). All eight orientation cases, grayscale,
-transparency, WebP and AVIF matched in that local HTTP check. See
-[color qualification](native-compatibility-local.json). Do not describe these
-results as complete color equivalence.
+Rust was fast on large x86 JPEGs but its prototype lacks AVIF and ICC conversion,
+and was slower for thumbnails on ARM. Its WebP-input SSIM was approximately
+0.005 below the old renderer reference. It is not a qualified replacement.
+The existing Sharp lossless resize is the SSIM reference, which favors that
+resampling behavior and does not establish perceptual quality equivalence.
 
-Quality checks use full-resolution SSIM, output dimensions/hashes, EXIF rotation
-and transparent images composited on white and black. The reference is the
-existing Sharp lossless resize; that favors its resampling behavior and does
-not establish perceptual equivalence across a representative image corpus.
+## Cloudflare engine validation
+
+[Raw interleaved results](cloudflare-engines.json) contain 27 sequential requests
+on one fixed-source, 1 CPU / 3 GiB lab instance, three per engine/width. Every
+response carried the expected `late-icc-v2` build marker. Earlier attempts from
+an old instance returned `late-icc-v1` and were excluded; creating a fresh lab
+instance resolved the discrepancy. Successful build/control-plane status alone
+had not proved the response was from the expected renderer.
+
+| Engine | 640 transform | 1920 transform | 3840 transform |
+| --- | ---: | ---: | ---: |
+| Original Sharp, cache disabled | 470 ms | 1,304 ms | 1,620 ms |
+| Optimized Sharp, cache disabled | 328 ms | 835 ms | 1,711 ms |
+| C++ libvips subprocess | 470 ms | 761 ms | 2,064 ms |
+
+These are `sharp` Server-Timing medians (the label also covers the native
+adapter), not complete delivery times. Native includes subprocess/file overhead.
+Optimized Sharp preserved the baseline output hashes at all three widths.
+The measured 30%/36% reductions on thumbnails/mid-size images support adopting
+the existing-library optimization. Full-size output showed no benefit and a
+small regression in this sample. Native was another 9% faster at 1920 but slower
+at full size and produced different thumbnail bytes. This does not justify a
+service rewrite on current evidence. Three samples, one fixture and one region
+are not p95 or a universal ranking.
+
+Origin-body transfer was bimodal (~250/~670 ms) and remains an important part of
+miss latency. The first lab request may include boot; do not use it as a warm
+end-to-end comparison. The lab has no R2/derivative cache and cannot stand in for
+the production gateway's cache-hit path.
 
 ## The options
 
@@ -67,8 +98,8 @@ Only candidates explicitly marked measured have been benchmarked here.
 
 | Option | Assessment for imgt | Status / decision |
 | --- | --- | --- |
-| [Sharp](https://sharp.pixelplumbing.com/performance/) + libvips | Mature format/color support; existing tested HTTP admission and cancellation. Tune cache, load/resize pipeline and encoder settings before replacing it. | Measured; retain as correctness baseline and ship cache improvement. |
-| Direct libvips in C/C++ | Same codecs without adopting another image server. Its thumbnail pipeline gives a substantial measured improvement. A small adapter can preserve imgt's gateway, R2 and queue. | Measured prototype; strongest low-dependency replacement candidate. |
+| [Sharp](https://sharp.pixelplumbing.com/performance/) + libvips | Mature format/color support; existing tested HTTP admission and cancellation. Tune cache, load/resize pipeline and encoder settings before replacing it. | Measured; preferred implementation with cache disabled and late ICC conversion. |
+| Direct libvips in C/C++ | Same codecs without adopting another image server. Its thumbnail pipeline exposed the operation-order improvement now available in Sharp. A small adapter can preserve imgt's gateway, R2 and queue. | Measured; late-ICC Sharp matches its qualified speed without a new service. |
 | [Go govips](https://github.com/davidbyttow/govips) / [bimg](https://github.com/h2non/bimg) | Bindings to libvips, not independent image engines. Can access the same thumbnail path and offer a convenient HTTP implementation. Adds Go/cgo and still distributes native libraries. | Reviewed; no evidence that rewriting the wrapper alone beats direct libvips. |
 | [Rust image](https://github.com/image-rs/image) + [fast_image_resize](https://github.com/Cykooz/fast_image_resize) + [libwebp binding](https://github.com/jaredforth/webp) | Independent SIMD resizing with promising x86 throughput. Must assemble color management, codecs and bounded cancellation correctly. libwebp remains a C dependency. | Measured prototype; faster large-image candidate, incomplete compatibility. |
 | [imgproxy](https://github.com/imgproxy/imgproxy) / [imagor](https://github.com/cshum/imagor) | Complete competing servers around libvips. Their APIs, origin fetching, caching and queueing duplicate parts of imgt. Upstream ownership is a maintenance preference, not a speed measurement. | imgproxy screened earlier; keep as external reference, do not adopt as imgt's core. |
@@ -140,9 +171,21 @@ explicitly says a South America hint falls back to Eastern North America and
 existing objects do not relocate. Container region availability alone does not
 remove that DO hop for a client in Brazil.
 
-Production qualification order: cache/overlap improvements, then a native
-libvips adapter if its complete HTTP/cloud performance
-still wins. Retain source validation, pixel/byte limits, color/orientation/alpha,
+Production qualification order: cache/overlap improvements, then the optimized
+Sharp pipeline after complete HTTP/cloud validation. Retain source validation, pixel/byte limits, color/orientation/alpha,
 absolute deadlines, queued cancellation and deduplication. An encoder change
 requires a new derivative namespace. Do not silently replace unsupported input
 formats or call an incomplete Rust prototype production-ready.
+
+
+Cloudflare's [custom instance constraints](https://developers.cloudflare.com/containers/platform/limits/)
+require at least 3 GiB memory per vCPU and at least one vCPU. The current 1 CPU /
+3 GiB configuration already uses that memory floor. Choosing a smaller native
+runtime does not unlock a 1 CPU / 512 MiB deployment on this platform.
+
+The Worker and container share a renderer version. During an incompatible
+rolling update, a successful response from an old container is discarded and a
+retryable 503 returned, rather than poisoning the new cache namespace. Cache
+hits remain independent of container startup. The next request can succeed once
+the new container is active; a successful Workers Build alone is insufficient
+proof that rollout has finished.

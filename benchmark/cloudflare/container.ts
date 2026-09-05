@@ -3,9 +3,9 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import sharp from "sharp";
-import { createTransformServer } from "./app.ts";
-import { encodeImage } from "./transform.ts";
-import { encodeOptimized } from "./optimized.ts";
+import { createTransformServer } from "../../container/app.ts";
+import { encodeImage } from "../engines/baseline.ts";
+import { encodeImage as encodeOptimized } from "../../container/transform.ts";
 
 sharp.cache(false);
 sharp.concurrency(1);

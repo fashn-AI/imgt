@@ -1,3 +1,4 @@
+import { RENDERER_VERSION } from "../container/renderer";
 import { Container, getContainer } from "@cloudflare/containers";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { parseAllowedHosts } from "./settings";
@@ -29,6 +30,7 @@ export class ImgtImageTransformer extends Container<Env> {
     WEBP_EFFORT: String(config.transforms.webpEffort),
   };
   readonly #coordinator = new TransformCoordinator({
+    rendererVersion: RENDERER_VERSION,
     allowedHosts: parseAllowedHosts(this.env.ALLOWED_HOSTS),
     store: new DerivativeStore(this.env.DERIVATIVES),
     waitUntil: (promise) => this.ctx.waitUntil(promise),

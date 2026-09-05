@@ -248,3 +248,27 @@ test("coordinator rejects mismatched output keys before storage or origin access
   }));
   assert.equal(response.status, 400); assert.equal(h.downloads, 0); assert.equal(h.bucket.reads, 0);
 });
+
+
+test("rollout rejects old renderer bytes without caching and recovers on the new renderer", async () => {
+  let current = false;
+  let cancelled = false;
+  const h = createHarness({ rendererVersion: "v3", transform: async (body) => {
+    await new Response(body).arrayBuffer();
+    if (!current) return new Response(new ReadableStream({ cancel() { cancelled = true; } }));
+    return new Response("new renderer", { headers: { "x-imgt-renderer": "v3" } });
+  } });
+  const rejected = await h.gateway(imageRequest());
+  assert.equal(rejected.status, 503);
+  assert.equal(rejected.headers.get("retry-after"), "5");
+  assert.equal(rejected.headers.get("cache-control"), "no-store");
+  assert.equal(cancelled, true);
+  await h.drain();
+  assert.equal(h.bucket.objects.size, 0);
+  current = true;
+  const accepted = await h.gateway(imageRequest());
+  assert.equal(accepted.status, 200);
+  assert.equal(await accepted.text(), "new renderer");
+  await h.drain();
+  assert.equal(h.bucket.objects.size, 1);
+});

@@ -35,7 +35,7 @@ export function imageRequest(suffix = "", headers?: HeadersInit): Request {
   return new Request(`https://img.example/image?url=${encodeURIComponent(`https://images.unsplash.com/photo.jpg${suffix}`)}&w=640`, { headers });
 }
 
-export function createHarness(options: { allowedHosts?: readonly string[]; sourceFetch?: SourceFetch; transform?: Transform; prepare?: (signal: AbortSignal) => Promise<void>; timeoutMs?: number } = {}) {
+export function createHarness(options: { rendererVersion?: string; allowedHosts?: readonly string[]; sourceFetch?: SourceFetch; transform?: Transform; prepare?: (signal: AbortSignal) => Promise<void>; timeoutMs?: number } = {}) {
   const bucket = new MemoryBucket();
   const store = new DerivativeStore(bucket);
   const background: Promise<void>[] = [];
@@ -47,6 +47,7 @@ export function createHarness(options: { allowedHosts?: readonly string[]; sourc
     allowedHosts,
     store, waitUntil, timeoutMs: options.timeoutMs,
     prepare: options.prepare,
+    rendererVersion: options.rendererVersion,
     sourceFetch: async (url, init) => {
       downloads += 1;
       return options.sourceFetch ? options.sourceFetch(url, init) : new Response("source", { headers: { "content-type": "image/jpeg" } });

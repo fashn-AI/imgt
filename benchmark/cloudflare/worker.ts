@@ -2,6 +2,8 @@
 // This Worker has no R2, user credentials or arbitrary-source endpoint.
 import { Container, getContainer } from "@cloudflare/containers";
 interface Env { LIMITER: RateLimit; LAB: DurableObjectNamespace<EngineLab> }
+// Enable only for a bounded benchmark run, then deploy with this disabled.
+const BENCHMARK_ENABLED = false;
 const engines = ["sharp", "native", "native-e4", "sharp-e4", "sharp-late-icc"];
 export class EngineLab extends Container<Env> {
   defaultPort = 8080;
@@ -17,6 +19,7 @@ export default {
     if (request.method !== "GET") return new Response("not found",{status:404});
     if(url.pathname === "/health") return Response.json({ok:true,engines});
     if(url.pathname !== "/image") return new Response("not found",{status:404});
+    if (!BENCHMARK_ENABLED) return new Response("benchmark disabled", { status: 410, headers: { "cache-control": "no-store" } });
     if(!(await env.LIMITER.limit({key:request.headers.get("cf-connecting-ip")??"local"})).success)
       return new Response("rate limited",{status:429,headers:{"retry-after":"60"}});
     const width=Number(url.searchParams.get("w"));

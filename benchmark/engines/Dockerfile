@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libjemalloc2 &&
     ln -s "$(find /usr/lib -name libjemalloc.so.2 -print -quit)" /usr/local/lib/libjemalloc.so.2 && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build-native /app/native /app/native
-COPY benchmark/engines/sharp.mjs /app/sharp.mjs
-COPY benchmark/engines/optimized.ts /app/optimized.ts
+COPY container/*.ts /app/container/
+COPY benchmark/engines/sharp.mjs /app/benchmark/engines/sharp.mjs
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2 VIPS_CONCURRENCY=1 UV_THREADPOOL_SIZE=2
-CMD ["node", "/app/sharp.mjs"]
+CMD ["node", "/app/benchmark/engines/sharp.mjs"]

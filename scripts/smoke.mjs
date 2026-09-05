@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
+import { RENDERER_VERSION } from '../container/renderer.ts';
 
 const [base, suppliedSource] = process.argv.slice(2).filter(arg => !arg.startsWith('--'));
 if (!base) {
@@ -25,6 +26,7 @@ try {
   assert.equal(JSON.parse(health.body).ok, true);
   const first = await request(imageUrl);
   assert.equal(first.response.status, 200, `Image: ${first.body.toString().slice(0, 200)}`);
+  assert.equal(first.response.headers.get("x-imgt-renderer"), RENDERER_VERSION, "Expected current renderer version");
   const metadata = await sharp(first.body).metadata();
   assert.equal(metadata.format, 'webp');
   assert.ok(metadata.width > 0 && metadata.width <= 640, 'Output must fit the requested width');

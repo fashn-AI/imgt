@@ -19,10 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends libjemalloc2 &&
     ln -s "$(find /usr/lib -name libjemalloc.so.2 -print -quit)" /usr/local/lib/libjemalloc.so.2 && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build-native /app/native /app/native
-COPY container/*.ts ./
-COPY benchmark/cloudflare/container.ts ./lab.ts
-COPY benchmark/engines/optimized.ts ./optimized.ts
+COPY container/*.ts /app/container/
+COPY benchmark/cloudflare/container.ts /app/benchmark/cloudflare/container.ts
+COPY benchmark/engines/baseline.ts /app/benchmark/engines/baseline.ts
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2 VIPS_CONCURRENCY=1 UV_THREADPOOL_SIZE=2
 USER node
 EXPOSE 8080
-CMD ["node", "lab.ts"]
+CMD ["node", "/app/benchmark/cloudflare/container.ts"]

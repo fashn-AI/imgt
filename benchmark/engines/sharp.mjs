@@ -2,7 +2,7 @@
 import { createInterface } from 'node:readline';
 import { readFile, writeFile } from 'node:fs/promises';
 import sharp from 'sharp';
-import { encodeOptimized } from './optimized.ts';
+import { encodeImage as encodeOptimized } from '../../container/transform.ts';
 sharp.concurrency(Number(process.env.VIPS_CONCURRENCY ?? 1));
 sharp.cache(process.env.SHARP_CACHE === '0' ? false : { memory: 64, files: 0, items: 100 });
 console.log(JSON.stringify({ ready: true, versions: sharp.versions }));

@@ -24,6 +24,7 @@ interface CoordinatorDependencies {
   allowedHosts: readonly string[];
   store: DerivativeStore;
   transform: Transform;
+  rendererVersion?: string;
   prepare?: (signal: AbortSignal) => Promise<void>;
   sourceFetch?: SourceFetch;
   waitUntil: (promise: Promise<void>) => void;
@@ -108,6 +109,12 @@ export class TransformCoordinator {
       const containerStarted = performance.now();
       const response = await this.deps.transform(source.body, job, controller.signal, deadline);
       if (!response.ok) throw new ImageError((await response.text()) || "image transformation failed", response.status, response.headers.get("retry-after") ?? undefined);
+      // Worker code can activate before the container finishes rolling out.
+      // Never persist old renderer bytes under the new derivative namespace.
+      if (this.deps.rendererVersion && response.headers.get("x-imgt-renderer") !== this.deps.rendererVersion) {
+        await response.body?.cancel();
+        throw new ImageError("image renderer is updating", 503, "5");
+      }
       const body = await response.arrayBuffer();
       if (controller.signal.aborted) throw new ImageError("image transformation timed out", 504);
       const containerMs = performance.now() - containerStarted;

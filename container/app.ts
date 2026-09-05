@@ -1,3 +1,4 @@
+import { RENDERER_VERSION } from "./renderer.ts";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { InputError, readBody } from "./body.ts";
 import { TransformScheduler } from "./scheduler.ts";
@@ -89,6 +90,7 @@ export function createTransformServer(settings: ServerOptions, encode: typeof en
       controller.signal.throwIfAborted();
       response.writeHead(200, {
         "content-type": "image/webp", "content-length": result.data.length,
+        "x-imgt-renderer": RENDERER_VERSION,
         "server-timing": `source_body;dur=${inputMs.toFixed(1)}, queue;dur=${result.queueMs.toFixed(1)}, sharp;dur=${result.sharpMs.toFixed(1)}`,
       });
       response.end(result.data);

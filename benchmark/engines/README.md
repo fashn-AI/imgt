@@ -52,3 +52,16 @@ drop-in production encoder.
 Overrides: `FIXTURES`, `ENGINE_OUTPUT_DIR`, `ENGINE_REPORT`, `QUALITY_REPORT`,
 `ENGINE_SAMPLES`, and comma-separated `ENGINE_PROFILE` names. Fixture generation
 accepts an output-directory argument. No source images are committed to Git.
+
+`sharp-late-icc` runs the production `container/transform.ts` with the operation
+cache disabled. `baseline.ts` preserves the pre-optimization path for color
+regression tests and the HTTP lab; changing production does not change that
+reference. Both paths include color conversion.
+
+The optional isolated Cloudflare experiment uses `benchmark/cloudflare/wrangler.jsonc`
+and a separate GitHub-integrated Worker. It has one 1-CPU container, only a fixed
+public source, no R2 and no managed Images binding. All engines share port 8080;
+requests run sequentially with rotating order. Run `node benchmark/cloudflare/run.mjs`
+only against an enabled lab whose build marker matches the script. A mismatched
+marker stops the run; never label responses from an old image as a new engine.
+The 27-request run fits the 30/minute limiter when no other probes overlap it.

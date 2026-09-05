@@ -1,4 +1,4 @@
-// Run against the local two-port Cloudflare benchmark container.
+// Run against the local single-port Cloudflare benchmark container.
 import fs from 'node:fs/promises';
 import sharp from 'sharp';
 import assert from 'node:assert/strict';
@@ -19,8 +19,8 @@ for (const { name } of manifest.files.filter(x => /\.(webp|avif|png)$/.test(x.na
 const rows = [];
 for (const [name, input] of Object.entries(fixtures)) {
   const results = [];
-  for (const port of [18080, 18081]) {
-    const response = await fetch(`http://127.0.0.1:${port}/transform?w=384&q=77`, {
+  for (const engine of ["sharp", "native"]) {
+    const response = await fetch(`http://127.0.0.1:18080/transform?w=384&q=77&engine=${engine}`, {
       method: 'POST', body: input, headers: { 'x-imgt-deadline': String(Date.now() + 20000) }, signal: AbortSignal.timeout(21000),
     });
     const body = Buffer.from(await response.arrayBuffer());

@@ -1,3 +1,4 @@
+import { RENDERER_VERSION } from "../container/renderer";
 import { cacheControl } from "./cache";
 
 export class ImageError extends Error {
@@ -33,6 +34,7 @@ export function imageResponse(
     "cache-control": cacheControl(maxAge),
     etag,
     "x-imgt-cache": cacheStatus,
+    "x-imgt-renderer": RENDERER_VERSION,
   });
   if (serverTiming) headers.set("server-timing", serverTiming);
   return new Response(body, { headers });

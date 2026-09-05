@@ -146,3 +146,10 @@ with a four-hour minimum and a bounded 24-hour stale window.
 - [Go, Rust, and native alternatives](benchmark/ALTERNATIVES.md)
 - [Contributing](CONTRIBUTING.md)
 - [MIT license](LICENSE)
+
+
+Engine research and measured tradeoffs are documented in
+[the engine decision](benchmark/ENGINE_DECISION.md). imgt uses self-hosted
+Sharp/libvips; it does not require Cloudflare Images. Renderer changes version
+both R2 and edge cache keys. During an incompatible container rollout, fresh
+misses can briefly return a retryable 503 until the new renderer is ready.

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
-import { encodeImage } from "../container/transform";
-import { encodeOptimized } from "../benchmark/engines/optimized";
+import { encodeImage } from "../benchmark/engines/baseline";
+import { encodeImage as encodeOptimized } from "../container/transform";
 
 const settings = { width: 48, quality: 77, effort: 2 as const };
 async function compare(input: Buffer, width = settings.width) {

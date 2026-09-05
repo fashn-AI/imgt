@@ -12,9 +12,9 @@ await mkdir(output,{recursive:true});
 const manifest=JSON.parse(await readFile(join(input,'manifest.json'),'utf8'));
 const count=Number(process.env.ENGINE_SAMPLES ?? 3);
 const profiles=[
- {name:'sharp-cache64',image:'imgt-engines:local',command:['node','/app/sharp.mjs'],env:[]},
- {name:'sharp-cache0',image:'imgt-engines:local',command:['node','/app/sharp.mjs'],env:['SHARP_CACHE=0']},
- {name:'sharp-late-icc',image:'imgt-engines:local',command:['node','/app/sharp.mjs'],env:['SHARP_CACHE=0','SHARP_LATE_ICC=1']},
+ {name:'sharp-cache64',image:'imgt-engines:local',command:['node','/app/benchmark/engines/sharp.mjs'],env:[]},
+ {name:'sharp-cache0',image:'imgt-engines:local',command:['node','/app/benchmark/engines/sharp.mjs'],env:['SHARP_CACHE=0']},
+ {name:'sharp-late-icc',image:'imgt-engines:local',command:['node','/app/benchmark/engines/sharp.mjs'],env:['SHARP_CACHE=0','SHARP_LATE_ICC=1']},
  {name:'native-vips',image:'imgt-engines:local',command:['/app/native'],env:[]},
  {name:'rust-fir',image:'imgt-rust:local',command:[],env:[]},
 ].filter(p=>!process.env.ENGINE_PROFILE||process.env.ENGINE_PROFILE.split(',').includes(p.name));
