@@ -3,6 +3,11 @@
   "name": "imgt-engine-lab",
   "main": "worker.ts",
   "compatibility_date": "2026-09-01",
+  "cache": { "enabled": true },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "ProbeCache": { "type": "worker", "cache": { "enabled": true } }
+  },
   "containers": [{
     "name": "imgt-engine-lab",
     "class_name": "EngineLab",
@@ -17,7 +22,7 @@
   "ratelimits": [{
     "name": "LIMITER",
     "namespace_id": "2026090502",
-    "simple": { "limit": 30, "period": 60 }
+    "simple": { "limit": 120, "period": 60 }
   }],
   "observability": { "enabled": true }
 }

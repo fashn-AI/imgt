@@ -1,6 +1,8 @@
 // Isolated container experiment. Only fixed public fixtures are accepted.
 // This Worker has no R2, user credentials or arbitrary-source endpoint.
 import { Container, getContainer } from "@cloudflare/containers";
+import { cacheProbe } from "./cache-probe";
+export { ProbeCache } from "./cache-probe";
 interface Env { LIMITER: RateLimit; LAB: DurableObjectNamespace<EngineLab> }
 // Enable only for a bounded benchmark run, then deploy with this disabled.
 const BENCHMARK_ENABLED = false;
@@ -14,10 +16,16 @@ export class EngineLab extends Container<Env> {
   }
 }
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (request.method !== "GET") return new Response("not found",{status:404});
     if(url.pathname === "/health") return Response.json({ok:true,engines});
+    if (url.pathname === "/cache-probe") {
+      if (!(await env.LIMITER.limit({ key: request.headers.get("cf-connecting-ip") ?? "local" })).success) {
+        return new Response("rate limited", { status: 429 });
+      }
+      return cacheProbe(request, ctx);
+    }
     if(url.pathname !== "/image") return new Response("not found",{status:404});
     if (!BENCHMARK_ENABLED) return new Response("benchmark disabled", { status: 410, headers: { "cache-control": "no-store" } });
     if(!(await env.LIMITER.limit({key:request.headers.get("cf-connecting-ip")??"local"})).success)
