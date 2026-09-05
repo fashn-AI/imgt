@@ -189,3 +189,12 @@ retryable 503 returned, rather than poisoning the new cache namespace. Cache
 hits remain independent of container startup. The next request can succeed once
 the new container is active; a successful Workers Build alone is insufficient
 proof that rollout has finished.
+
+
+Production qualification also found existing shard instances still responding
+with the old renderer after the control plane showed 100% rollout. Shard names
+now include the renderer version, as the lab's successful fresh-instance check
+demonstrated. This keeps the same two-shard routing/deduplication policy while
+allocating fresh instances for an incompatible renderer. Old instances can finish
+and sleep; the four-instance cap leaves room for the two generations during
+rollout. The response handshake remains the authority for cache safety.

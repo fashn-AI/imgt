@@ -1,3 +1,5 @@
+import { RENDERER_VERSION } from "../container/renderer";
+
 export interface ResizeJob {
   outputKey: string;
   sourceUrl: string;
@@ -54,5 +56,6 @@ export function containerNameForKey(key: string, shardCount: number): string {
     hash ^= key.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
   }
-  return `instance-${(hash >>> 0) % shardCount}`;
+  // A fresh renderer gets fresh instances; old instances can finish and sleep.
+  return `instance-${RENDERER_VERSION}-${(hash >>> 0) % shardCount}`;
 }

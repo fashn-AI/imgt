@@ -6,12 +6,12 @@ import { containerNameForKey, SingleFlight } from "../src/jobs";
 test("routes a derivative key to a stable container shard", () => {
   const key = "derivatives/v1/abcdef.webp";
   assert.equal(containerNameForKey(key, 4), containerNameForKey(key, 4));
-  assert.match(containerNameForKey(key, 4), /^instance-[0-3]$/);
+  assert.match(containerNameForKey(key, 4), /^instance-v3-[0-3]$/);
 
   const shards = new Set(
     Array.from({ length: 64 }, (_, index) => containerNameForKey(`derivative-${index}`, 4)),
   );
-  assert.deepEqual(shards, new Set(["instance-0", "instance-1", "instance-2", "instance-3"]));
+  assert.deepEqual(shards, new Set(["instance-v3-0", "instance-v3-1", "instance-v3-2", "instance-v3-3"]));
 });
 
 test("rejects an invalid container shard count", () => {
