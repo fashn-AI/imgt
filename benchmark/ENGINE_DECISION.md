@@ -33,6 +33,8 @@ libvips' operation cache is a separate intermediate-image cache. This is the
 first production change. It does not require a derivative namespace change.
 
 Direct libvips reduced the 1920px portrait time by 46% versus uncached Sharp.
+These initial timings preceded an explicit output-profile fix discovered by
+the later P3/CMYK tests; they must be remeasured with that fix before adoption.
 All tested 1920px/full-size photo outputs were byte-identical. Some thumbnails
 differed, so this is a pipeline change, not evidence of JavaScript overhead.
 The [libvips thumbnail pipeline](https://github.com/libvips/libvips/wiki/HOWTO----Image-shrinking)
@@ -44,6 +46,14 @@ SSIM was approximately 0.005 below the existing renderer reference. It is an
 experimental candidate, not a production-compatible replacement. Color-profile,
 CMYK, malformed-input and cancellation qualification remain necessary for any
 new native adapter, including the C++ prototype.
+
+The C++ prototype now explicitly converts to sRGB using perceptual intent.
+P3/CMYK outputs match Sharp without resizing, but resizing before conversion
+still differs from Sharp's conversion-before-resize path (decoded-output SSIM
+0.979 and 0.962 in the tested thumbnails). All eight orientation cases, grayscale,
+transparency, WebP and AVIF matched in that local HTTP check. See
+[color qualification](native-compatibility-local.json). Do not describe these
+results as complete color equivalence.
 
 Quality checks use full-resolution SSIM, output dimensions/hashes, EXIF rotation
 and transparent images composited on white and black. The reference is the

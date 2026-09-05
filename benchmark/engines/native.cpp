@@ -28,7 +28,8 @@ int main(int argc, char **argv) {
       probe = vips_image_new_from_buffer(input.data(),input.size(),"","access",VIPS_ACCESS_SEQUENTIAL,"fail_on",VIPS_FAIL_ON_WARNING,nullptr);
       if (!probe || (int64_t)vips_image_get_width(probe)*vips_image_get_height(probe)>50000000) throw std::runtime_error("decode/size");
       if (vips_thumbnail_buffer(input.data(),input.size(),&thumb,std::stoi(w),
-          "height",100000,"size",VIPS_SIZE_DOWN,"fail_on",VIPS_FAIL_ON_WARNING,nullptr)) throw std::runtime_error("thumbnail");
+          "height",100000,"size",VIPS_SIZE_DOWN,"output_profile","srgb","intent",VIPS_INTENT_PERCEPTUAL,
+          "fail_on",VIPS_FAIL_ON_WARNING,nullptr)) throw std::runtime_error("thumbnail");
       if (vips_webpsave_buffer(thumb,&encoded,&length,"Q",std::stoi(q),"effort",std::stoi(e),"strip",TRUE,nullptr)) throw std::runtime_error("encode");
       const auto ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
       std::ofstream out(output,std::ios::binary); out.write((char*)encoded,length);

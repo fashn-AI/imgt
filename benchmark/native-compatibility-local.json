@@ -1,0 +1,246 @@
+{
+  "date": "2026-09-05T01:42:47.819Z",
+  "note": "Sharp vs libvips decoded-output SSIM; no equivalence threshold assumed; local ARM HTTP subprocess adapter",
+  "rows": [
+    {
+      "name": "p3",
+      "ssim": 0.9793839799230264,
+      "sharp": {
+        "bytes": 20140,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 19816,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "cmyk",
+      "ssim": 0.9617021930466745,
+      "sharp": {
+        "bytes": 19272,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 19598,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "srgb",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 19950,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 19950,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-1",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 19794,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 19794,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-2",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 19876,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 19876,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-3",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 20042,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 20042,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-4",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 19838,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 19838,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-5",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 40220,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      },
+      "native": {
+        "bytes": 40220,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-6",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 40012,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      },
+      "native": {
+        "bytes": 40012,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-7",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 39950,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      },
+      "native": {
+        "bytes": 39950,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      }
+    },
+    {
+      "name": "orientation-8",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 39972,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      },
+      "native": {
+        "bytes": 39972,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      }
+    },
+    {
+      "name": "gray",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 17174,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      },
+      "native": {
+        "bytes": 17174,
+        "width": 384,
+        "height": 256,
+        "icc": false
+      }
+    },
+    {
+      "name": "transparent.png",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 27900,
+        "width": 384,
+        "height": 288,
+        "icc": false
+      },
+      "native": {
+        "bytes": 27900,
+        "width": 384,
+        "height": 288,
+        "icc": false
+      }
+    },
+    {
+      "name": "photo.webp",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 24464,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      },
+      "native": {
+        "bytes": 24464,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      }
+    },
+    {
+      "name": "photo.avif",
+      "ssim": 1,
+      "sharp": {
+        "bytes": 24708,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      },
+      "native": {
+        "bytes": 24708,
+        "width": 384,
+        "height": 576,
+        "icc": false
+      }
+    }
+  ]
+}

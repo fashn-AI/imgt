@@ -41,6 +41,14 @@ hardware and uploads JSON artifacts. It does not deploy any Worker or container
 to Cloudflare. CPU model and architecture are recorded; GitHub CPUs are not a
 substitute for final measurements on Cloudflare.
 
+Color qualification subsequently found that the initial native prototype needed
+an explicit sRGB output profile. `native.cpp` now sets that profile and perceptual
+intent. Historical result files preceding that fix are exploratory, not a
+qualified color-managed renderer comparison. P3/CMYK transforms match Sharp at
+the original dimensions but resizing before ICC conversion still produces
+different pixels; `qualify-http.mjs` records that distinction. This is not yet a
+drop-in production encoder.
+
 Overrides: `FIXTURES`, `ENGINE_OUTPUT_DIR`, `ENGINE_REPORT`, `QUALITY_REPORT`,
 `ENGINE_SAMPLES`, and comma-separated `ENGINE_PROFILE` names. Fixture generation
 accepts an output-directory argument. No source images are committed to Git.
