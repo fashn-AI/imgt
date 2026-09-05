@@ -256,7 +256,7 @@ A separate [synthetic cache probe](cache-paths-br.json) compared local Cache API
 and tiered Workers Cache without origin, R2 or container work: ten samples per
 path, 64 KiB responses, GIG. First-use medians were 35.9 ms local versus 81.7 ms
 tiered, with measured cache lookup medians of 5 versus 44 ms. Settled hit medians
-were 31.9 versus 29.4 ms. The tiered path had one 343.3 ms settled-hit outlier.
+were 31.9 versus 29.4 ms. The tiered path had one 343.3 ms first-use outlier.
 Retain Workers Cache: its [documented upper-tier sharing and request collapse](https://developers.cloudflare.com/workers/cache/)
 remain useful for cross-region traffic despite this measured first-use cost.
 The [local Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
