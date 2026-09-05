@@ -1,0 +1,25 @@
+name: Check
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Build production container
+        run: docker build --platform linux/amd64 -t imgt-ci container
+      - name: Check native TypeScript startup
+        run: |
+          docker run -d --name imgt-ci -p 127.0.0.1:8080:8080 imgt-ci
+          trap 'docker logs imgt-ci; docker rm -f imgt-ci' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/health

@@ -1,260 +1,147 @@
 # imgt
 
-Lean, self-hosted image optimization on Cloudflare. There is no Cloudflare
-Images path or fallback.
+Self-hosted image optimization on Cloudflare. Serve resized WebP images from
+your own account using Sharp, Workers Cache, and a private R2 bucket.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/relferreira/imgt)
+
+<!-- dash-content-start -->
+Give imgt a public image URL and a width. It transforms the image once, stores
+the derivative in R2, and serves subsequent requests through Workers Cache.
+Works with Next.js custom loaders or any client that can request an image URL.
+Original images are never stored. No Cloudflare Images subscription is needed.
+<!-- dash-content-end -->
+
+## Deploy to your Cloudflare account
+
+You need a GitHub account, Cloudflare Workers Paid, and R2 enabled. Workers Paid
+starts at $5/month; container, storage, and request usage can add charges.
+See [costs and configuration](docs/deployment.md#costs).
+
+1. Click **Deploy to Cloudflare** above. Select your account and create your own
+   repository. Cloudflare provisions the R2 bucket and Durable Object, then
+   builds the Worker and Docker image through Workers Builds.
+2. Set `ALLOWED_HOSTS` to the domains that host your source images. The default
+   `images.unsplash.com` enables the sample image. Configure it during setup if
+   offered, or edit `vars.ALLOWED_HOSTS` in your new repository's
+   `wrangler.jsonc` and push to `main`:
+
+   ```json
+   "vars": {
+     "ALLOWED_HOSTS": "cdn.example.com,*.images.example.com"
+   }
+   ```
+
+3. Open the deployed Worker URL. The homepage tests a real image, the edge
+   cache, and ETags, and gives you a loader containing your own endpoint URL.
+   Allow several minutes for first-time container provisioning.
+4. Add an R2 lifecycle rule to expire derivatives after 30 days; see
+   [storage cleanup](docs/deployment.md#storage-cleanup).
+
+Future pushes to your production branch deploy automatically through the
+GitHub integration. Docker is only needed for local development or CLI deploys.
+Each deploy runs typecheck and tests before uploading the Worker.
+
+For multiple deployments in one account, choose distinct Worker, container,
+bucket, and rate-limit namespace names. See [deployment names](docs/deployment.md#deployment-names).
+
+## Use it
 
 ```text
-GET /image?url=https://cdn.example.com/photo.jpg&w=1920&q=77
-             │
-             ├─ normalized, tiered Workers Cache
-             ├─ persistent R2 derivative
-             └─ fetch remote original → deterministic container shard
+https://imgt.YOUR-SUBDOMAIN.workers.dev/image?url=https%3A%2F%2Fcdn.example.com%2Fphoto.jpg&w=640&q=77
 ```
 
-Only generated derivatives and their cache lifetime are stored in the private
-R2 bucket:
+| Parameter | Meaning |
+| --- | --- |
+| `url` | Absolute HTTPS source URL on an allowed host. URL-encode it. |
+| `w` | Width: 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840. |
+| `q` | Quality: 60, 75, 77, or 85. Defaults to 77. |
 
-```text
-derivatives/v2/ab…ef.webp
-```
+Output is WebP, with orientation corrected and aspect ratio preserved. Small
+sources are not enlarged. Supported inputs: JPEG, PNG, WebP, and AVIF, up to
+25 MiB and 50 megapixels. Animated images are not preserved as animations.
 
-Sources must be absolute HTTPS URLs on a host configured in
-[`imgt.config.ts`](imgt.config.ts). Redirect destinations are checked against
-the same allowlist. Originals are streamed to the transformer and are never
-written to R2.
+An exact allowed host matches only itself. `*.example.com` matches subdomains,
+not `example.com`. An empty `ALLOWED_HOSTS` denies all source images. Do not
+include schemes, paths, ports, IP addresses, or a bare `*`.
 
-The output is always WebP, widths are restricted to common Next.js sizes, and
-quality is restricted to `60`, `75`, `77`, or `85`. These limits bound cache
-cardinality and keep the public API small.
+## Next.js
 
-## Caching
+Copy the loader from your deployed homepage, or create `image-loader.js`:
 
-The public entrypoint validates and normalizes the transform parameters, then
-calls a cache-enabled image entrypoint. Cloudflare's Workers Cache sits in
-front of that entrypoint, so a CDN hit skips the R2 and transformation path.
-The gateway remains uncached because it canonicalizes equivalent public URLs
-to one cache key.
+```js
+'use client';
 
-The source image's `s-maxage` or `max-age` controls the derivative lifetime,
-with a configurable four-hour minimum; an upstream `Age` is subtracted. Sources
-marked `private` or `no-store` are rejected with `403`: this is a public image
-service. Sources marked `no-cache` are transformed for the request with
-`Cache-Control: no-store` and are not retained in R2. Fresh derivatives are
-served from Workers Cache or R2 without starting a container.
-
-When an R2 derivative expires, imgt can serve it for at most another 24 hours
-(`cache.maxStaleSeconds`). Each stale response has a cache lifetime of up to
-60 seconds, capped by the remaining stale deadline, and starts a background
-refresh. Requests for the same derivative share one refresh. Temporary failures
-preserve the old derivative only until its stale deadline. Beyond that deadline,
-requests wait for a new transform and return its error if it fails.
-
-Origin `403`, `404`, or `410` responses, and a transition to `private` or
-`no-store`, delete the R2 derivative. A transition to `no-cache` also removes
-retained data. A stale response already sent or cached at an edge may remain
-visible for the rest of its short lifetime; deletion is not an instant global
-purge. R2 lifecycle cleanup does not determine the application's stale limit.
-
-ETags are SHA-256 hashes of the generated bytes and are persisted alongside
-absolute freshness and stale deadlines. The public gateway returns `304` for
-matching `If-None-Match` conditions after fetching the shared representation,
-so client-specific responses never populate the inner image cache.
-
-R2 remains private and acts as the persistent global backing store. A CDN miss
-reads an existing derivative from R2 and repopulates Workers Cache; only an R2
-miss starts a transform. Workers Cache uses tiered caching and can return hits
-without invoking the image entrypoint. Cache entries are shared across Worker
-versions because the canonical key includes the derivative version and encoder
-effort.
-
-Use the response headers to see which layer served a request:
-`Cf-Cache-Status: HIT` is a Workers Cache/CDN hit, while `x-imgt-cache`
-reports `EDGE`, `R2`, `MISS`, or `STALE` for the imgt path.
-
-## Resize coordination
-
-The derivative key is hashed to one of four stable Container Durable Objects.
-Each object keeps an in-memory single-flight map, so concurrent misses for the
-same derivative share one resize. The transformed response starts immediately;
-its single-flight entry remains registered until the one background R2 write
-finishes. Unrelated derivatives remain parallel across shards.
-
-Within each Linux container, up to four admitted inputs upload independently,
-with a 25 MiB limit each. Complete inputs enter a queue with one active Sharp
-resize. A stalled upload therefore does not block ready images. The admission
-limit includes uploading, queued, and processing jobs; excess misses receive
-`429` with `Retry-After: 1`. Cache hits never enter a container.
-
-The coordinator passes a 20-second deadline covering source fetch, container
-startup, upload, queueing, and encoding. The container caps incoming deadlines
-at its own limit and returns `504` when the deadline expires. Expired or
-disconnected queued jobs are removed before encoding. Sharp also receives a
-native processing timeout rounded up to whole seconds. Active native work
-retains its slot until it settles, even if the HTTP caller disconnects or times
-out, preventing canceled jobs from overlapping new work.
-
-The fixed shard count is configured in `imgt.config.ts`. It must not exceed
-`max_instances` in `wrangler.jsonc`; keep it stable between deployments to
-preserve deterministic routing. The queue limit and other safety limits are
-internal defaults rather than deployment configuration. See
-[`benchmark/RESULTS.md`](benchmark/RESULTS.md) for the container comparison and
-one-vCPU concurrency measurements.
-
-## Setup
-
-First, configure the source hosts that this deployment may fetch:
-
-```ts
-// imgt.config.ts
-sources: {
-  allowedHosts: [
-    "cdn.example.com",
-    "*.images.example.com",
-  ],
-},
-transforms: {
-  // Keep the widths array from the checked-in config.
-  qualities: [60, 75, 77, 85],
-  defaultQuality: 77,
-  webpEffort: 2,
-},
-```
-
-An exact entry matches only that host. A `*.` entry matches its subdomains but
-not the parent host. Keep this list explicit so a deployment cannot be used as
-an open image proxy accidentally.
-
-`webpEffort` accepts `0` through `6`: lower values encode faster, while higher
-values spend more CPU reducing file size. The default quality-77/effort-2
-profile scored slightly higher than Vercel's quality-75 output across the test
-set, with somewhat larger files. Source size, redirect, timeout, cache, and
-queue limits use conservative internal defaults.
-
-Create the derivative buckets named in `wrangler.jsonc`:
-
-```bash
-npx wrangler r2 bucket create imgt-derivatives
-npx wrangler r2 bucket create imgt-derivatives-dev
-```
-
-Treat these buckets as bounded secondary caches rather than permanent storage.
-In each bucket's **Settings → Object Lifecycle Rules**, add an expiration rule
-for all objects (or the `derivatives/` prefix):
-
-- `imgt-derivatives`: delete objects after 30 days.
-- `imgt-derivatives-dev`: delete objects after 7 days.
-
-If an expired derivative is no longer in Workers Cache, imgt generates it again
-on the next request. R2 lifecycle rules expire objects by age, not by last
-access; tracking access in the application would also miss requests served
-directly by Workers Cache. Keep derivatives in Standard storage rather than
-Infrequent Access, which adds retrieval charges and a 30-day minimum storage
-duration. See Cloudflare's documentation for [R2 object lifecycles][r2-lifecycle]
-and [R2 pricing][r2-pricing].
-
-Then deploy:
-
-```bash
-npm run deploy
-```
-
-The default configuration includes `images.unsplash.com` so this fixed source
-can be used for a production smoke test. It is a 3840 x 5760 JPEG covered by the
-[Unsplash License](https://unsplash.com/license):
-
-```bash
-curl --get 'https://imgt.relferreira.workers.dev/image' \
-  --data-urlencode 'url=https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840' \
-  --data 'w=640' \
-  --data 'q=77' \
-  --dump-header - \
-  --output test.webp
-```
-
-Replace `images.unsplash.com` with the real source hosts before exposing your
-deployment to production traffic.
-
-Derivative identity includes the complete normalized source URL and transform
-options. Replacing an origin image at the same URL becomes visible after its
-cache lifetime and background refresh. Changing a query parameter such as
-`?v=2` creates a new derivative immediately.
-
-The checked-in `IMAGE_RATE_LIMITER` binding limits `/image` to 120 requests per
-minute per client IP, including cache hits and malformed image requests. Change
-`ratelimits[].simple` in `wrangler.jsonc` to tune it. Rejections return `429`,
-`Retry-After: 60`, and `Cache-Control: no-store`. `/health` is exempt. Keep the
-namespace ID unique within your Cloudflare account and the binding in each
-named environment if you add environments later.
-
-Cloudflare's rate limit is approximate and local to each Cloudflare location,
-not a global quota or spending cap. Clients behind the same public IP share
-this allowance. The host allowlist still matters: arbitrary query-string
-variations on an allowed source create different transformations. For stricter
-control, use zone-level protections or require signed URLs in a future change.
-See [Workers rate limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
-
-For a Next.js custom loader:
-
-```ts
 export default function imageLoader({ src, width, quality = 77 }) {
-  // src must be an absolute URL on a host allowed by imgt.config.ts.
   const query = new URLSearchParams({ url: src, w: String(width), q: String(quality) });
-  return `https://images.example.com/image?${query}`;
+  return `https://imgt.YOUR-SUBDOMAIN.workers.dev/image?${query}`;
 }
 ```
 
-Point Next.js at that file and mirror the API quality allowlist:
+Configure `next.config.js`:
 
-```ts
-const nextConfig = {
+```js
+export default {
   images: {
-    loader: "custom",
-    loaderFile: "./image-loader.ts",
+    loader: 'custom',
+    loaderFile: './image-loader.js',
     qualities: [60, 75, 77, 85],
   },
 };
 ```
 
-[r2-lifecycle]: https://developers.cloudflare.com/r2/buckets/object-lifecycles/
-[r2-pricing]: https://developers.cloudflare.com/r2/pricing/
+Use absolute source URLs with `<Image>`. The default imgt widths match the
+standard Next.js sizes; keep them aligned if you customize either application.
 
-## Development
+## Verify a deployment
+
+The homepage is the simplest check. From a checkout with dependencies installed:
 
 ```bash
-npm install
-npm run typecheck
-npm test
+npm run smoke -- https://imgt.YOUR-SUBDOMAIN.workers.dev https://cdn.example.com/photo.jpg
+```
+
+This verifies a decodable WebP response, content hash/ETag, canonical edge cache
+hit, and conditional `304`. The source must permit public caching. Add `--fresh`
+to append a unique source query parameter and exercise a cache miss; only use
+that option when the source accepts extra parameters (it can break signed URLs).
+Omitting the source uses the Unsplash sample, which must still be allowed.
+
+`/health` reports Worker availability and whether hosts are configured; it does
+not start a container or prove the entire image pipeline is ready. A completed
+build can precede container readiness. Retry the smoke test after provisioning
+or rollout finishes before diagnosing a deployment failure.
+
+## Develop locally
+
+Use Node.js 24 and a running Docker-compatible engine:
+
+```bash
+npm ci
+npm run check
 npm run dev
 ```
 
-`src/index.ts` contains the Cloudflare adapters. Application responsibilities
-are split into small modules:
+Local R2 is emulated; no separate development bucket is required. For a manual
+deploy, run `npx wrangler login`, select the intended account, then
+`npm run deploy`. Wrangler provisions the configured R2 bucket when needed.
 
-- `src/gateway.ts`: public routing, rate limiting, canonical fetches, conditions.
-- `src/service.ts`: fresh/stale/missing derivative decisions and refresh scheduling.
-- `src/store.ts` and `src/cache.ts`: R2 metadata, content validators, cache policy.
-- `src/source.ts`: origin requests, redirects, source validation.
-- `src/coordinator.ts`: admission, deduplication, transformation, persistence.
-- `container/app.ts`, `body.ts`, `scheduler.ts`, and `transform.ts`: HTTP job
-  lifecycle, bounded uploads, the ready queue, and Sharp processing.
+## Defaults and operations
 
-Tests exercise the gateway, service, coordinator, and store together with an
-in-memory bucket and controlled upstreams, plus real local HTTP uploads and
-Sharp encoding. Cancellation and overload tests inject slow encoders so failure
-paths are deterministic. These tests do not emulate Cloudflare's tiered CDN or
-container provisioning; use a deployment smoke test to verify those surfaces.
-`npx wrangler deploy --dry-run` validates the Worker bundle and builds the image
-without publishing it.
+The starter configuration uses two container shards, each with 1 vCPU and
+3 GiB RAM, and sleeps after two idle minutes. Shards start on demand. This
+reduces the maximum fleet from four containers to two and the idle timeout
+from ten minutes to two. Each container still admits four jobs and processes
+one image at a time. [Why we did not choose `basic` or `lite`](benchmark/SMALLER_CONTAINERS.md).
 
-Structured Worker logs record shard, deduplication, failures, persistence
-latency, and source/queue/encoding timings. The container `/health` additionally
-reports uploading, queued, active and in-flight counts, plus completed,
-rejected, timed-out and disconnected requests. Counters reset on restart.
-Container startup overhead is included in the container timing and is visible
-in platform traces. The benchmark decision is documented in
-[`benchmark/RESULTS.md`](benchmark/RESULTS.md).
+The public endpoint limits each client IP to approximately 120 image requests
+per minute. Source `private`/`no-store` responses are rejected; `no-cache` images
+are transformed without storage. Freshness follows the source cache headers
+with a four-hour minimum and a bounded 24-hour stale window.
 
-The `derivatives/v2` namespace intentionally starts with cold caches: v1 objects
-have incompatible validators and metadata. Old objects remain for lifecycle
-cleanup. Bump the namespace again when changing persisted cache semantics or
-encoder behavior that must not share responses across deployments.
+- [Configuration, costs, updates, and troubleshooting](docs/deployment.md)
+- [Architecture and cache semantics](docs/architecture.md)
+- [Container benchmarks](benchmark/SMALLER_CONTAINERS.md)
+- [Go, Rust, and native alternatives](benchmark/ALTERNATIVES.md)
+- [Contributing](CONTRIBUTING.md)
+- [MIT license](LICENSE)

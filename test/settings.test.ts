@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { parseAllowedHosts } from "../src/settings";
+import { handleGateway } from "../src/gateway";
+import { createHarness } from "./helpers";
+
+test("deployment hosts normalize and empty configuration denies image access", async () => {
+  assert.deepEqual(parseAllowedHosts(" CDN.EXAMPLE.COM, *.images.example.com\ncdn.example.com "), ["cdn.example.com", "*.images.example.com"]);
+  for (const value of [undefined, "", "   , "]) assert.deepEqual(parseAllowedHosts(value), []);
+  for (const value of ["*", "https://example.com", "example.com/path", "127.0.0.1", "cdn.*.example.com"]) {
+    assert.throws(() => parseAllowedHosts(value), /ALLOWED_HOSTS/);
+  }
+  const response = await handleGateway(new Request("https://img.example/image?url=https://images.unsplash.com/x.jpg&w=640"), {
+    allowedHosts: [], rateLimiter: { limit: async () => ({ success: true }) },
+    imageCache: { fetch: async () => { throw new Error("disallowed hosts must not reach even a warm cache"); } },
+  });
+  assert.equal(response.status, 400);
+});
+
+test("custom hosts reach the coordinator and redirect checks use that same configuration", async () => {
+  const h = createHarness({ allowedHosts: ["cdn.example.com"], sourceFetch: async () => new Response(null, {
+    status: 302, headers: { location: "https://images.unsplash.com/x.jpg" },
+  }) });
+  const response = await h.gateway(new Request("https://img.example/image?url=https://cdn.example.com/x.jpg&w=640"));
+  assert.equal(response.status, 502);
+  assert.equal(h.downloads, 1);
+  assert.equal(h.transforms, 0);
+  const allowed = createHarness({ allowedHosts: ["cdn.example.com"] });
+  assert.equal((await allowed.gateway(new Request("https://img.example/image?url=https://cdn.example.com/x.jpg&w=640"))).status, 200);
+  await allowed.drain();
+});
+
+test("onboarding is uncached, uses this deployment URL, and does not start transformations", async () => {
+  const h = createHarness();
+  const response = await h.gateway(new Request("https://my-images.example/"));
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.match(response.headers.get("content-security-policy")!, /frame-ancestors 'none'/);
+  assert.match(html, /my-images.example/);
+  assert.match(html, /ALLOWED_HOSTS/);
+  assert.equal(h.downloads, 0); assert.equal(h.bucket.reads, 0);
+  const health = await h.gateway(new Request("https://my-images.example/health"));
+  assert.deepEqual(await health.json(), { ok: true, configured: true });
+});

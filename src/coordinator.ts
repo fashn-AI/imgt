@@ -21,6 +21,7 @@ interface ResizeResult {
 }
 
 interface CoordinatorDependencies {
+  allowedHosts: readonly string[];
   store: DerivativeStore;
   transform: Transform;
   sourceFetch?: SourceFetch;
@@ -62,7 +63,7 @@ export class TransformCoordinator {
   private async parseJob(value: unknown): Promise<ResizeJob> {
     if (!value || typeof value !== "object") throw new Error("invalid job");
     const job = value as ResizeJob;
-    if (typeof job.sourceUrl !== "string" || normalizeSourceUrl(job.sourceUrl) !== job.sourceUrl ||
+    if (typeof job.sourceUrl !== "string" || normalizeSourceUrl(job.sourceUrl, this.deps.allowedHosts) !== job.sourceUrl ||
       !ALLOWED_WIDTHS.has(job.width) || !ALLOWED_QUALITIES.has(job.quality) ||
       job.outputKey !== await derivativeKey(DERIVATIVE_PREFIX, job)) throw new Error("invalid job");
     return job;
@@ -84,7 +85,7 @@ export class TransformCoordinator {
     let sourceBody: ReadableStream<Uint8Array> | undefined;
     try {
       const originStarted = performance.now();
-      const source = await fetchSource(job.sourceUrl, controller.signal, this.deps.sourceFetch);
+      const source = await fetchSource(job.sourceUrl, controller.signal, this.deps.allowedHosts, this.deps.sourceFetch);
       sourceBody = source.body;
       const freshUntil = source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
       const originMs = performance.now() - originStarted;

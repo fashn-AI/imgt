@@ -29,7 +29,7 @@ function hostMatches(hostname: string, pattern: string): boolean {
 
 export function normalizeSourceUrl(
   rawSource: string,
-  allowedHosts: readonly string[] = config.sources.allowedHosts,
+  allowedHosts: readonly string[],
 ): string {
   if (rawSource.length > MAX_SOURCE_URL_LENGTH) throw new ImageError("source URL is too long", 400);
 
@@ -52,7 +52,7 @@ export function normalizeSourceUrl(
 
 export function parseImageOptions(
   url: URL,
-  allowedHosts: readonly string[] = config.sources.allowedHosts,
+  allowedHosts: readonly string[],
 ): ImageOptions {
   const rawSource = url.searchParams.get("url");
   if (!rawSource) throw new ImageError("url is required", 400);

@@ -156,7 +156,7 @@ test("transformation timeout aborts work and permits a later retry", async () =>
 
 test("coordinator rejects mismatched output keys before storage or origin access", async () => {
   const h = createHarness();
-  const options = parseImageOptions(new URL(imageRequest().url));
+  const options = parseImageOptions(new URL(imageRequest().url), ["images.unsplash.com"]);
   const outputKey = await derivativeKey(DERIVATIVE_PREFIX, { ...options, width: 1920 });
   const response = await h.coordinator.fetch(new Request("http://coordinator/job", {
     method: "POST", body: JSON.stringify({ ...options, outputKey }),

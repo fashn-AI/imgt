@@ -9,9 +9,10 @@ export type SourceFetch = (url: string, init: RequestInit) => Promise<Response>;
 export async function fetchSource(
   sourceUrl: string,
   signal: AbortSignal,
+  allowedHosts: readonly string[],
   fetcher: SourceFetch = fetch,
 ): Promise<{ body: ReadableStream<Uint8Array>; maxAge: number }> {
-  let currentUrl = normalizeSourceUrl(sourceUrl);
+  let currentUrl = normalizeSourceUrl(sourceUrl, allowedHosts);
   for (let redirects = 0; redirects <= MAX_SOURCE_REDIRECTS; redirects += 1) {
     let response: Response;
     try {
@@ -28,7 +29,7 @@ export async function fetchSource(
         if (!location) throw new ImageError("source redirect has no location", 502);
         if (redirects === MAX_SOURCE_REDIRECTS) throw new ImageError("source redirected too many times", 502);
         try {
-          currentUrl = normalizeSourceUrl(new URL(location, currentUrl).toString());
+          currentUrl = normalizeSourceUrl(new URL(location, currentUrl).toString(), allowedHosts);
         } catch {
           throw new ImageError("source redirect target is not allowed", 502);
         }

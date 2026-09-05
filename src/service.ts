@@ -6,6 +6,7 @@ import { derivativeKey, parseImageOptions } from "./options";
 import { DerivativeStore } from "./store";
 
 interface ImageServiceDependencies {
+  allowedHosts: readonly string[];
   store: DerivativeStore;
   resize: (job: ResizeJob) => Promise<Response>;
   waitUntil: (promise: Promise<void>) => void;
@@ -21,7 +22,7 @@ export async function handleImage(request: Request, deps: ImageServiceDependenci
   const url = new URL(request.url);
   if (request.method !== "GET" || url.pathname !== "/image") return errorResponse("not found", 404);
   try {
-    const options = parseImageOptions(url);
+    const options = parseImageOptions(url, deps.allowedHosts);
     const outputKey = await derivativeKey(DERIVATIVE_PREFIX, options);
     const job = { outputKey, ...options };
     const stored = await deps.store.get(outputKey);

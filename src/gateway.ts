@@ -1,20 +1,23 @@
+import { homeResponse } from "./home";
 import { canonicalCacheRequest, parseImageOptions } from "./options";
 import { conditionalResponse, errorResponse, failureResponse } from "./http";
 
 const CDN_CACHE_HIT_STATUSES = new Set(["HIT", "STALE", "UPDATING", "REVALIDATED"]);
 interface GatewayDependencies {
+  allowedHosts: readonly string[];
   imageCache: { fetch(request: Request): Promise<Response> };
   rateLimiter: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
 
 export async function handleGateway(request: Request, deps: GatewayDependencies): Promise<Response> {
   const url = new URL(request.url);
-  if (request.method === "GET" && url.pathname === "/health") return Response.json({ ok: true });
+  if (request.method === "GET" && url.pathname === "/health") return Response.json({ ok: true, configured: deps.allowedHosts.length > 0 }, { headers: { "cache-control": "no-store" } });
+  if (request.method === "GET" && url.pathname === "/") return homeResponse(request, deps.allowedHosts);
   if (request.method !== "GET" || url.pathname !== "/image") return errorResponse("not found", 404);
   try {
     const key = `imgt:image:${request.headers.get("cf-connecting-ip") ?? "local"}`;
     if (!(await deps.rateLimiter.limit({ key })).success) return errorResponse("image request rate limit exceeded", 429, "60");
-    const options = parseImageOptions(url);
+    const options = parseImageOptions(url, deps.allowedHosts);
     // Authentication, cookies, and client conditions are not part of the shared
     // image fetch. Conditions are applied to the resulting representation below.
     let response = await deps.imageCache.fetch(canonicalCacheRequest(request, options));

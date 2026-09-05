@@ -1,0 +1,475 @@
+{
+  "date": "2026-09-05T00:40:47.477Z",
+  "engine": "imgproxy",
+  "image": "ghcr.io/imgproxy/imgproxy:v4.0.3",
+  "imageId": "sha256:5206f369c5398e6ce37d3c4131206c95383edecc7aefdf0c37ff0b22fd213ed0",
+  "imageSizeMiB": 73,
+  "architecture": "arm64",
+  "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840",
+  "sourceTransport": "read-only local files (excludes upload)",
+  "profiles": [
+    {
+      "name": "custom-1cpu",
+      "cpu": 1,
+      "memory": 3072,
+      "rows": [
+        {
+          "source": "portrait",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 248,
+              "bytes": 69008,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 210,
+              "bytes": 69008,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 210,
+              "bytes": 69008,
+              "width": 640,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 539,
+              "bytes": 521550,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 458,
+              "bytes": 521550,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 466,
+              "bytes": 521550,
+              "width": 1920,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 1372,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 1321,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 1289,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 50,
+              "bytes": 49070,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 51,
+              "bytes": 49070,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 52,
+              "bytes": 49070,
+              "width": 640,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 163,
+              "bytes": 340328,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 163,
+              "bytes": 340328,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 200,
+              "bytes": 340328,
+              "width": 1920,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 505,
+              "bytes": 843788,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 505,
+              "bytes": 843788,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 479,
+              "bytes": 843788,
+              "width": 3840,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait-burst-4",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 1240,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 3705,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 4930,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 2481,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            }
+          ]
+        }
+      ],
+      "peakMemoryMiB": 252,
+      "oomKilled": false,
+      "startupMs": 671,
+      "idleMemoryMiB": 17,
+      "health": "imgproxy is running"
+    },
+    {
+      "name": "basic",
+      "cpu": 0.25,
+      "memory": 1024,
+      "rows": [
+        {
+          "source": "portrait",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 1118,
+              "bytes": 69008,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 1100,
+              "bytes": 69008,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 896,
+              "bytes": 69008,
+              "width": 640,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 2605,
+              "bytes": 521550,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 2896,
+              "bytes": 521550,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 3291,
+              "bytes": 521550,
+              "width": 1920,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 6816,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 7594,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 7504,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 189,
+              "bytes": 49070,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 196,
+              "bytes": 49070,
+              "width": 640,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 188,
+              "bytes": 49070,
+              "width": 640,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 617,
+              "bytes": 340328,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 910,
+              "bytes": 340328,
+              "width": 1920,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 1005,
+              "bytes": 340328,
+              "width": 1920,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 3195,
+              "bytes": 843788,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 2701,
+              "bytes": 843788,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 2183,
+              "bytes": 843788,
+              "width": 3840,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait-burst-4",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 5806,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 200,
+              "ms": 11638,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            },
+            {
+              "status": 0,
+              "ms": 21004,
+              "error": "The operation was aborted due to timeout"
+            },
+            {
+              "status": 200,
+              "ms": 18431,
+              "bytes": 1486432,
+              "width": 3840,
+              "timing": null
+            }
+          ]
+        }
+      ],
+      "peakMemoryMiB": 236,
+      "oomKilled": false,
+      "startupMs": 599,
+      "idleMemoryMiB": 17,
+      "health": "imgproxy is running"
+    },
+    {
+      "name": "lite",
+      "cpu": 0.0625,
+      "memory": 256,
+      "rows": [
+        {
+          "source": "portrait",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 7602,
+              "bytes": 69008,
+              "width": 640,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 19494,
+              "bytes": 521550,
+              "width": 1920,
+              "timing": null
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 0,
+              "ms": 21002,
+              "error": "The operation was aborted due to timeout"
+            }
+          ]
+        }
+      ],
+      "peakMemoryMiB": null,
+      "oomKilled": false,
+      "startupMs": 1976,
+      "idleMemoryMiB": 18,
+      "error": "Container disconnected; stopping this profile"
+    }
+  ]
+}

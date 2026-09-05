@@ -1,0 +1,477 @@
+{
+  "date": "2026-09-05T00:23:13.957Z",
+  "image": "imgt-benchmark:current",
+  "architecture": "arm64",
+  "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840",
+  "profiles": [
+    {
+      "name": "custom-1cpu",
+      "cpu": 1,
+      "memory": 3072,
+      "rows": [
+        {
+          "source": "portrait",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 376,
+              "bytes": 68796,
+              "width": 640,
+              "timing": "source_body;dur=28.6, queue;dur=0.2, sharp;dur=326.2"
+            },
+            {
+              "status": 200,
+              "ms": 308,
+              "bytes": 68796,
+              "width": 640,
+              "timing": "source_body;dur=23.1, queue;dur=0.1, sharp;dur=275.5"
+            },
+            {
+              "status": 200,
+              "ms": 301,
+              "bytes": 68796,
+              "width": 640,
+              "timing": "source_body;dur=16.5, queue;dur=0.1, sharp;dur=276.9"
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 856,
+              "bytes": 548324,
+              "width": 1920,
+              "timing": "source_body;dur=27.1, queue;dur=0.0, sharp;dur=818.3"
+            },
+            {
+              "status": 200,
+              "ms": 854,
+              "bytes": 548324,
+              "width": 1920,
+              "timing": "source_body;dur=17.7, queue;dur=0.1, sharp;dur=822.4"
+            },
+            {
+              "status": 200,
+              "ms": 916,
+              "bytes": 548324,
+              "width": 1920,
+              "timing": "source_body;dur=19.1, queue;dur=0.0, sharp;dur=883.3"
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 1335,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=13.5, queue;dur=0.1, sharp;dur=1302.9"
+            },
+            {
+              "status": 200,
+              "ms": 1466,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=18.3, queue;dur=0.0, sharp;dur=1427.4"
+            },
+            {
+              "status": 200,
+              "ms": 1373,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=16.0, queue;dur=0.1, sharp;dur=1331.7"
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 58,
+              "bytes": 48858,
+              "width": 640,
+              "timing": "source_body;dur=7.7, queue;dur=0.0, sharp;dur=43.8"
+            },
+            {
+              "status": 200,
+              "ms": 55,
+              "bytes": 48858,
+              "width": 640,
+              "timing": "source_body;dur=7.1, queue;dur=0.0, sharp;dur=41.1"
+            },
+            {
+              "status": 200,
+              "ms": 56,
+              "bytes": 48858,
+              "width": 640,
+              "timing": "source_body;dur=8.1, queue;dur=0.0, sharp;dur=40.8"
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 210,
+              "bytes": 354524,
+              "width": 1920,
+              "timing": "source_body;dur=10.2, queue;dur=0.0, sharp;dur=190.9"
+            },
+            {
+              "status": 200,
+              "ms": 202,
+              "bytes": 354524,
+              "width": 1920,
+              "timing": "source_body;dur=7.4, queue;dur=0.0, sharp;dur=184.8"
+            },
+            {
+              "status": 200,
+              "ms": 211,
+              "bytes": 354524,
+              "width": 1920,
+              "timing": "source_body;dur=8.6, queue;dur=0.0, sharp;dur=192.7"
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 467,
+              "bytes": 843576,
+              "width": 3840,
+              "timing": "source_body;dur=11.1, queue;dur=0.0, sharp;dur=443.8"
+            },
+            {
+              "status": 200,
+              "ms": 452,
+              "bytes": 843576,
+              "width": 3840,
+              "timing": "source_body;dur=8.7, queue;dur=0.0, sharp;dur=433.1"
+            },
+            {
+              "status": 200,
+              "ms": 451,
+              "bytes": 843576,
+              "width": 3840,
+              "timing": "source_body;dur=8.9, queue;dur=0.0, sharp;dur=425.6"
+            }
+          ]
+        },
+        {
+          "source": "portrait-burst-4",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 1350,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=26.7, queue;dur=0.0, sharp;dur=1297.6"
+            },
+            {
+              "status": 200,
+              "ms": 2600,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=50.5, queue;dur=1269.6, sharp;dur=1249.1"
+            },
+            {
+              "status": 200,
+              "ms": 3908,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=51.4, queue;dur=2518.4, sharp;dur=1307.1"
+            },
+            {
+              "status": 200,
+              "ms": 5206,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=55.0, queue;dur=3821.7, sharp;dur=1298.6"
+            }
+          ]
+        }
+      ],
+      "peakMemoryMiB": 861,
+      "oomKilled": false,
+      "startupMs": 991,
+      "health": {
+        "ok": true,
+        "active": false,
+        "queued": 0,
+        "uploading": 0,
+        "inFlight": 0,
+        "completed": 22,
+        "rejected": 0,
+        "timedOut": 0,
+        "disconnected": 0
+      }
+    },
+    {
+      "name": "basic",
+      "cpu": 0.25,
+      "memory": 1024,
+      "rows": [
+        {
+          "source": "portrait",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 1407,
+              "bytes": 68796,
+              "width": 640,
+              "timing": "source_body;dur=17.0, queue;dur=0.2, sharp;dur=1377.2"
+            },
+            {
+              "status": 200,
+              "ms": 1611,
+              "bytes": 68796,
+              "width": 640,
+              "timing": "source_body;dur=83.8, queue;dur=0.0, sharp;dur=1514.3"
+            },
+            {
+              "status": 200,
+              "ms": 1390,
+              "bytes": 68796,
+              "width": 640,
+              "timing": "source_body;dur=67.7, queue;dur=0.0, sharp;dur=1309.7"
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 4696,
+              "bytes": 548324,
+              "width": 1920,
+              "timing": "source_body;dur=5.6, queue;dur=0.0, sharp;dur=4587.5"
+            },
+            {
+              "status": 200,
+              "ms": 5020,
+              "bytes": 548324,
+              "width": 1920,
+              "timing": "source_body;dur=13.8, queue;dur=0.1, sharp;dur=4993.1"
+            },
+            {
+              "status": 200,
+              "ms": 4396,
+              "bytes": 548324,
+              "width": 1920,
+              "timing": "source_body;dur=75.7, queue;dur=0.0, sharp;dur=4305.0"
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 7902,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=3.3, queue;dur=0.0, sharp;dur=7806.4"
+            },
+            {
+              "status": 200,
+              "ms": 8108,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=5.4, queue;dur=0.0, sharp;dur=8011.4"
+            },
+            {
+              "status": 200,
+              "ms": 8387,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=6.3, queue;dur=0.1, sharp;dur=8296.8"
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 199,
+              "bytes": 48858,
+              "width": 640,
+              "timing": "source_body;dur=11.2, queue;dur=0.0, sharp;dur=178.4"
+            },
+            {
+              "status": 200,
+              "ms": 301,
+              "bytes": 48858,
+              "width": 640,
+              "timing": "source_body;dur=73.0, queue;dur=0.0, sharp;dur=218.6"
+            },
+            {
+              "status": 200,
+              "ms": 291,
+              "bytes": 48858,
+              "width": 640,
+              "timing": "source_body;dur=68.3, queue;dur=0.0, sharp;dur=210.8"
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 1292,
+              "bytes": 354524,
+              "width": 1920,
+              "timing": "source_body;dur=75.7, queue;dur=0.0, sharp;dur=1202.4"
+            },
+            {
+              "status": 200,
+              "ms": 1288,
+              "bytes": 354524,
+              "width": 1920,
+              "timing": "source_body;dur=13.1, queue;dur=0.0, sharp;dur=1265.5"
+            },
+            {
+              "status": 200,
+              "ms": 1219,
+              "bytes": 354524,
+              "width": 1920,
+              "timing": "source_body;dur=7.3, queue;dur=0.0, sharp;dur=1198.7"
+            }
+          ]
+        },
+        {
+          "source": "landscape",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 2787,
+              "bytes": 843576,
+              "width": 3840,
+              "timing": "source_body;dur=14.0, queue;dur=0.0, sharp;dur=2759.1"
+            },
+            {
+              "status": 200,
+              "ms": 3019,
+              "bytes": 843576,
+              "width": 3840,
+              "timing": "source_body;dur=8.0, queue;dur=0.0, sharp;dur=2991.8"
+            },
+            {
+              "status": 200,
+              "ms": 3097,
+              "bytes": 843576,
+              "width": 3840,
+              "timing": "source_body;dur=8.5, queue;dur=0.0, sharp;dur=3075.3"
+            }
+          ]
+        },
+        {
+          "source": "portrait-burst-4",
+          "width": 3840,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 8509,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=64.5, queue;dur=0.0, sharp;dur=8414.1"
+            },
+            {
+              "status": 504,
+              "ms": 20071,
+              "bytes": 30,
+              "timing": null,
+              "error": "image transformation timed out"
+            },
+            {
+              "status": 504,
+              "ms": 20070,
+              "bytes": 30,
+              "timing": null,
+              "error": "image transformation timed out"
+            },
+            {
+              "status": 200,
+              "ms": 16993,
+              "bytes": 1486220,
+              "width": 3840,
+              "timing": "source_body;dur=61.7, queue;dur=8413.4, sharp;dur=8481.6"
+            }
+          ]
+        }
+      ],
+      "peakMemoryMiB": 825,
+      "oomKilled": false,
+      "startupMs": 1050,
+      "health": {
+        "ok": true,
+        "active": true,
+        "queued": 0,
+        "uploading": 0,
+        "inFlight": 1,
+        "completed": 20,
+        "rejected": 0,
+        "timedOut": 2,
+        "disconnected": 0
+      }
+    },
+    {
+      "name": "lite",
+      "cpu": 0.0625,
+      "memory": 256,
+      "rows": [
+        {
+          "source": "portrait",
+          "width": 640,
+          "runs": [
+            {
+              "status": 200,
+              "ms": 12005,
+              "bytes": 68796,
+              "width": 640,
+              "timing": "source_body;dur=203.8, queue;dur=0.2, sharp;dur=11686.4"
+            }
+          ]
+        },
+        {
+          "source": "portrait",
+          "width": 1920,
+          "runs": [
+            {
+              "status": 0,
+              "ms": 10996,
+              "error": "fetch failed"
+            }
+          ]
+        }
+      ],
+      "peakMemoryMiB": null,
+      "oomKilled": true,
+      "startupMs": 9071,
+      "error": "Container disconnected; stopping this profile"
+    }
+  ]
+}

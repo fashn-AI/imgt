@@ -35,14 +35,16 @@ export function imageRequest(suffix = "", headers?: HeadersInit): Request {
   return new Request(`https://img.example/image?url=${encodeURIComponent(`https://images.unsplash.com/photo.jpg${suffix}`)}&w=640`, { headers });
 }
 
-export function createHarness(options: { sourceFetch?: SourceFetch; transform?: Transform; timeoutMs?: number } = {}) {
+export function createHarness(options: { allowedHosts?: readonly string[]; sourceFetch?: SourceFetch; transform?: Transform; timeoutMs?: number } = {}) {
   const bucket = new MemoryBucket();
   const store = new DerivativeStore(bucket);
   const background: Promise<void>[] = [];
   const waitUntil = (promise: Promise<void>) => { background.push(promise); };
   let downloads = 0;
   let transforms = 0;
+  const allowedHosts = options.allowedHosts ?? ["images.unsplash.com"];
   const coordinator = new TransformCoordinator({
+    allowedHosts,
     store, waitUntil, timeoutMs: options.timeoutMs,
     sourceFetch: async (url, init) => {
       downloads += 1;
@@ -58,8 +60,8 @@ export function createHarness(options: { sourceFetch?: SourceFetch; transform?: 
   const resize = (job: Parameters<Transform>[1]) => coordinator.fetch(new Request("http://coordinator/job", {
     method: "POST", body: JSON.stringify(job),
   }));
-  const imageCache = { fetch: (request: Request) => handleImage(request, { store, resize, waitUntil }) };
-  const gateway = (request: Request) => handleGateway(request, { imageCache, rateLimiter: { limit: async () => ({ success: true }) } });
+  const imageCache = { fetch: (request: Request) => handleImage(request, { allowedHosts, store, resize, waitUntil }) };
+  const gateway = (request: Request) => handleGateway(request, { allowedHosts, imageCache, rateLimiter: { limit: async () => ({ success: true }) } });
   return { bucket, store, coordinator, imageCache, gateway,
     get downloads() { return downloads; }, get transforms() { return transforms; },
     async drain() { while (background.length) await Promise.all(background.splice(0)); },

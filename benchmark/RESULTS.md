@@ -1,5 +1,8 @@
 # Benchmark summary
 
+Historical measurements. The current starter capacity decision and smaller-tier
+comparison are in [SMALLER_CONTAINERS.md](SMALLER_CONTAINERS.md).
+
 Benchmarked on 2026-09-01 using native `linux/arm64` Docker containers on an
 Apple Silicon host. Each container was limited to 1 vCPU, 3 GiB RAM, and one
 libvips worker. Results are directional; Cloudflare runs `linux/amd64`, so the
@@ -75,9 +78,8 @@ levels against both that source and a conventional 3840x2160 crop:
 | 8MP → 3840px | 232 ms / 673 KB | 402 ms / 549 KB | 918 ms / 517 KB |
 
 Effort 2 used 27–56% less transform time than effort 4 while producing files
-only 4–11% larger. It remains an available latency/size tradeoff, but it is not
-the default because effort 4 matched Vercel's WebP output exactly in the
-comparison below. Against a lossless resize, effort 2 versus effort 4 measured
+only 4–11% larger. At this stage effort 4 was still the default; the later
+quality-77 comparison below selected effort 2. Against a lossless resize, effort 2 versus effort 4 measured
 0.963 versus 0.965 SSIM at 1920px and 0.974 versus 0.976 at 3840px.
 
 ## Vercel comparison

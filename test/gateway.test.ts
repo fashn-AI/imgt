@@ -6,6 +6,7 @@ import { imageRequest } from "./helpers";
 test("rate limiting runs before cache access and never caches a rejection", async () => {
   let cacheCalls = 0;
   const response = await handleGateway(imageRequest("", { "cf-connecting-ip": "192.0.2.1" }), {
+    allowedHosts: ["images.unsplash.com"],
     imageCache: { fetch: async () => { cacheCalls += 1; return new Response("image"); } },
     rateLimiter: { limit: async ({ key }) => { assert.equal(key, "imgt:image:192.0.2.1"); return { success: false }; } },
   });
@@ -18,6 +19,7 @@ test("edge responses honor client ETags after canonical fetching without leaking
   const response = await handleGateway(imageRequest("", {
     "if-none-match": 'W/"content"', cookie: "session=private", authorization: "Bearer secret",
   }), {
+    allowedHosts: ["images.unsplash.com"],
     imageCache: { fetch: async (request) => {
       assert.equal(request.headers.get("if-none-match"), null);
       assert.equal(request.headers.get("cookie"), null);
@@ -36,6 +38,7 @@ test("edge responses honor client ETags after canonical fetching without leaking
 
 test("invalid public parameters return 400 through the shared error handler", async () => {
   const response = await handleGateway(new Request("https://img.example/image?w=640"), {
+    allowedHosts: ["images.unsplash.com"],
     imageCache: { fetch: async () => { throw new Error("must not reach the cache"); } },
     rateLimiter: { limit: async () => ({ success: true }) },
   });

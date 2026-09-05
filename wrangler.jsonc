@@ -2,6 +2,10 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "imgt",
   "main": "src/index.ts",
+  "build": { "command": "npm run check" },
+  "vars": {
+    "ALLOWED_HOSTS": "images.unsplash.com"
+  },
   "compatibility_date": "2026-09-01",
   "cache": {
     "enabled": true,
@@ -36,7 +40,7 @@
       "name": "imgt-transformer",
       "class_name": "ImgtImageTransformer",
       "image": "./container/Dockerfile",
-      "max_instances": 4,
+      "max_instances": 2,
       "instance_type": {
         "vcpu": 1,
         "memory_mib": 3072,
@@ -61,8 +65,7 @@
   "r2_buckets": [
     {
       "binding": "DERIVATIVES",
-      "bucket_name": "imgt-derivatives",
-      "preview_bucket_name": "imgt-derivatives-dev"
+      "bucket_name": "imgt-derivatives"
     }
   ]
 }

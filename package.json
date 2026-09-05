@@ -7,7 +7,10 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "smoke": "node scripts/smoke.mjs",
+    "benchmark": "node benchmark/containers.mjs"
   },
   "dependencies": {
     "@cloudflare/containers": "0.3.7"
@@ -19,5 +22,18 @@
     "tsx": "4.20.5",
     "typescript": "7.0.2",
     "wrangler": "4.128.0"
+  },
+  "description": "Self-hosted image optimization on Cloudflare: Sharp, Workers Cache, and R2.",
+  "license": "MIT",
+  "cloudflare": {
+    "label": "imgt",
+    "bindings": {
+      "ALLOWED_HOSTS": {
+        "description": "Comma-separated image source hostnames, e.g. cdn.example.com, *.images.example.com. images.unsplash.com enables the sample image; replace it with your own hosts."
+      },
+      "DERIVATIVES": {
+        "description": "Private cache of generated WebP images. Original images are not stored."
+      }
+    }
   }
 }

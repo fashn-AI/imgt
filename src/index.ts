@@ -1,5 +1,6 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { parseAllowedHosts } from "./settings";
 import { config } from "../imgt.config";
 import { MAX_DISTINCT_JOBS_PER_SHARD, MAX_SOURCE_BYTES, TRANSFORM_TIMEOUT_MS } from "./constants";
 import { TransformCoordinator } from "./coordinator";
@@ -9,6 +10,7 @@ import { handleImage } from "./service";
 import { DerivativeStore } from "./store";
 
 interface Env {
+  ALLOWED_HOSTS?: string;
   IMGT_TRANSFORMER: DurableObjectNamespace<ImgtImageTransformer>;
   DERIVATIVES: R2Bucket;
   IMAGE_RATE_LIMITER: RateLimit;
@@ -16,7 +18,7 @@ interface Env {
 
 export class ImgtImageTransformer extends Container<Env> {
   defaultPort = 8080;
-  sleepAfter = "10m";
+  sleepAfter = config.containers.sleepAfter;
   enableInternet = false;
   envVars = {
     MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
@@ -26,6 +28,7 @@ export class ImgtImageTransformer extends Container<Env> {
     WEBP_EFFORT: String(config.transforms.webpEffort),
   };
   readonly #coordinator = new TransformCoordinator({
+    allowedHosts: parseAllowedHosts(this.env.ALLOWED_HOSTS),
     store: new DerivativeStore(this.env.DERIVATIVES),
     waitUntil: (promise) => this.ctx.waitUntil(promise),
     transform: (body, job, signal, deadline) => this.containerFetch(new Request(
@@ -49,6 +52,7 @@ function requestResize(job: ResizeJob, env: Env): Promise<Response> {
 export class ImgtImageCache extends WorkerEntrypoint<Env> {
   fetch(request: Request): Promise<Response> {
     return handleImage(request, {
+      allowedHosts: parseAllowedHosts(this.env.ALLOWED_HOSTS),
       store: new DerivativeStore(this.env.DERIVATIVES),
       resize: (job) => requestResize(job, this.env),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
@@ -59,6 +63,6 @@ export class ImgtImageCache extends WorkerEntrypoint<Env> {
 export default {
   fetch(request, env, ctx): Promise<Response> {
     const imageCache = (ctx.exports as unknown as { ImgtImageCache: Fetcher }).ImgtImageCache;
-    return handleGateway(request, { imageCache, rateLimiter: env.IMAGE_RATE_LIMITER });
+    return handleGateway(request, { imageCache, rateLimiter: env.IMAGE_RATE_LIMITER, allowedHosts: parseAllowedHosts(env.ALLOWED_HOSTS) });
   },
 } satisfies ExportedHandler<Env>;
