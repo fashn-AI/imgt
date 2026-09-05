@@ -1,0 +1,39 @@
+name: Engine benchmark
+on:
+  workflow_dispatch:
+  push:
+    branches: [renan/container-performance]
+    paths: ['benchmark/engines/**', '.github/workflows/benchmark.yml']
+permissions:
+  contents: read
+jobs:
+  engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix benchmark/engines
+      - run: docker build -f benchmark/engines/Dockerfile -t imgt-engines:local .
+      - run: docker build -t imgt-rust:local benchmark/engines/rust
+      - run: node benchmark/engines/fixtures.mjs
+      - run: node benchmark/engines/run.mjs
+        env:
+          ENGINE_REPORT: benchmark/engines-amd64.json
+          ENGINE_SAMPLES: '5'
+      - run: node benchmark/engines/quality.mjs
+        env:
+          ENGINE_REPORT: benchmark/engines-amd64.json
+          QUALITY_REPORT: benchmark/engines-quality-amd64.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-results-amd64
+          path: |
+            benchmark/engines-amd64.json
+            benchmark/engines-quality-amd64.json
+          retention-days: 14

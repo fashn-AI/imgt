@@ -1,0 +1,1235 @@
+{
+  "date": "2026-09-05T01:06:00.283Z",
+  "endpoints": {
+    "imgt": "https://imgt.relferreira.workers.dev",
+    "vercel": "https://gagan-image-gallery.vercel.app"
+  },
+  "client": "single client; region in response headers",
+  "note": "imgt defaults q77/effort2 versus Vercel q75. Quality and file size must be considered. First use is not a verified cold start.",
+  "rows": [
+    {
+      "width": 640,
+      "sample": 0,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570360283-640-0",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 1764,
+        "ms": 1814,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a36154311f0814b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=27.0, origin_headers;dur=433.0, source_body;dur=269.5, queue;dur=0.2, sharp;dur=508.7, container;dur=905.0, job;dur=1365.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 27,
+        "ms": 32,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a361543bebe514b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 115,
+        "ms": 125,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f558bbf90a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 640,
+      "sample": 0,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570360283-640-0",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 941,
+        "ms": 951,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::xgjvt-1788570362330-79c9319dc73c",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 376,
+        "ms": 388,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::g8ghh-1788570363214-64ad891a6d76",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 118,
+        "ms": 129,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::47mfl-1788570817008-b402589fd7b5",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 640,
+      "sample": 1,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570363480-640-1",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 1152,
+        "ms": 1163,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::g8ghh-1788570363603-0ad9fa0b44fe",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 675,
+        "ms": 685,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::g8ghh-1788570364768-41be14141b9b",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 33,
+        "ms": 34,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::xstpg-1788570817063-2748e52171c8",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 640,
+      "sample": 1,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570363480-640-1",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 1704,
+        "ms": 1750,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a36154501b5c14b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=41.0, origin_headers;dur=120.0, source_body;dur=48.9, queue;dur=0.1, sharp;dur=380.0, container;dur=438.0, job;dur=599.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 28,
+        "ms": 33,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a361545b0a7914b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 30,
+        "ms": 34,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f56ef6e90a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 640,
+      "sample": 2,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570367115-640-2",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 2071,
+        "ms": 2118,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a361545b4af714b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=30.0, origin_headers;dur=800.0, source_body;dur=315.7, queue;dur=0.1, sharp;dur=501.0, container;dur=946.0, job;dur=1776.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 33,
+        "ms": 34,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a36154688eb614b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 30,
+        "ms": 34,
+        "bytes": 68866,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "59b5671981e559caf32299ed7bbf3f57fea84784886b0861930328883e7261cd",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f57181690a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 640,
+      "sample": 2,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570367115-640-2",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 677,
+        "ms": 688,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::g8ghh-1788570369393-30a1966d51e6",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 431,
+        "ms": 442,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::nttq7-1788570370083-d39ec386cd90",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 24,
+        "ms": 25,
+        "bytes": 60158,
+        "width": 640,
+        "height": 960,
+        "format": "webp",
+        "hash": "7e10e0c79c751ea3bbffb7a6149c08b39ce39d992541cf0d372b31e1e08ea20f",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::xstpg-1788570817171-365de58f934c",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 1920,
+      "sample": 0,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570370403-1920-0",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 2401,
+        "ms": 2761,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a361546fca4814b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=45.0, origin_headers;dur=478.0, source_body;dur=275.2, queue;dur=0.1, sharp;dur=1281.4, container;dur=1565.0, job;dur=2088.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 35,
+        "ms": 70,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a36154811fad14b1-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 41,
+        "ms": 71,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f57795190a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 1920,
+      "sample": 0,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570370403-1920-0",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 1662,
+        "ms": 1696,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::6hhrz-1788570373363-ec2ddced9dc8",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 681,
+        "ms": 716,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::6hhrz-1788570375063-c53095c16897",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 31,
+        "ms": 57,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::6p7s2-1788570817271-47771727b582",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 1920,
+      "sample": 1,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570375665-1920-1",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 2278,
+        "ms": 2314,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::9dmh4-1788570375789-54b5eb25f2a8",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 523,
+        "ms": 547,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::6hhrz-1788570378108-22c918960211",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 29,
+        "ms": 36,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::6p7s2-1788570817334-049e975bf7e8",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 1920,
+      "sample": 1,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570375665-1920-1",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 2027,
+        "ms": 2384,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a36154a2fa7959eb-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=58.0, origin_headers;dur=55.0, source_body;dur=213.1, queue;dur=0.1, sharp;dur=1291.9, container;dur=1522.0, job;dur=1635.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 33,
+        "ms": 68,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a36154b19b7859eb-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 27,
+        "ms": 37,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f589c4b90a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 1920,
+      "sample": 2,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570380997-1920-2",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 2229,
+        "ms": 2589,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a36154b20ca759eb-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=51.0, origin_headers;dur=482.0, source_body;dur=259.2, queue;dur=0.1, sharp;dur=1086.6, container;dur=1357.0, job;dur=1890.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 30,
+        "ms": 41,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a36154c2398459eb-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 27,
+        "ms": 37,
+        "bytes": 548138,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "db5a81784a1728c376dcd2179b39b3bffbbb7769c63c1e19c2478ca92960288f",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f58dd1890a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 1920,
+      "sample": 2,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570380997-1920-2",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 2007,
+        "ms": 2044,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::ccfd6-1788570383809-12e3e1acf29b",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 432,
+        "ms": 455,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::mj55n-1788570385804-5670504c5a49",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 34,
+        "ms": 38,
+        "bytes": 486068,
+        "width": 1920,
+        "height": 2880,
+        "format": "webp",
+        "hash": "2e30160f24011e4786a67c6aa01bc3f195143ff3cf932b95a2719a42fb0c2cda",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::f6b8v-1788570817460-582f7fd49768",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 3840,
+      "sample": 0,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570386142-3840-0",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 2717,
+        "ms": 3243,
+        "bytes": 1486240,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "ce13f6a17ca0dd1f0ad0e936011a023da86c1aca47d365205b7ab488eb14cda6",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a36154d2288359eb-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=67.0, origin_headers;dur=373.0, source_body;dur=179.3, queue;dur=0.1, sharp;dur=1777.7, container;dur=1971.0, job;dur=2411.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 29,
+        "ms": 55,
+        "bytes": 1486240,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "ce13f6a17ca0dd1f0ad0e936011a023da86c1aca47d365205b7ab488eb14cda6",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a36154e6788159eb-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 30,
+        "ms": 233,
+        "bytes": 1486240,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "ce13f6a17ca0dd1f0ad0e936011a023da86c1aca47d365205b7ab488eb14cda6",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f596e7e90a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 3840,
+      "sample": 0,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570386142-3840-0",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 2944,
+        "ms": 3006,
+        "bytes": 1209718,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "989ae69f32e01328903cce1ce7cec8f01e29c1c62a28920ed2de28ca8ab6c1db",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::x8xp2-1788570389582-53d947b0b4e4",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 441,
+        "ms": 464,
+        "bytes": 1209718,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "989ae69f32e01328903cce1ce7cec8f01e29c1c62a28920ed2de28ca8ab6c1db",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::nhzpf-1788570392611-2b4fd090eb29",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 33,
+        "ms": 50,
+        "bytes": 1209718,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "989ae69f32e01328903cce1ce7cec8f01e29c1c62a28920ed2de28ca8ab6c1db",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::xstpg-1788570817743-af70a5b280cb",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 3840,
+      "sample": 1,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570392963-3840-1",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 3758,
+        "ms": 3811,
+        "bytes": 1210332,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "7e115b17c03ba1348612a8d97a6532706e4e04ef8e42e108e86b09790bc8d0d6",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::nhzpf-1788570393087-1169c7c401d8",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 1179,
+        "ms": 1232,
+        "bytes": 1210332,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "7e115b17c03ba1348612a8d97a6532706e4e04ef8e42e108e86b09790bc8d0d6",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::nhzpf-1788570396921-2878a559881f",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 40,
+        "ms": 59,
+        "bytes": 1210332,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "7e115b17c03ba1348612a8d97a6532706e4e04ef8e42e108e86b09790bc8d0d6",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::xstpg-1788570817801-a5b9c90169b5",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 3840,
+      "sample": 1,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570392963-3840-1",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 2309,
+        "ms": 2892,
+        "bytes": 1486220,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a361551cdf3fc491-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=61.0, origin_headers;dur=34.0, source_body;dur=45.7, queue;dur=0.3, sharp;dur=1743.1, container;dur=1822.0, job;dur=1917.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 25,
+        "ms": 59,
+        "bytes": 1486220,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a361552ec972c491-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 27,
+        "ms": 47,
+        "bytes": 1486220,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f5bbcad90a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 3840,
+      "sample": 2,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570401038-3840-2",
+      "miss": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 3208,
+        "ms": 3757,
+        "bytes": 1486220,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+        "headers": {
+          "x-imgt-cache": "MISS",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "MISS",
+          "cf-ray": "a361552f4acac491-GIG",
+          "x-vercel-id": null,
+          "server-timing": "do_r2;dur=37.0, origin_headers;dur=785.0, source_body;dur=127.7, queue;dur=0.1, sharp;dur=1906.1, container;dur=2048.0, job;dur=2870.0",
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 21,
+        "ms": 34,
+        "bytes": 1486220,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615546ef97c491-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "imgt",
+        "status": 200,
+        "headersMs": 26,
+        "ms": 39,
+        "bytes": 1486220,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "605317f411e8d7d2d78070f8770b5b411ba2e4f3a689b403524c154be0849fb7",
+        "headers": {
+          "x-imgt-cache": "EDGE",
+          "x-vercel-cache": null,
+          "x-nextjs-cache": null,
+          "cf-cache-status": "HIT",
+          "cf-ray": "a3615f5c0db690a9-GIG",
+          "x-vercel-id": null,
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "width": 3840,
+      "sample": 2,
+      "sourceUrl": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840&imgt_compare=1788570401038-3840-2",
+      "miss": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 3145,
+        "ms": 3212,
+        "bytes": 1210332,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "7e115b17c03ba1348612a8d97a6532706e4e04ef8e42e108e86b09790bc8d0d6",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::bznns-1788570405054-a8b12a9c344d",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "hit": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 800,
+        "ms": 850,
+        "bytes": 1210332,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "7e115b17c03ba1348612a8d97a6532706e4e04ef8e42e108e86b09790bc8d0d6",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "MISS",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::rb64b-1788570408235-a58b58563ec7",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      },
+      "settledRepeat": {
+        "service": "vercel",
+        "status": 200,
+        "headersMs": 37,
+        "ms": 47,
+        "bytes": 1210332,
+        "width": 3840,
+        "height": 5760,
+        "format": "webp",
+        "hash": "7e115b17c03ba1348612a8d97a6532706e4e04ef8e42e108e86b09790bc8d0d6",
+        "headers": {
+          "x-imgt-cache": null,
+          "x-vercel-cache": "HIT",
+          "x-nextjs-cache": null,
+          "cf-cache-status": null,
+          "cf-ray": null,
+          "x-vercel-id": "gru1::xstpg-1788570817978-3eb956b013dd",
+          "server-timing": null,
+          "content-type": "image/webp"
+        }
+      }
+    }
+  ]
+}

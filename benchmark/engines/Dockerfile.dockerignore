@@ -1,0 +1,8 @@
+**
+!container/
+!container/package.json
+!container/package-lock.json
+!benchmark/
+!benchmark/engines/
+!benchmark/engines/native.cpp
+!benchmark/engines/sharp.mjs
