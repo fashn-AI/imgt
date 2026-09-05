@@ -1,4 +1,4 @@
-// Bounded production verification: six misses, six cache hits and six validators.
+// Bounded production verification: 1–10 misses per width, each with a hit and validator check.
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';

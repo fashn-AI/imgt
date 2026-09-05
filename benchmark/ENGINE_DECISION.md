@@ -183,6 +183,8 @@ thumbnail first-use latency, including startup and the request path outside the
 coordinator. Median TTFB minus coordinator job time was approximately 350–380 ms;
 new `r2`, `resize` and `cache_fetch` spans distinguish outer R2 access, DO routing
 and the cache entrypoint. These are nested spans and must not be summed.
+Those span locations describe this historical run; the routing change below
+moves `r2` into the DO and adds `route` around the remote DO request.
 
 The manual [owned comparison workflow](../.github/workflows/owned-comparison.yml)
 repeats the same bounded protocol from GitHub Actions, retaining raw timings,
@@ -220,6 +222,58 @@ Vercel parity still needs quality-matched output, more regions/fixtures and
 verified cold/warm state under agreed concurrency.
 
 ## Architecture changes and qualification
+
+### R2 routing and cache-path experiment
+
+Production now performs the initial derivative lookup inside the same Durable
+Object that coordinates its transform. A fresh R2 hit still avoids container
+startup, and stale refresh, validation and single-flight behavior are preserved.
+The tradeoff is a DO invocation for an R2 hit; tiered CDN hits still bypass it.
+The coordinator retains its second R2 check for concurrent-write races.
+
+[Before](routing-before.json) and [after](routing-after.json) each contain five
+misses per width, alternating both shards, from GIG. Every response matched the
+local production encoder byte for byte; all 15 edge repeats and 15 conditional
+304 checks passed in each run. Values below are medians in milliseconds.
+
+| Width | First response before / after | Initial R2 before / after | EDGE before / after |
+| --- | ---: | ---: | ---: |
+| 640 | 1,062 / 1,025 | 148 / 98 | 34.8 / 34.0 |
+| 1920 | 1,863 / 1,721 | 157 / 97 | 39.9 / 38.9 |
+| 3840 | 2,949 / 2,469 | 158 / 98 | 42.4 / 40.7 |
+
+These runs were roughly seven hours apart, not interleaved A/B measurements.
+The 50–60 ms reduction in initial R2 latency supports the routing change, but
+larger end-to-end gains cannot all be attributed to it: median encoding also
+fell from 744 to 660 ms at 1920px and from 1,701 to 1,410 ms at 3840px.
+The three warm thumbnail samples in each run improved from 917 to 827 ms while
+median thumbnail encoding across all five stayed near 316–319 ms. This remains
+a small correctness/latency experiment, not a p95 or new Vercel parity result.
+Fresh R2 behavior is covered by integration tests, not a forced production R2
+hit in this experiment. The complete application check passes 61 tests.
+
+A separate [synthetic cache probe](cache-paths-br.json) compared local Cache API
+and tiered Workers Cache without origin, R2 or container work: ten samples per
+path, 64 KiB responses, GIG. First-use medians were 35.9 ms local versus 81.7 ms
+tiered, with measured cache lookup medians of 5 versus 44 ms. Settled hit medians
+were 31.9 versus 29.4 ms. The tiered path had one 343.3 ms settled-hit outlier.
+Retain Workers Cache: its [documented upper-tier sharing and request collapse](https://developers.cloudflare.com/workers/cache/)
+remain useful for cross-region traffic despite this measured first-use cost.
+The [local Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
+does not provide tiered caching. This single-region probe does not measure the
+cross-region benefit. The lab probe is explicitly disabled after its expiry.
+
+Chrome's production observability view identified a rollout exit at
+2026-09-05 10:30:16.840 UTC during the after-run: the platform reported
+"Runtime signalled the container to exit due to a new version rollout: 0".
+The following shard-1 request recorded 1,326 ms of startup. This supports a
+rollout explanation for that mid-run delay; it does not explain every earlier
+startup observation. Both shards subsequently emitted `container_stopped` with
+`reason: exit`, `exitCode: 0` at 10:32:42.339 and 10:32:46.760 UTC, following
+activity-expiry messages. This verifies clean production shutdown for those
+events. A successful build does not guarantee a settled container rollout.
+
+### Allocation, startup and placement
 
 Cost is a constraint, not a reason to compare only container RAM. Cloudflare
 [bills](https://developers.cloudflare.com/containers/platform/pricing/) active

@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 // Bounded synthetic cache experiment; no origin fetch, R2 or container start.
 // Expiry prevents an abandoned experiment from remaining active indefinitely.
-export const CACHE_PROBE_UNTIL = Date.parse("2026-09-05T04:10:00Z");
+export const CACHE_PROBE_UNTIL = 0;
 const payload = Uint8Array.from({ length: 65536 }, (_, index) => index % 251);
 function generatedResponse(): Response {
   return new Response(payload, { headers: {
