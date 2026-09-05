@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "imgt-engine-lab",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-01",
+  "images": { "binding": "IMAGES" },
+  "ratelimits": [{
+    "name": "LIMITER",
+    "namespace_id": "2026090502",
+    "simple": { "limit": 30, "period": 60 }
+  }],
+  "observability": { "enabled": true }
+}
