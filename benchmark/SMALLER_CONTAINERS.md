@@ -38,7 +38,7 @@ An exploratory [Go/imgproxy comparison](ALTERNATIVES.md) uses substantially less
 memory, but does not yet qualify as a drop-in replacement. The default below
 applies to the current Sharp implementation.
 
-Keep **1 vCPU / 3 GiB per container**, reduce the maximum fleet from **four to
+Keep **1 vCPU / 3 GiB per container**, reduce request routing from **four to
 two shards**, and reduce idle sleep from **ten to two minutes**.
 
 - Smaller per-container tiers are a poor default for the supported large-image
@@ -48,12 +48,18 @@ two shards**, and reduce idle sleep from **ten to two minutes**.
   reduces maximum aggregate throughput; each individual transform retains its
   CPU allocation. Users with more concurrent cache misses can restore four
   shards using the documented configuration.
-- Maximum fleet memory drops from 12 GiB to 6 GiB. Idle timeout drops by 80%,
+- Two running shards allocate 6 GiB. The platform cap remains four instances
+  (12 GiB) for existing-installation compatibility. Idle timeout drops by 80%,
   with more cold starts as the tradeoff. Neither figure is a predicted bill
   reduction: traffic, cache hit rate, and CPU usage determine actual charges.
 - Cloudflare custom instances require at least 1 vCPU and 3 GiB per vCPU;
   a custom 1-vCPU/1-GiB alternative is not available. See
   [instance constraints](https://developers.cloudflare.com/containers/platform/limits/).
+
+Production qualification found that lowering `max_instances` to two blocked
+starts even after the application reported ready, while four stopped instance
+records remained. The platform cap was restored to four; routing stays at two.
+A fresh-account cap of two has not been qualified.
 
 This benchmark compares individual container allocations; it does not measure
 aggregate two-shard versus four-shard throughput or long-term production spend.

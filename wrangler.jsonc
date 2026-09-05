@@ -40,7 +40,7 @@
       "name": "imgt-transformer",
       "class_name": "ImgtImageTransformer",
       "image": "./container/Dockerfile",
-      "max_instances": 2,
+      "max_instances": 4,
       "instance_type": {
         "vcpu": 1,
         "memory_mib": 3072,

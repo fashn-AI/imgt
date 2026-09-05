@@ -46,10 +46,11 @@ Use the current [Workers pricing](https://developers.cloudflare.com/workers/plat
 [Containers pricing](https://developers.cloudflare.com/containers/pricing/),
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
-The default caps the fleet at two 1-vCPU/3-GiB containers and sleeps each after
-two idle minutes. Compared with the previous defaults, maximum concurrent
-memory falls from 12 GiB to 6 GiB and the idle timeout is 80% shorter. These are
-resource limits, not guaranteed bill reductions. More frequent cold starts are
+The default routes work to two 1-vCPU/3-GiB containers and sleeps each after
+two idle minutes. Two running shards allocate 6 GiB; the platform cap remains
+four instances (12 GiB) to accommodate existing instance records during upgrades.
+The idle timeout is 80% shorter. These are configuration changes, not guaranteed
+bill reductions. More frequent cold starts are
 the tradeoff; image requests served from Workers Cache or R2 do not start a
 container. An idle, awake container can still incur memory charges.
 
@@ -74,12 +75,19 @@ See [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lif
 Application settings live in `imgt.config.ts`. Deployment allocation lives in
 `wrangler.jsonc`:
 
-- To allow four shards, change both `config.containers.shards` and
-  `containers[0].max_instances` to `4` in one commit.
+- To use four shards, change `config.containers.shards` to `4`; the checked-in
+  `containers[0].max_instances` already permits four. Keep routing at or below
+  the platform cap.
 - To keep containers warm longer, adjust `config.containers.sleepAfter`.
 - Keep the custom 1-vCPU/3-GiB allocation for large source images. The smaller
   `basic` and `lite` profiles did not pass our large-image workload; see the
   [benchmark report](../benchmark/SMALLER_CONTAINERS.md).
+
+Our production downsize to a platform cap of two returned instance-limit errors
+even after the application reported ready, with four stopped instance records
+still present. Restoring the cap to four preserves the existing installation.
+A fresh account may be able to use a cap of two, but that path is not yet verified.
+Do not lower the cap below an existing fleet as a routine cost optimization.
 
 Changing shard count changes request routing and can temporarily run old and
 new work for the same derivative during rollout. R2 contents remain valid. Keep

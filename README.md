@@ -130,8 +130,9 @@ deploy, run `npx wrangler login`, select the intended account, then
 
 The starter configuration uses two container shards, each with 1 vCPU and
 3 GiB RAM, and sleeps after two idle minutes. Shards start on demand. This
-reduces the maximum fleet from four containers to two and the idle timeout
-from ten minutes to two. Each container still admits four jobs and processes
+routes work to two containers instead of four and reduces the idle timeout
+from ten minutes to two. The platform cap remains four to accommodate existing
+instance records during upgrades. Each container admits four jobs and processes
 one image at a time. [Why we did not choose `basic` or `lite`](benchmark/SMALLER_CONTAINERS.md).
 
 The public endpoint limits each client IP to approximately 120 image requests
