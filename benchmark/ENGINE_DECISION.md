@@ -117,31 +117,50 @@ The shared benchmark Docker image includes Node and C++; its size must not be
 presented as a lean native production image size. Compare compressed deployment
 size and Cloudflare boot time only after building equivalent production images.
 
-## Vercel baseline
+## Owned Vercel comparison
 
-The [reference script](compare-services.mjs) made three sequential first-use
-requests per width from one client, alternating service order, against the
-historical public Vercel demo. No concurrency/load test was run against it.
-Both services received the same source URL in each pair. imgt uses q77/effort2;
-the Vercel endpoint uses q75. Unique source parameters can also miss Unsplash's
-cache, so these are exploratory end-to-end results, not isolated encoder tests.
+The dedicated [Vercel reference](https://imgt-vercel-reference.vercel.app) is
+built from [this repository](vercel-reference/README.md) using Next.js 16.3.4's
+default image loader on a personal Hobby project. It accepts only the fixed
+fixture and benchmark sizes. It is not a production dependency.
 
-| Width | imgt first request | Vercel first request | imgt verified EDGE | Vercel verified HIT | imgt / Vercel bytes |
+[The completed Brazil run](services-owned-br.json) contains ten sequential
+pairs per width, alternating service order, with identical prewarmed source
+URLs and recorded source hashes. Response headers identify Cloudflare GIG and
+Vercel gru1. Every first response was a verified MISS, and every settled repeat
+was a verified EDGE/HIT with unchanged bytes. Results below are medians of ten;
+this small single-fixture sample does not establish p95 or concurrency behavior.
+
+| Width | imgt first request | Vercel first request | imgt EDGE | Vercel HIT | imgt / Vercel bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 640 | 1,814 ms | 951 ms | 34 ms | 34 ms | 68,866 / 60,158 |
-| 1920 | 2,589 ms | 2,044 ms | 37 ms | 38 ms | 548,138 / 486,068 |
-| 3840 | 3,243 ms | 3,212 ms | 47 ms | 50 ms | 1,486,240 / 1,209,718 |
+| 640 | 1,112 ms | 847 ms | 29.5 ms | 31.5 ms | 68,866 / 60,158 |
+| 1920 | 1,888 ms | 1,850.5 ms | 34 ms | 34 ms | 548,138 / 486,068 |
+| 3840 | 3,058.5 ms | 3,232.5 ms | 43.5 ms | 44 ms | 1,486,240 / 1,209,718 |
 
-[Raw service results](services-baseline.json). Immediate repeats sometimes
-remain MISS while persistence completes. Only `settledRepeat` with an actual
-cache-hit header is counted in the HIT columns. First-use does not mean a
-verified sleeping-container cold start. Current outputs are 13–23% larger;
-quality, encoding latency and download bytes need to be evaluated together.
+Two 640px imgt requests had measured startup (1.22 and 2.006 seconds); excluding
+those pairs leaves eight warm requests with imgt median 1,032 ms versus Vercel
+845 ms. All larger imgt requests reported zero startup. Vercel's internal engine
+state is not exposed. First-use and sleeping-container cold start are distinct.
 
-Matching this demo's warm cache latency does not establish a general Vercel
-performance claim. A controlled Vercel deployment, identical prewarmed origin
-bytes, quality-matched output, multiple regions, verified cold/warm state and
-p50/p95 under agreed concurrency are needed for that claim.
+Cached delivery is competitive in this run. Complete first-request medians are
+31% slower at 640px, 2% slower at 1920px and 5% faster at 3840px. These results do
+not establish quality-matched parity: imgt uses q77/effort2 versus Vercel q75,
+with 13–23% larger outputs. Existing [quality proxy results](services-quality.json)
+do not establish perceptual equivalence. The biggest remaining measured issue is
+thumbnail first-use latency, including startup and the request path outside the
+coordinator. Median TTFB minus coordinator job time was approximately 350–380 ms;
+new `r2`, `resize` and `cache_fetch` spans distinguish outer R2 access, DO routing
+and the cache entrypoint. These are nested spans and must not be summed.
+
+The manual [owned comparison workflow](../.github/workflows/owned-comparison.yml)
+repeats the same bounded protocol from GitHub Actions, retaining raw timings,
+response POP headers and output images. Runner geography must be determined from
+actual response headers, not inferred from the `ubuntu-latest` label.
+
+The older [public-demo run](services-baseline.json) remains historical exploratory
+evidence only. No further traffic is needed against third-party demos. Broad
+Vercel parity still needs quality-matched output, more regions/fixtures and
+verified cold/warm state under agreed concurrency.
 
 ## Architecture changes and qualification
 
@@ -215,7 +234,8 @@ The Vercel parity goal is **not yet demonstrated**. The measured cache-hit path
 is competitive with the reference, but cold starts, region/host variability and
 13–23% larger output bytes remain. A local q75/effort4 screen reduced bytes but
 roughly doubled full-size encoding time, so the q77/effort2 default is unchanged.
-There is no controlled owned Vercel endpoint or multi-region p95 load result yet.
+The owned Brazil comparison above now provides a controlled endpoint baseline;
+there is still no multi-region p95 load result.
 
 A separate lifecycle experiment reproduced the old production image staying
 alive after SIGTERM when Node is PID 1. Cloudflare's documented rollout drain

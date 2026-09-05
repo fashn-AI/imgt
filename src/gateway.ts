@@ -20,11 +20,16 @@ export async function handleGateway(request: Request, deps: GatewayDependencies)
     const options = parseImageOptions(url, deps.allowedHosts);
     // Authentication, cookies, and client conditions are not part of the shared
     // image fetch. Conditions are applied to the resulting representation below.
+    const cacheStarted = Date.now();
     let response = await deps.imageCache.fetch(canonicalCacheRequest(request, options));
+    const cacheMs = Date.now() - cacheStarted;
     if (CDN_CACHE_HIT_STATUSES.has(response.headers.get("cf-cache-status") ?? "")) {
       response = new Response(response.body, response);
       response.headers.set("x-imgt-cache", "EDGE");
       response.headers.delete("server-timing");
+    } else {
+      response = new Response(response.body, response);
+      response.headers.append("server-timing", `cache_fetch;dur=${cacheMs}`);
     }
     return await conditionalResponse(request, response);
   } catch (cause) {

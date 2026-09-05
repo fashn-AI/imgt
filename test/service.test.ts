@@ -16,6 +16,8 @@ test("miss persists once, fresh R2 skips transformation, and content validators 
   const first = await h.gateway(imageRequest());
   assert.equal(first.status, 200);
   assert.equal(first.headers.get("x-imgt-cache"), "MISS");
+  assert.match(first.headers.get("server-timing")!, /r2;dur=\d+, resize;dur=\d+/);
+  assert.match(first.headers.get("server-timing")!, /cache_fetch;dur=\d+/);
   await h.drain();
   const stored = await h.gateway(imageRequest());
   assert.equal(stored.headers.get("x-imgt-cache"), "R2");

@@ -25,7 +25,9 @@ export async function handleImage(request: Request, deps: ImageServiceDependenci
     const options = parseImageOptions(url, deps.allowedHosts);
     const outputKey = await derivativeKey(DERIVATIVE_PREFIX, options);
     const job = { outputKey, ...options };
+    const r2Started = Date.now();
     const stored = await deps.store.get(outputKey);
+    const r2Ms = Date.now() - r2Started;
     if (stored) {
       const maxAge = remainingSeconds(stored.freshUntil);
       if (maxAge > 0) return imageResponse(stored.body, stored.etag, "R2", maxAge);
@@ -36,7 +38,12 @@ export async function handleImage(request: Request, deps: ImageServiceDependenci
       }
       await stored.body.cancel();
     }
-    return await deps.resize(job);
+    const resizeStarted = Date.now();
+    const response = await deps.resize(job);
+    const measured = new Response(response.body, response);
+    // resize includes the remote coordinator's job span plus routing/transfer.
+    measured.headers.append("server-timing", `r2;dur=${r2Ms}, resize;dur=${Date.now() - resizeStarted}`);
+    return measured;
   } catch (cause) {
     return failureResponse(cause);
   }
