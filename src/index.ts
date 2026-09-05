@@ -1,5 +1,5 @@
 import { RENDERER_VERSION } from "../container/renderer";
-import { Container, getContainer } from "@cloudflare/containers";
+import { Container, getContainer, type StopParams } from "@cloudflare/containers";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { parseAllowedHosts } from "./settings";
 import { config } from "../imgt.config";
@@ -50,6 +50,11 @@ export class ImgtImageTransformer extends Container<Env> {
   fetch(request: Request): Promise<Response> {
     return this.#coordinator.fetch(request);
   }
+
+  onStop(params: StopParams) {
+    console.log(JSON.stringify({ event: "container_stopped", containerId: this.ctx.id.toString(), ...params }));
+  }
+
 }
 
 function requestResize(job: ResizeJob, env: Env): Promise<Response> {
