@@ -9,6 +9,7 @@
     "image": "./Dockerfile",
     "image_build_context": "../..",
     "max_instances": 2,
+    "rollout_step_percentage": 100,
     "instance_type": { "vcpu": 1, "memory_mib": 3072, "disk_mb": 2000 }
   }],
   "durable_objects": { "bindings": [{ "name": "LAB", "class_name": "EngineLab" }] },

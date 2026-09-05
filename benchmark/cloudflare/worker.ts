@@ -28,7 +28,7 @@ export default {
       const source=await fetch("https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&q=90&w=3840",{signal:AbortSignal.timeout(15000)});
       if(!source.ok||!source.body) return new Response("source failed",{status:502});
       const originMs=performance.now()-started;
-        const response=await getContainer(env.LAB,"engine-comparison").fetch(new Request(
+        const response=await getContainer(env.LAB,"engine-comparison-v2").fetch(new Request(
           `http://container/transform?w=${width}&q=${quality}&engine=${engine}`,{
             method:"POST",body:source.body,headers:{"x-imgt-deadline":String(Date.now()+20000)},signal:AbortSignal.timeout(20000)
           }));
