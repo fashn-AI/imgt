@@ -6,3 +6,4 @@
 !benchmark/engines/
 !benchmark/engines/native.cpp
 !benchmark/engines/sharp.mjs
+!benchmark/engines/optimized.ts

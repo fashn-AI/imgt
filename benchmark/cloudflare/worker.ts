@@ -2,7 +2,7 @@
 // This Worker has no R2, user credentials or arbitrary-source endpoint.
 import { Container, getContainer } from "@cloudflare/containers";
 interface Env { LIMITER: RateLimit; LAB: DurableObjectNamespace<EngineLab> }
-const ports = { sharp: 8080, native: 8081, "native-e4": 8082, "sharp-e4": 8083 };
+const ports = { sharp: 8080, native: 8081, "native-e4": 8082, "sharp-e4": 8083, "sharp-late-icc": 8084 };
 export class EngineLab extends Container<Env> {
   defaultPort = 8080;
   sleepAfter = "2m";

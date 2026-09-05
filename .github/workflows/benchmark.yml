@@ -1,6 +1,11 @@
 name: Engine benchmark
 on:
   workflow_dispatch:
+    inputs:
+      profiles:
+        description: Comma-separated engine profiles
+        default: sharp-cache64,sharp-cache0,sharp-late-icc,native-vips,rust-fir
+        type: string
   push:
     branches: [renan/container-performance]
     paths: ['benchmark/engines/**', '.github/workflows/benchmark.yml']
@@ -10,6 +15,8 @@ jobs:
   engines:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      ENGINE_PROFILE: ${{ inputs.profiles || 'sharp-cache0,sharp-late-icc,native-vips' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,6 +27,7 @@ jobs:
       - run: npm ci --prefix benchmark/engines
       - run: docker build -f benchmark/engines/Dockerfile -t imgt-engines:local .
       - run: docker build -t imgt-rust:local benchmark/engines/rust
+        if: contains(env.ENGINE_PROFILE, 'rust-fir')
       - run: node benchmark/engines/fixtures.mjs
       - run: node benchmark/engines/run.mjs
         env:

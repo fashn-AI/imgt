@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import sharp from "sharp";
 import { createTransformServer } from "./app.ts";
 import { encodeImage } from "./transform.ts";
+import { encodeOptimized } from "./optimized.ts";
 
 sharp.cache(false);
 sharp.concurrency(1);
@@ -40,8 +41,9 @@ const encodeNative: typeof encodeImage = async (input, options, _deadline, signa
 for (const [port, encode, effort] of [
   [8080, encodeImage, 2], [8081, encodeNative, 2],
   [8082, encodeNative, 4], [8083, encodeImage, 4],
+  [8084, encodeOptimized, 2],
 ] as const) {
   const server = createTransformServer({ ...settings, effort }, encode);
-  server.prependListener("request", (_request, response) => response.setHeader("x-benchmark-build", "color-v1"));
+  server.prependListener("request", (_request, response) => response.setHeader("x-benchmark-build", "late-icc-v1"));
   server.listen(port, "0.0.0.0");
 }

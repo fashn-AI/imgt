@@ -6,5 +6,6 @@
 !benchmark/
 !benchmark/engines/
 !benchmark/engines/native.cpp
+!benchmark/engines/optimized.ts
 !benchmark/cloudflare/
 !benchmark/cloudflare/container.ts

@@ -114,6 +114,17 @@ p50/p95 under agreed concurrency are needed for that claim.
 
 ## Architecture changes and qualification
 
+Cost is a constraint, not a reason to compare only container RAM. Cloudflare
+[bills](https://developers.cloudflare.com/containers/platform/pricing/) active
+CPU usage, but provisioned memory and disk for the time an instance is awake.
+At published overage rates, 3 GiB memory plus 2 GB disk is $0.00000764 per awake
+second per container, before CPU, network, Workers/DO/R2, included allowances
+and the base plan. A hypothetical 0.5 CPU-second transform costs $0.00001 in CPU
+alone. These are arithmetic examples, not a measured per-request bill.
+Disabling an internal cache does not reduce provisioned-memory charges. Keep
+the two-minute sleep setting until measured traffic justifies a different
+warmth/cost tradeoff; never imply that a faster encoder removes platform boot.
+
 On a validated cache miss, request origin headers while preparing a sleeping
 container. Both operations share the existing deadline and abort signal. Cache
 hits do neither. The `startup` and `origin_headers` Server-Timing spans overlap;
@@ -124,6 +135,10 @@ Cloudflare [placement](https://developers.cloudflare.com/containers/concepts/pla
 and the DO shard location influence misses. Changing languages cannot remove
 an extra geographic round trip. Measure gateway, R2, origin, startup, upload,
 queue, encode and response transfer separately before changing shard routing.
+The current [DO location documentation](https://developers.cloudflare.com/durable-objects/reference/data-location/)
+explicitly says a South America hint falls back to Eastern North America and
+existing objects do not relocate. Container region availability alone does not
+remove that DO hop for a client in Brazil.
 
 Production qualification order: cache/overlap improvements, then a native
 libvips adapter if its complete HTTP/cloud performance
