@@ -1,5 +1,9 @@
 # Alternatives to the Sharp container
 
+**Historical screening.** The broader investigation and controlled x86 results
+are now in [ENGINE_DECISION.md](ENGINE_DECISION.md). The imgproxy recommendation
+below is superseded: it remains a comparison reference, not the chosen backend.
+
 Exploratory local comparison on 2026-09-05 UTC. The production encoder remains
 Sharp. A language change alone does not identify the performance improvement:
 [Sharp](https://sharp.pixelplumbing.com/performance/) and

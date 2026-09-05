@@ -24,6 +24,69 @@ test("miss persists once, fresh R2 skips transformation, and content validators 
   assert.equal(h.transforms, 1);
 });
 
+test("container startup overlaps origin fetch and fresh derivatives skip both", async () => {
+  const originStarted = deferred();
+  const startupStarted = deferred();
+  const originReady = deferred<Response>();
+  const startupReady = deferred();
+  let starts = 0;
+  const h = createHarness({
+    sourceFetch: async () => { originStarted.resolve(); return originReady.promise; },
+    prepare: async () => { starts++; startupStarted.resolve(); await startupReady.promise; },
+  });
+  const pending = h.gateway(imageRequest());
+  // Neither operation can finish until both have demonstrably started.
+  await Promise.all([originStarted.promise, startupStarted.promise]);
+  originReady.resolve(new Response("source", { headers: { "content-type": "image/jpeg" } }));
+  assert.equal(h.transforms, 0);
+  startupReady.resolve();
+  const response = await pending;
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("server-timing")!, /startup;dur=/);
+  await h.drain();
+  assert.equal((await h.gateway(imageRequest())).headers.get("x-imgt-cache"), "R2");
+  assert.equal(starts, 1);
+  assert.equal(h.downloads, 1);
+});
+
+test("startup failure aborts the concurrent source and releases the job for retry", async () => {
+  const originStarted = deferred();
+  let originSignal: AbortSignal | undefined;
+  let fail = true;
+  const h = createHarness({
+    prepare: async () => { await originStarted.promise; if (fail) throw new Error("startup failed"); },
+    sourceFetch: async (_url, init) => {
+      originSignal = init.signal as AbortSignal;
+      originStarted.resolve();
+      if (fail) await new Promise((_, reject) => originSignal!.addEventListener("abort", () => reject(originSignal!.reason), { once: true }));
+      return new Response("source", { headers: { "content-type": "image/jpeg" } });
+    },
+  });
+  assert.equal((await h.gateway(imageRequest())).status, 500);
+  assert.equal(originSignal?.aborted, true);
+  assert.equal(h.transforms, 0);
+  fail = false;
+  assert.equal((await h.gateway(imageRequest())).status, 200);
+  await h.drain();
+});
+
+test("the shared deadline cancels startup and an origin body waiting for it", async () => {
+  let startupAborted = false;
+  let bodyCancelled = false;
+  const h = createHarness({ timeoutMs: 30,
+    sourceFetch: async () => new Response(new ReadableStream({ cancel() { bodyCancelled = true; } }), {
+      headers: { "content-type": "image/jpeg" },
+    }),
+    prepare: async (signal) => new Promise((_, reject) => signal.addEventListener("abort", () => {
+      startupAborted = true; reject(signal.reason);
+    }, { once: true })),
+  });
+  assert.equal((await h.gateway(imageRequest())).status, 504);
+  assert.equal(startupAborted, true);
+  assert.equal(bodyCancelled, true);
+  assert.equal(h.transforms, 0);
+});
+
 test("concurrent misses and arrivals during persistence share one transform", async () => {
   const transformed = deferred();
   const releaseTransform = deferred();

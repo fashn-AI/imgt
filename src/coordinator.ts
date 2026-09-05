@@ -24,6 +24,7 @@ interface CoordinatorDependencies {
   allowedHosts: readonly string[];
   store: DerivativeStore;
   transform: Transform;
+  prepare?: (signal: AbortSignal) => Promise<void>;
   sourceFetch?: SourceFetch;
   waitUntil: (promise: Promise<void>) => void;
   timeoutMs?: number;
@@ -85,10 +86,24 @@ export class TransformCoordinator {
     let sourceBody: ReadableStream<Uint8Array> | undefined;
     try {
       const originStarted = performance.now();
-      const source = await fetchSource(job.sourceUrl, controller.signal, this.deps.allowedHosts, this.deps.sourceFetch);
-      sourceBody = source.body;
+      let originMs = 0;
+      let startupMs = 0;
+      // Boot only after a validated cache miss, overlapping the origin request.
+      const [source] = await Promise.all([
+        fetchSource(job.sourceUrl, controller.signal, this.deps.allowedHosts, this.deps.sourceFetch).then(async (source) => {
+          sourceBody = source.body;
+          if (controller.signal.aborted) {
+            await sourceBody.cancel().catch(() => {});
+            controller.signal.throwIfAborted();
+          }
+          originMs = performance.now() - originStarted;
+          return source;
+        }),
+        Promise.resolve().then(() => this.deps.prepare?.(controller.signal)).then(() => {
+          startupMs = performance.now() - originStarted;
+        }),
+      ]);
       const freshUntil = source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
-      const originMs = performance.now() - originStarted;
       const containerStarted = performance.now();
       const response = await this.deps.transform(source.body, job, controller.signal, deadline);
       if (!response.ok) throw new ImageError((await response.text()) || "image transformation failed", response.status, response.headers.get("retry-after") ?? undefined);
@@ -105,6 +120,7 @@ export class TransformCoordinator {
       this.deps.waitUntil(persistence);
       const serverTiming = [
         `do_r2;dur=${r2Ms.toFixed(1)}`, `origin_headers;dur=${originMs.toFixed(1)}`,
+        this.deps.prepare ? `startup;dur=${startupMs.toFixed(1)}` : undefined,
         response.headers.get("server-timing"), `container;dur=${containerMs.toFixed(1)}`,
         `job;dur=${(performance.now() - started).toFixed(1)}`,
       ].filter(Boolean).join(", ");

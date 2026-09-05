@@ -5,6 +5,7 @@ import { config } from "../imgt.config";
 import { MAX_DISTINCT_JOBS_PER_SHARD, MAX_SOURCE_BYTES, TRANSFORM_TIMEOUT_MS } from "./constants";
 import { TransformCoordinator } from "./coordinator";
 import { handleGateway } from "./gateway";
+import { ImageError } from "./http";
 import { containerNameForKey, type ResizeJob } from "./jobs";
 import { handleImage } from "./service";
 import { DerivativeStore } from "./store";
@@ -31,6 +32,13 @@ export class ImgtImageTransformer extends Container<Env> {
     allowedHosts: parseAllowedHosts(this.env.ALLOWED_HOSTS),
     store: new DerivativeStore(this.env.DERIVATIVES),
     waitUntil: (promise) => this.ctx.waitUntil(promise),
+    prepare: async (signal) => {
+      if ((await this.getState()).status !== "healthy") {
+        const response = await this.containerFetch(new Request("http://container/health", { signal }));
+        if (!response.ok) throw new ImageError(await response.text(), response.status, response.headers.get("retry-after") ?? undefined);
+        await response.body?.cancel();
+      }
+    },
     transform: (body, job, signal, deadline) => this.containerFetch(new Request(
       `http://container/transform?w=${job.width}&q=${job.quality}`,
       { method: "POST", body, signal, headers: { "x-imgt-deadline": String(deadline) } },

@@ -6,7 +6,8 @@ import type { TransformOptions } from "./transform.ts";
 const effort = Number(process.env.WEBP_EFFORT ?? "2");
 if (!Number.isInteger(effort) || effort < 0 || effort > 6) throw new Error("WEBP_EFFORT must be an integer from 0 to 6");
 sharp.concurrency(Number(process.env.VIPS_CONCURRENCY ?? "1"));
-sharp.cache({ memory: 64, files: 0, items: 100 });
+// Requests have distinct input buffers; completed derivatives are cached in R2.
+sharp.cache(false);
 sharp.simd(true);
 
 const server = createTransformServer({
