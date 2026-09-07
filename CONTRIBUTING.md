@@ -22,9 +22,8 @@ without a running Worker. The gateway checks source access before entering the
 shared cache. The coordinator validates jobs and every source redirect. Keep
 the deployment's allowlist consistent across those boundaries.
 
-Run `npm run check` and `npx wrangler deploy --dry-run` before merging. CI runs
-the tests and builds/starts the Linux container using native Node TypeScript.
-Deployments are owned by Cloudflare's Git integration, not the CI workflow.
+Run `npm run check` and `npx wrangler deploy --dry-run` before merging.
+Cloudflare's Git integration runs the checks and deploys the project.
 
 For performance changes, run `npm run benchmark -- YOUR_ENDPOINT`; see
 [performance notes](docs/performance.md). Report region, resource limits,
@@ -37,7 +36,7 @@ updates must include both the root and container lockfiles when applicable.
 
 ## Releases
 
-After CI and a deployment smoke test pass, create a version tag and release notes
+After local checks and a deployment smoke test pass, create a version tag and release notes
 covering behavior, migration steps, and measured limitations. Test the deploy
 button against a fresh installation before calling a release independently
 deployable. Do not assume a green Worker build proves container readiness.

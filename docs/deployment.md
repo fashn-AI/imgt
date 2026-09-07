@@ -5,8 +5,8 @@
 The README's deploy button creates a repository in your GitHub account and
 connects it to Cloudflare Workers Builds. The production deploy command is
 `npx wrangler deploy`; the checked-in Wrangler build command runs `npm run check`
-before upload. Keep this integration as the deployment owner. The GitHub
-Actions workflow runs checks and a Docker startup check; it does not deploy.
+before upload. Cloudflare's GitHub integration handles deployment; no GitHub
+Actions workflow is required.
 
 The deploy button requires the source repository to be public. You need Workers
 Paid and an activated R2 subscription in the target account. Cloudflare builds

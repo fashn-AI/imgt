@@ -128,7 +128,7 @@ Sharp encoding. Cancellation and overload tests inject slow encoders so failure
 paths are deterministic. These tests do not emulate Cloudflare's tiered CDN or
 container provisioning; use a deployment smoke test to verify those surfaces.
 `npx wrangler deploy --dry-run` validates the Worker bundle without publishing
-it. CI separately builds the Docker image and checks its HTTP health endpoint.
+it and builds the Docker image locally.
 
 Structured Worker logs record shard, deduplication, failures, persistence
 latency, and source/queue/encoding timings. The container `/health` additionally

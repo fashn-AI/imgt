@@ -20,5 +20,5 @@ Review the renderer version in `container/renderer.ts` when changing image
 output or encoding defaults so incompatible results cannot share cache entries.
 
 Deployment uses Cloudflare's GitHub integration. A push to the production branch
-deploys automatically; CI checks the code but does not deploy. Verify a finished
+deploys automatically and runs `npm run check` before upload. Verify a finished
 deployment with `npm run smoke -- YOUR_ENDPOINT YOUR_SOURCE_URL`.
