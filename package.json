@@ -8,8 +8,8 @@
     "deploy": "wrangler deploy",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write \"**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx}\"",
-    "format:check": "prettier --check \"**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx}\"",
+    "format": "prettier --write \"**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx,html,css}\"",
+    "format:check": "prettier --check \"**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx,html,css}\"",
     "check": "npm run format:check && npm run typecheck && npm test",
     "smoke": "node scripts/smoke.mjs",
     "benchmark": "tsx scripts/benchmark.mts"

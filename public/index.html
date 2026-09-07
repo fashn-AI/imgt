@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Try imgt: simple image optimization on your own Cloudflare account."
+    />
+    <title>imgt — Image optimization, live</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/main.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <a class="brand" href="/" aria-label="imgt home">imgt<span>.</span></a>
+        <a href="https://github.com/relferreira/imgt">GitHub ↗</a>
+      </header>
+      <section aria-labelledby="title">
+        <p class="eyebrow">LIVE DEMO</p>
+        <h1 id="title">Image optimization, live.</h1>
+        <p class="intro">Pick a width. Turn this Unsplash photo into a WebP.</p>
+        <figure>
+          <img
+            id="preview"
+            src="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&amp;fit=crop&amp;w=1920&amp;h=1200&amp;q=90"
+            alt="A road winding between red sandstone cliffs"
+            width="1920"
+            height="1200"
+            fetchpriority="high"
+          />
+          <figcaption>
+            <span id="image-label">Original photo</span>
+            <a href="https://unsplash.com/">Photo from Unsplash ↗</a>
+          </figcaption>
+        </figure>
+        <form id="demo">
+          <fieldset id="controls" disabled>
+            <label for="width">Output width</label>
+            <select id="width" name="width">
+              <option value="640">640 px</option>
+              <option value="1200">1200 px</option>
+              <option value="1920">1920 px</option>
+            </select>
+            <button id="optimize" type="submit">Optimize image</button>
+          </fieldset>
+          <a id="output" target="_blank" rel="noopener" hidden>Open WebP ↗</a>
+        </form>
+        <p id="status" role="status" aria-live="polite">
+          The original is above. Try a smaller version.
+        </p>
+        <noscript><p>Enable JavaScript to try the demo.</p></noscript>
+      </section>
+      <footer>Open source. Self-hosted on Cloudflare.</footer>
+    </main>
+  </body>
+</html>

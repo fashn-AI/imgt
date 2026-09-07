@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "imgt",
   "main": "src/index.ts",
+  "assets": { "directory": "./public" },
   "build": { "command": "npm run check" },
   "vars": {
     "ALLOWED_HOSTS": "images.unsplash.com"

@@ -32,9 +32,10 @@ See [costs and configuration](docs/deployment.md#costs).
    }
    ```
 
-3. Open the deployed Worker URL. The homepage tests a real image, the edge
-   cache, and ETags, and gives you a loader containing your own endpoint URL.
-   Allow several minutes for first-time container provisioning.
+3. Open the deployed Worker URL to try the Unsplash demo. Choose a width and
+   optimize the photo; run it again to see a cache hit. The demo requires
+   `images.unsplash.com` in your allowlist. Allow several minutes for first-time
+   container provisioning.
 4. Add an R2 lifecycle rule to expire derivatives after 30 days; see
    [storage cleanup](docs/deployment.md#storage-cleanup).
 
@@ -67,7 +68,7 @@ include schemes, paths, ports, IP addresses, or a bare `*`.
 
 ## Next.js
 
-Copy the loader from your deployed homepage, or create `image-loader.js`:
+Create `image-loader.js` with your deployed endpoint:
 
 ```js
 'use client';
@@ -95,7 +96,8 @@ standard Next.js sizes; keep them aligned if you customize either application.
 
 ## Verify a deployment
 
-The homepage is the simplest check. From a checkout with dependencies installed:
+The homepage provides an interactive image demo. For image, cache, and ETag
+verification, run this from a checkout with dependencies installed:
 
 ```bash
 npm run smoke -- https://imgt.YOUR-SUBDOMAIN.workers.dev https://cdn.example.com/photo.jpg

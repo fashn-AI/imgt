@@ -8,7 +8,7 @@ npm run check
 npm run dev
 ```
 
-Run `npm run format` before committing TypeScript or JavaScript changes. Use
+Run `npm run format` before committing code or static asset changes. Use
 the pinned Prettier version with its default settings. `npm run check` includes
 formatting validation, typechecking, and tests.
 

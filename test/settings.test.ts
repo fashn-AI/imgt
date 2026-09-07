@@ -70,22 +70,15 @@ test("custom hosts reach the coordinator and redirect checks use that same confi
   await allowed.drain();
 });
 
-test("onboarding is uncached, uses this deployment URL, and does not start transformations", async () => {
+test("health is uncached and does not read images or start transformations", async () => {
   const h = createHarness();
-  const response = await h.gateway(new Request("https://my-images.example/"));
-  const html = await response.text();
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.match(
-    response.headers.get("content-security-policy")!,
-    /frame-ancestors 'none'/,
-  );
-  assert.match(html, /my-images.example/);
-  assert.match(html, /ALLOWED_HOSTS/);
-  assert.equal(h.downloads, 0);
-  assert.equal(h.bucket.reads, 0);
   const health = await h.gateway(
     new Request("https://my-images.example/health"),
   );
+  assert.equal(health.status, 200);
+  assert.equal(health.headers.get("cache-control"), "no-store");
   assert.deepEqual(await health.json(), { ok: true, configured: true });
+  assert.equal(h.downloads, 0);
+  assert.equal(h.bucket.reads, 0);
+  assert.equal(h.transforms, 0);
 });

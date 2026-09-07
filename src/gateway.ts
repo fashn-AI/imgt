@@ -1,4 +1,3 @@
-import { homeResponse } from "./home";
 import { canonicalCacheRequest, parseImageOptions } from "./options";
 import { conditionalResponse, errorResponse, failureResponse } from "./http";
 
@@ -26,8 +25,6 @@ export async function handleGateway(
       { ok: true, configured: deps.allowedHosts.length > 0 },
       { headers: { "cache-control": "no-store" } },
     );
-  if (request.method === "GET" && url.pathname === "/")
-    return homeResponse(request, deps.allowedHosts);
   if (request.method !== "GET" || url.pathname !== "/image")
     return errorResponse("not found", 404);
   try {

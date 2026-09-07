@@ -139,6 +139,8 @@ image available. Consult [container rollout behavior](https://developers.cloudfl
 | HTTP 504 | Source download, startup, queueing, or transform exceeded the deadline. Check timing and source size. |
 | Container name already exists | Use a distinct name for a new installation; do not delete an existing application's resources. |
 
-The onboarding page verifies the public API and does not edit infrastructure.
-It has no administrative endpoints or credentials. Its test makes three image
-requests, which count toward the IP allowance.
+The static homepage demonstrates resizing a fixed Unsplash photo. It requires
+`images.unsplash.com` in the allowlist. Opening the page loads the original from
+Unsplash; each click on Optimize image or Run again makes one image request
+against this deployment and counts toward the IP allowance. Use the smoke
+command above for full image, cache, and ETag verification.

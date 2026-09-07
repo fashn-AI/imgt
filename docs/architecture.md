@@ -3,6 +3,12 @@
 Lean, self-hosted image optimization on Cloudflare. There is no Cloudflare
 Images path or fallback.
 
+The demo in `public/` is served by Cloudflare Workers Static Assets, alongside
+the Worker. Matching static files bypass the Worker; `/image` and `/health`
+continue through the gateway. The demo's HTML, CSS, and browser JavaScript are
+separate files with no frontend framework or build step. `public/_headers`
+sets the static responses' content security policy.
+
 ```text
 GET /image?url=https://cdn.example.com/photo.jpg&w=1920&q=77
              │
