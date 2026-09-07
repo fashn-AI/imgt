@@ -18,7 +18,8 @@ export async function encodeImage(
 ): Promise<Buffer> {
   signal.throwIfAborted();
   const remainingMs = deadline - Date.now();
-  if (remainingMs <= 0) throw new InputError("image transformation timed out", 504);
+  if (remainingMs <= 0)
+    throw new InputError("image transformation timed out", 504);
   const result = await sharp(input, {
     failOn: "warning",
     limitInputPixels: 50_000_000,

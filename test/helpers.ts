@@ -28,14 +28,20 @@ export class MemoryBucket implements DerivativeBucket {
     this.reads += 1;
     const value = this.objects.get(key);
     return value
-      ? { body: new Response(value.body).body!, customMetadata: { ...value.customMetadata } }
+      ? {
+          body: new Response(value.body).body!,
+          customMetadata: { ...value.customMetadata },
+        }
       : null;
   }
   async put(key: string, body: ArrayBuffer, options: R2PutOptions) {
     this.puts += 1;
     await this.putGate;
     if (this.failPuts) throw new Error("injected persistence failure");
-    this.objects.set(key, { body: body.slice(0), customMetadata: { ...options.customMetadata } });
+    this.objects.set(key, {
+      body: body.slice(0),
+      customMetadata: { ...options.customMetadata },
+    });
   }
   async delete(key: string) {
     this.objects.delete(key);
@@ -88,7 +94,8 @@ export function createHarness(
       return new Response(`webp-${transforms}`);
     },
   });
-  const resize = (job: Parameters<Transform>[1]) => coordinator.fetch(jobRequest(job));
+  const resize = (job: Parameters<Transform>[1]) =>
+    coordinator.fetch(jobRequest(job));
   const imageJob = (request: Request) =>
     handleImageJob(request, { allowedHosts, store, resize, waitUntil });
   const imageCache = {

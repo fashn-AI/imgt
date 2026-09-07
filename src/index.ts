@@ -1,9 +1,17 @@
 import { RENDERER_VERSION } from "../container/renderer";
-import { Container, getContainer, type StopParams } from "@cloudflare/containers";
+import {
+  Container,
+  getContainer,
+  type StopParams,
+} from "@cloudflare/containers";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { parseAllowedHosts } from "./settings";
 import { config } from "../imgt.config";
-import { MAX_DISTINCT_JOBS_PER_SHARD, MAX_SOURCE_BYTES, TRANSFORM_TIMEOUT_MS } from "./constants";
+import {
+  MAX_DISTINCT_JOBS_PER_SHARD,
+  MAX_SOURCE_BYTES,
+  TRANSFORM_TIMEOUT_MS,
+} from "./constants";
 import { TransformCoordinator } from "./coordinator";
 import { handleGateway } from "./gateway";
 import { ImageError } from "./http";
@@ -52,12 +60,15 @@ export class ImgtImageTransformer extends Container<Env> {
     },
     transform: (body, job, signal, deadline) =>
       this.containerFetch(
-        new Request(`http://container/transform?w=${job.width}&q=${job.quality}`, {
-          method: "POST",
-          body,
-          signal,
-          headers: { "x-imgt-deadline": String(deadline) },
-        }),
+        new Request(
+          `http://container/transform?w=${job.width}&q=${job.quality}`,
+          {
+            method: "POST",
+            body,
+            signal,
+            headers: { "x-imgt-deadline": String(deadline) },
+          },
+        ),
       ),
   });
 
@@ -104,7 +115,8 @@ export class ImgtImageCache extends WorkerEntrypoint<Env> {
 
 export default {
   fetch(request, env, ctx): Promise<Response> {
-    const imageCache = (ctx.exports as unknown as { ImgtImageCache: Fetcher }).ImgtImageCache;
+    const imageCache = (ctx.exports as unknown as { ImgtImageCache: Fetcher })
+      .ImgtImageCache;
     return handleGateway(request, {
       imageCache,
       rateLimiter: env.IMAGE_RATE_LIMITER,

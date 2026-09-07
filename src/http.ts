@@ -11,7 +11,11 @@ export class ImageError extends Error {
   }
 }
 
-export function errorResponse(message: string, status = 400, retryAfter?: string): Response {
+export function errorResponse(
+  message: string,
+  status = 400,
+  retryAfter?: string,
+): Response {
   const headers = new Headers({
     "content-type": "text/plain; charset=utf-8",
     "cache-control": "no-store",
@@ -47,12 +51,20 @@ export function imageResponse(
 
 // Evaluate conditions after the inner cache lookup. A client-specific 304 must
 // never replace the shared, full representation in the image entrypoint cache.
-export async function conditionalResponse(request: Request, response: Response): Promise<Response> {
+export async function conditionalResponse(
+  request: Request,
+  response: Response,
+): Promise<Response> {
   const condition = request.headers.get("if-none-match");
   const etag = response.headers.get("etag");
   if (response.status !== 200 || !condition || !etag) return response;
   const tags = condition.match(/(?:W\/)?"[^"]*"|\*/g) ?? [];
-  if (!tags.some((tag) => tag === "*" || tag.replace(/^W\//, "") === etag.replace(/^W\//, ""))) {
+  if (
+    !tags.some(
+      (tag) =>
+        tag === "*" || tag.replace(/^W\//, "") === etag.replace(/^W\//, ""),
+    )
+  ) {
     return response;
   }
   await response.body?.cancel();

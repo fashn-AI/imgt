@@ -15,10 +15,15 @@ interface ImageServiceDependencies extends ImageRouterDependencies {
   waitUntil: (promise: Promise<void>) => void;
 }
 
-async function refresh(job: ResizeJob, resize: ImageServiceDependencies["resize"]): Promise<void> {
+async function refresh(
+  job: ResizeJob,
+  resize: ImageServiceDependencies["resize"],
+): Promise<void> {
   const response = await resize(job);
   if (!response.ok) {
-    console.error(`background image refresh failed: ${response.status} ${await response.text()}`);
+    console.error(
+      `background image refresh failed: ${response.status} ${await response.text()}`,
+    );
   } else {
     await response.body?.cancel();
   }
@@ -45,7 +50,8 @@ export async function routeImage(
   deps: ImageRouterDependencies,
 ): Promise<Response> {
   const url = new URL(request.url);
-  if (request.method !== "GET" || url.pathname !== "/image") return errorResponse("not found", 404);
+  if (request.method !== "GET" || url.pathname !== "/image")
+    return errorResponse("not found", 404);
   try {
     const options = parseImageOptions(url, deps.allowedHosts);
     const outputKey = await derivativeKey(DERIVATIVE_PREFIX, options);
@@ -58,15 +64,22 @@ export async function routeImage(
 
 // Run alongside the coordinator so R2 reads do not add a separate edge-to-R2 trip.
 // Fresh/stale derivatives still skip container startup entirely.
-async function serveImage(job: ResizeJob, deps: ImageServiceDependencies): Promise<Response> {
+async function serveImage(
+  job: ResizeJob,
+  deps: ImageServiceDependencies,
+): Promise<Response> {
   try {
     const r2Started = Date.now();
     const stored = await deps.store.get(job.outputKey);
     const r2Ms = Date.now() - r2Started;
     if (stored) {
       const maxAge = remainingSeconds(stored.freshUntil);
-      if (maxAge > 0) return imageResponse(stored.body, stored.etag, "R2", maxAge);
-      const staleTtl = Math.min(STALE_CACHE_TTL_SECONDS, remainingSeconds(stored.staleUntil));
+      if (maxAge > 0)
+        return imageResponse(stored.body, stored.etag, "R2", maxAge);
+      const staleTtl = Math.min(
+        STALE_CACHE_TTL_SECONDS,
+        remainingSeconds(stored.staleUntil),
+      );
       if (staleTtl > 0) {
         deps.waitUntil(
           refresh(job, deps.resize).catch((cause) =>

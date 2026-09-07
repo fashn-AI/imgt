@@ -20,20 +20,29 @@ test(
     const [chunk] = await once(child.stdout, "data");
     const port = Number(String(chunk).match(/listening on (\d+)/)?.[1]);
     assert.ok(port > 0);
-    const input = await sharp({ create: { width: 32, height: 32, channels: 3, background: "red" } })
+    const input = await sharp({
+      create: { width: 32, height: 32, channels: 3, background: "red" },
+    })
       .png()
       .toBuffer();
-    const request = http.request(`http://127.0.0.1:${port}/transform?w=16&q=77`, {
-      method: "POST",
-      headers: { "content-length": input.length, "x-imgt-deadline": String(Date.now() + 2000) },
-    });
+    const request = http.request(
+      `http://127.0.0.1:${port}/transform?w=16&q=77`,
+      {
+        method: "POST",
+        headers: {
+          "content-length": input.length,
+          "x-imgt-deadline": String(Date.now() + 2000),
+        },
+      },
+    );
     const received = once(request, "response");
     request.write(input.subarray(0, 1));
     // Observe admission before signaling; completing the upload must still work.
     let uploading = false;
     for (let attempt = 0; attempt < 50; attempt++) {
       const health = await fetch(`http://127.0.0.1:${port}/health`);
-      uploading = ((await health.json()) as { uploading: number }).uploading === 1;
+      uploading =
+        ((await health.json()) as { uploading: number }).uploading === 1;
       if (uploading) break;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }

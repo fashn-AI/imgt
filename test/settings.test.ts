@@ -5,11 +5,14 @@ import { handleGateway } from "../src/gateway";
 import { createHarness } from "./helpers";
 
 test("deployment hosts normalize and empty configuration denies image access", async () => {
-  assert.deepEqual(parseAllowedHosts(" CDN.EXAMPLE.COM, *.images.example.com\ncdn.example.com "), [
-    "cdn.example.com",
-    "*.images.example.com",
-  ]);
-  for (const value of [undefined, "", "   , "]) assert.deepEqual(parseAllowedHosts(value), []);
+  assert.deepEqual(
+    parseAllowedHosts(
+      " CDN.EXAMPLE.COM, *.images.example.com\ncdn.example.com ",
+    ),
+    ["cdn.example.com", "*.images.example.com"],
+  );
+  for (const value of [undefined, "", "   , "])
+    assert.deepEqual(parseAllowedHosts(value), []);
   for (const value of [
     "*",
     "https://example.com",
@@ -20,7 +23,9 @@ test("deployment hosts normalize and empty configuration denies image access", a
     assert.throws(() => parseAllowedHosts(value), /ALLOWED_HOSTS/);
   }
   const response = await handleGateway(
-    new Request("https://img.example/image?url=https://images.unsplash.com/x.jpg&w=640"),
+    new Request(
+      "https://img.example/image?url=https://images.unsplash.com/x.jpg&w=640",
+    ),
     {
       allowedHosts: [],
       rateLimiter: { limit: async () => ({ success: true }) },
@@ -44,7 +49,9 @@ test("custom hosts reach the coordinator and redirect checks use that same confi
       }),
   });
   const response = await h.gateway(
-    new Request("https://img.example/image?url=https://cdn.example.com/x.jpg&w=640"),
+    new Request(
+      "https://img.example/image?url=https://cdn.example.com/x.jpg&w=640",
+    ),
   );
   assert.equal(response.status, 502);
   assert.equal(h.downloads, 1);
@@ -53,7 +60,9 @@ test("custom hosts reach the coordinator and redirect checks use that same confi
   assert.equal(
     (
       await allowed.gateway(
-        new Request("https://img.example/image?url=https://cdn.example.com/x.jpg&w=640"),
+        new Request(
+          "https://img.example/image?url=https://cdn.example.com/x.jpg&w=640",
+        ),
       )
     ).status,
     200,
@@ -67,11 +76,16 @@ test("onboarding is uncached, uses this deployment URL, and does not start trans
   const html = await response.text();
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.match(response.headers.get("content-security-policy")!, /frame-ancestors 'none'/);
+  assert.match(
+    response.headers.get("content-security-policy")!,
+    /frame-ancestors 'none'/,
+  );
   assert.match(html, /my-images.example/);
   assert.match(html, /ALLOWED_HOSTS/);
   assert.equal(h.downloads, 0);
   assert.equal(h.bucket.reads, 0);
-  const health = await h.gateway(new Request("https://my-images.example/health"));
+  const health = await h.gateway(
+    new Request("https://my-images.example/health"),
+  );
   assert.deepEqual(await health.json(), { ok: true, configured: true });
 });

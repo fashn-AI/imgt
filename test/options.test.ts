@@ -12,12 +12,17 @@ import {
 const ALLOWED_HOSTS = ["cdn.example.com", "*.images.example.com"];
 
 function imageUrl(source: string, suffix = "&w=1920&q=75"): URL {
-  return new URL(`https://img.example/image?url=${encodeURIComponent(source)}${suffix}`);
+  return new URL(
+    `https://img.example/image?url=${encodeURIComponent(source)}${suffix}`,
+  );
 }
 
 test("parses an allowlisted HTTPS image URL", () => {
   assert.deepEqual(
-    parseImageOptions(imageUrl("https://cdn.example.com/products/shoe.jpg"), ALLOWED_HOSTS),
+    parseImageOptions(
+      imageUrl("https://cdn.example.com/products/shoe.jpg"),
+      ALLOWED_HOSTS,
+    ),
     {
       sourceUrl: "https://cdn.example.com/products/shoe.jpg",
       width: 1920,
@@ -27,7 +32,9 @@ test("parses an allowlisted HTTPS image URL", () => {
 });
 
 test("denies every source when the configured allowlist is empty", () => {
-  assert.throws(() => parseImageOptions(imageUrl("https://cdn.example.com/photo.jpg"), []));
+  assert.throws(() =>
+    parseImageOptions(imageUrl("https://cdn.example.com/photo.jpg"), []),
+  );
 });
 
 test("supports wildcard subdomains but not the parent host", () => {
@@ -35,46 +42,71 @@ test("supports wildcard subdomains but not the parent host", () => {
     normalizeSourceUrl("https://a.images.example.com/photo.jpg", ALLOWED_HOSTS),
     "https://a.images.example.com/photo.jpg",
   );
-  assert.throws(() => normalizeSourceUrl("https://images.example.com/photo.jpg", ALLOWED_HOSTS));
+  assert.throws(() =>
+    normalizeSourceUrl("https://images.example.com/photo.jpg", ALLOWED_HOSTS),
+  );
 });
 
 test("normalizes source URLs and removes fragments", () => {
   assert.equal(
-    normalizeSourceUrl("https://CDN.EXAMPLE.COM:443/photo.jpg?version=2#ignored", ALLOWED_HOSTS),
+    normalizeSourceUrl(
+      "https://CDN.EXAMPLE.COM:443/photo.jpg?version=2#ignored",
+      ALLOWED_HOSTS,
+    ),
     "https://cdn.example.com/photo.jpg?version=2",
   );
 });
 
 test("uses the configured default quality", () => {
   assert.equal(
-    parseImageOptions(imageUrl("https://cdn.example.com/photo.jpg", "&w=640"), ALLOWED_HOSTS)
-      .quality,
+    parseImageOptions(
+      imageUrl("https://cdn.example.com/photo.jpg", "&w=640"),
+      ALLOWED_HOSTS,
+    ).quality,
     77,
   );
 });
 
 test("accepts the small widths emitted by the Next.js default srcset", () => {
   assert.equal(
-    parseImageOptions(imageUrl("https://cdn.example.com/icon.png", "&w=32&q=75"), ALLOWED_HOSTS)
-      .width,
+    parseImageOptions(
+      imageUrl("https://cdn.example.com/icon.png", "&w=32&q=75"),
+      ALLOWED_HOSTS,
+    ).width,
     32,
   );
 });
 
 test("rejects unsafe sources and unbounded variants", () => {
-  assert.throws(() => parseImageOptions(imageUrl("https://other.example/x.jpg"), ALLOWED_HOSTS));
-  assert.throws(() => parseImageOptions(imageUrl("http://cdn.example.com/x.jpg"), ALLOWED_HOSTS));
   assert.throws(() =>
-    parseImageOptions(imageUrl("https://user:pass@cdn.example.com/x.jpg"), ALLOWED_HOSTS),
+    parseImageOptions(imageUrl("https://other.example/x.jpg"), ALLOWED_HOSTS),
   );
   assert.throws(() =>
-    parseImageOptions(imageUrl("https://cdn.example.com:8443/x.jpg"), ALLOWED_HOSTS),
+    parseImageOptions(imageUrl("http://cdn.example.com/x.jpg"), ALLOWED_HOSTS),
   );
   assert.throws(() =>
-    parseImageOptions(imageUrl("https://cdn.example.com/x.jpg", "&w=641"), ALLOWED_HOSTS),
+    parseImageOptions(
+      imageUrl("https://user:pass@cdn.example.com/x.jpg"),
+      ALLOWED_HOSTS,
+    ),
   );
   assert.throws(() =>
-    parseImageOptions(imageUrl("https://cdn.example.com/x.jpg", "&w=640&q=76"), ALLOWED_HOSTS),
+    parseImageOptions(
+      imageUrl("https://cdn.example.com:8443/x.jpg"),
+      ALLOWED_HOSTS,
+    ),
+  );
+  assert.throws(() =>
+    parseImageOptions(
+      imageUrl("https://cdn.example.com/x.jpg", "&w=641"),
+      ALLOWED_HOSTS,
+    ),
+  );
+  assert.throws(() =>
+    parseImageOptions(
+      imageUrl("https://cdn.example.com/x.jpg", "&w=640&q=76"),
+      ALLOWED_HOSTS,
+    ),
   );
 });
 
@@ -94,7 +126,10 @@ test("derivative identity changes with source URL and options", async () => {
 });
 
 test("normalizes R2 prefixes", () => {
-  assert.equal(withPrefix("/derivatives/v1/", "image.webp"), "derivatives/v1/image.webp");
+  assert.equal(
+    withPrefix("/derivatives/v1/", "image.webp"),
+    "derivatives/v1/image.webp",
+  );
   assert.equal(withPrefix("", "image.webp"), "image.webp");
 });
 

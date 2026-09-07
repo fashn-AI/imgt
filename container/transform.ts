@@ -24,13 +24,19 @@ export async function encodeImage(
   signal.throwIfAborted();
   // Resize encoded RGB values, then explicitly convert the smaller image to
   // sRGB. CMYK, grayscale and higher-depth inputs keep the existing path.
-  const deferIcc = Boolean(metadata.icc) && metadata.space === "srgb" && metadata.depth === "uchar";
-  const pipeline = (deferIcc ? sharp(input, { ...inputOptions, ignoreIcc: true }) : original)
+  const deferIcc =
+    Boolean(metadata.icc) &&
+    metadata.space === "srgb" &&
+    metadata.depth === "uchar";
+  const pipeline = (
+    deferIcc ? sharp(input, { ...inputOptions, ignoreIcc: true }) : original
+  )
     .rotate()
     .resize({ width: options.width, withoutEnlargement: true, fit: "inside" });
   if (deferIcc) pipeline.withIccProfile("srgb", { attach: false });
   const remainingMs = deadline - Date.now();
-  if (remainingMs <= 0) throw new InputError("image transformation timed out", 504);
+  if (remainingMs <= 0)
+    throw new InputError("image transformation timed out", 504);
   const result = await pipeline
     .webp({ quality: options.quality, effort: options.effort })
     .timeout({ seconds: Math.max(1, Math.ceil(remainingMs / 1000)) })

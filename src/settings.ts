@@ -1,5 +1,7 @@
 // Deployment-specific settings come from Wrangler vars, not application code.
-export function parseAllowedHosts(value: string | undefined): readonly string[] {
+export function parseAllowedHosts(
+  value: string | undefined,
+): readonly string[] {
   const hosts = [
     ...new Set(
       (value ?? "")
@@ -15,7 +17,9 @@ export function parseAllowedHosts(value: string | undefined): readonly string[] 
       return (
         domain.length > 253 ||
         /^\d+(\.\d+){3}$/.test(domain) ||
-        !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(domain)
+        !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(
+          domain,
+        )
       );
     })
   )

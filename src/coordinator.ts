@@ -1,7 +1,17 @@
 import { remainingSeconds } from "./cache";
 import { MAX_DISTINCT_JOBS_PER_SHARD, TRANSFORM_TIMEOUT_MS } from "./constants";
-import { errorResponse, failureResponse, ImageError, imageResponse } from "./http";
-import { containerNameForKey, parseResizeJob, type ResizeJob, SingleFlight } from "./jobs";
+import {
+  errorResponse,
+  failureResponse,
+  ImageError,
+  imageResponse,
+} from "./http";
+import {
+  containerNameForKey,
+  parseResizeJob,
+  type ResizeJob,
+  SingleFlight,
+} from "./jobs";
 import { fetchSource, type SourceFetch } from "./source";
 import { contentEtag, DerivativeStore } from "./store";
 import { config } from "../imgt.config";
@@ -50,7 +60,11 @@ export class TransformCoordinator {
     const shard = containerNameForKey(job.outputKey, config.containers.shards);
     if (!coalesced && this.#singleFlight.size >= MAX_DISTINCT_JOBS_PER_SHARD) {
       console.log(
-        JSON.stringify({ event: "transform_rejected", shard, inFlight: this.#singleFlight.size }),
+        JSON.stringify({
+          event: "transform_rejected",
+          shard,
+          inFlight: this.#singleFlight.size,
+        }),
       );
       return errorResponse("transform queue is full", 429, "1");
     }
@@ -107,7 +121,10 @@ export class TransformCoordinator {
 
     const controller = new AbortController();
     const deadline = Date.now() + (this.deps.timeoutMs ?? TRANSFORM_TIMEOUT_MS);
-    const timeout = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
+    const timeout = setTimeout(
+      () => controller.abort(),
+      Math.max(0, deadline - Date.now()),
+    );
     let sourceBody: ReadableStream<Uint8Array> | undefined;
     try {
       const originStarted = performance.now();
@@ -128,7 +145,8 @@ export class TransformCoordinator {
             controller.signal.throwIfAborted();
           }
           originMs = performance.now() - originStarted;
-          freshUntil = source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
+          freshUntil =
+            source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
           return source;
         }),
         Promise.resolve()
@@ -138,7 +156,12 @@ export class TransformCoordinator {
           }),
       ]);
       const containerStarted = performance.now();
-      const response = await this.deps.transform(source.body, job, controller.signal, deadline);
+      const response = await this.deps.transform(
+        source.body,
+        job,
+        controller.signal,
+        deadline,
+      );
       if (!response.ok)
         throw new ImageError(
           (await response.text()) || "image transformation failed",
@@ -155,7 +178,8 @@ export class TransformCoordinator {
         throw new ImageError("image renderer is updating", 503, "5");
       }
       const body = await response.arrayBuffer();
-      if (controller.signal.aborted) throw new ImageError("image transformation timed out", 504);
+      if (controller.signal.aborted)
+        throw new ImageError("image transformation timed out", 504);
       const containerMs = performance.now() - containerStarted;
       const etag = await contentEtag(body);
       const persistenceStarted = performance.now();
@@ -187,19 +211,31 @@ export class TransformCoordinator {
       ]
         .filter(Boolean)
         .join(", ");
-      return { body, etag, freshUntil, cacheStatus: "MISS", serverTiming, persistence };
+      return {
+        body,
+        etag,
+        freshUntil,
+        cacheStatus: "MISS",
+        serverTiming,
+        persistence,
+      };
     } catch (cause) {
-      if (controller.signal.aborted) throw new ImageError("image transformation timed out", 504);
+      if (controller.signal.aborted)
+        throw new ImageError("image transformation timed out", 504);
       // Stop serving a previously cached image after the source is removed or
       // stops permitting public access. Temporary failures preserve stale data.
-      if (cause instanceof ImageError && [403, 404, 410].includes(cause.status)) {
+      if (
+        cause instanceof ImageError &&
+        [403, 404, 410].includes(cause.status)
+      ) {
         await this.deps.store.delete(job.outputKey);
       }
       throw cause;
     } finally {
       clearTimeout(timeout);
       controller.abort();
-      if (sourceBody && !sourceBody.locked) await sourceBody.cancel().catch(() => {});
+      if (sourceBody && !sourceBody.locked)
+        await sourceBody.cancel().catch(() => {});
     }
   }
 }

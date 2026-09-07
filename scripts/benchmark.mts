@@ -12,7 +12,9 @@ import { config } from "../imgt.config.ts";
 
 const endpoint = process.argv[2];
 if (!endpoint) {
-  throw Error("Usage: npm run benchmark -- https://imgt.YOUR-SUBDOMAIN.workers.dev");
+  throw Error(
+    "Usage: npm run benchmark -- https://imgt.YOUR-SUBDOMAIN.workers.dev",
+  );
 }
 
 const samples = Number(process.env.BENCH_SAMPLES ?? 2);
@@ -50,13 +52,22 @@ try {
           quality: 77,
         });
         shard = containerNameForKey(key, config.containers.shards);
-      } while (shard !== `instance-${RENDERER_VERSION}-${sample % config.containers.shards}`);
+      } while (
+        shard !==
+        `instance-${RENDERER_VERSION}-${sample % config.containers.shards}`
+      );
 
-      const origin = await fetch(source, { signal: AbortSignal.timeout(20000) });
+      const origin = await fetch(source, {
+        signal: AbortSignal.timeout(20000),
+      });
       assert.equal(origin.status, 200);
       const input = Buffer.from(await origin.arrayBuffer());
       const url = new URL("/image", endpoint);
-      url.search = new URLSearchParams({ url: source, w: String(width), q: "77" }).toString();
+      url.search = new URLSearchParams({
+        url: source,
+        w: String(width),
+        q: "77",
+      }).toString();
 
       const t = performance.now();
       const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
@@ -82,7 +93,10 @@ try {
       assert.equal(meta.width, width);
       assert.equal(meta.format, "webp");
       const etag = response.headers.get("etag");
-      assert.equal(etag, '"' + createHash("sha256").update(body).digest("hex") + '"');
+      assert.equal(
+        etag,
+        '"' + createHash("sha256").update(body).digest("hex") + '"',
+      );
 
       const hitStart = performance.now();
       const hit = await fetch(url);
@@ -90,7 +104,9 @@ try {
       const hitMs = performance.now() - hitStart;
       assert.equal(hit.headers.get("x-imgt-cache"), "EDGE");
 
-      const conditional = await fetch(url, { headers: { "if-none-match": etag! } });
+      const conditional = await fetch(url, {
+        headers: { "if-none-match": etag! },
+      });
       assert.equal(conditional.status, 304);
       assert.equal((await conditional.arrayBuffer()).byteLength, 0);
 

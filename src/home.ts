@@ -3,10 +3,16 @@ import { config } from "../imgt.config";
 const escapeHtml = (value: string) =>
   value.replace(
     /[&<>"']/g,
-    (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        char
+      ]!,
   );
 
-export function homeResponse(request: Request, allowedHosts: readonly string[]): Response {
+export function homeResponse(
+  request: Request,
+  allowedHosts: readonly string[],
+): Response {
   const nonce = crypto.randomUUID();
   const origin = new URL(request.url).origin;
   const demo = allowedHosts.includes("images.unsplash.com")
@@ -280,7 +286,9 @@ export default function imageLoader({ src, width, quality = ${config.transforms.
               <span class="status" id="status">Worker reachable</span>
             </header>
             <h1>Your images.<br />Your Cloudflare account.</h1>
-            <p>Resize and serve WebP images through your own cached endpoint.</p>
+            <p>
+              Resize and serve WebP images through your own cached endpoint.
+            </p>
             <div class="endpoint">${escapeHtml(origin)}/image</div>
             <div class="grid">
               <section class="card">
@@ -309,11 +317,14 @@ export default function imageLoader({ src, width, quality = ${config.transforms.
                       </select>
                     </div>
                   </div>
-                  <button type="submit" id="test-button">Test image &amp; cache</button>
+                  <button type="submit" id="test-button">
+                    Test image &amp; cache
+                  </button>
                 </form>
                 <p class="note">
-                  Runs a transform, repeats it to check the cache, then checks the ETag. First
-                  requests may take longer while a container starts.
+                  Runs a transform, repeats it to check the cache, then checks
+                  the ETag. First requests may take longer while a container
+                  starts.
                 </p>
                 <p class="small allowed">
                   <strong>Allowed hosts:</strong>
@@ -321,15 +332,18 @@ export default function imageLoader({ src, width, quality = ${config.transforms.
                 </p>
                 <p class="small">
                   Set <code>vars.ALLOWED_HOSTS</code> in your repository’s
-                  <code>wrangler.jsonc</code> to your image hosts, then push to your production
-                  branch. Separate hosts with commas; <code>*.example.com</code> allows subdomains.
+                  <code>wrangler.jsonc</code> to your image hosts, then push to
+                  your production branch. Separate hosts with commas;
+                  <code>*.example.com</code> allows subdomains.
                 </p>
               </section>
               <section class="card">
                 <h2>Deployment check</h2>
                 <div class="result" aria-live="polite">
                   <img id="preview" alt="Transformed image preview" hidden />
-                  <p id="result-message">Run the image test to verify the transformer and cache.</p>
+                  <p id="result-message">
+                    Run the image test to verify the transformer and cache.
+                  </p>
                 </div>
                 <div id="metrics"></div>
               </section>
@@ -337,11 +351,12 @@ export default function imageLoader({ src, width, quality = ${config.transforms.
             <section class="card">
               <h2>2. Connect Next.js</h2>
               <p class="small">
-                Save this as <code>image-loader.js</code>. Pass absolute source URLs from your
-                allowed hosts to <code>next/image</code>.
+                Save this as <code>image-loader.js</code>. Pass absolute source
+                URLs from your allowed hosts to <code>next/image</code>.
               </p>
               <label for="loader">Image loader</label
-              ><textarea id="loader" readonly spellcheck="false">${escapeHtml(loader)}</textarea>
+              ><textarea id="loader" readonly spellcheck="false">
+${escapeHtml(loader)}</textarea>
               <div class="copy-row">
                 <button class="secondary" id="copy">Copy loader</button
                 ><span class="small" id="copy-status" aria-live="polite"></span>
@@ -357,9 +372,11 @@ export default {
 };</pre>
             </section>
             <footer>
-              <a href="https://github.com/relferreira/imgt">Source &amp; documentation</a> · MIT
-              licensed · Images remain in your Cloudflare account. This page changes no
-              configuration.
+              <a href="https://github.com/relferreira/imgt"
+                >Source &amp; documentation</a
+              >
+              · MIT licensed · Images remain in your Cloudflare account. This
+              page changes no configuration.
             </footer>
           </main>
           <script nonce="${nonce}">
@@ -371,7 +388,8 @@ export default {
                 byId("copy-status").textContent = "Copied";
               } catch {
                 byId("loader").select();
-                byId("copy-status").textContent = "Select and copy the loader above.";
+                byId("copy-status").textContent =
+                  "Select and copy the loader above.";
               }
             });
             byId("test-form").addEventListener("submit", async (event) => {
@@ -396,9 +414,12 @@ export default {
                   signal: AbortSignal.timeout(30000),
                 });
                 if (!response.ok)
-                  throw new Error("HTTP " + response.status + ": " + (await response.text()));
+                  throw new Error(
+                    "HTTP " + response.status + ": " + (await response.text()),
+                  );
                 const blob = await response.blob();
-                if (blob.type !== "image/webp") throw new Error("Expected a WebP image.");
+                if (blob.type !== "image/webp")
+                  throw new Error("Expected a WebP image.");
                 const elapsed = Math.round(performance.now() - start);
                 if (previewUrl) URL.revokeObjectURL(previewUrl);
                 previewUrl = URL.createObjectURL(blob);
@@ -406,14 +427,18 @@ export default {
                 preview.src = previewUrl;
                 await preview.decode();
                 preview.hidden = false;
-                byId("result-message").textContent = "Image ready. Checking cache…";
+                byId("result-message").textContent =
+                  "Image ready. Checking cache…";
                 const cachedAt = performance.now();
                 const repeat = await fetch(url, {
                   cache: "no-store",
                   signal: AbortSignal.timeout(30000),
                 });
                 const repeated = await repeat.arrayBuffer();
-                if (!repeat.ok) throw new Error("Repeat request returned HTTP " + repeat.status);
+                if (!repeat.ok)
+                  throw new Error(
+                    "Repeat request returned HTTP " + repeat.status,
+                  );
                 const cachedMs = Math.round(performance.now() - cachedAt);
                 const etag = response.headers.get("etag");
                 if (
@@ -429,10 +454,14 @@ export default {
                 });
                 await conditional.arrayBuffer();
                 if (conditional.status !== 304)
-                  throw new Error("ETag check returned HTTP " + conditional.status);
+                  throw new Error(
+                    "ETag check returned HTTP " + conditional.status,
+                  );
                 const cache = repeat.headers.get("x-imgt-cache");
                 status.textContent =
-                  cache === "EDGE" ? "Deployment verified" : "Image & ETag verified";
+                  cache === "EDGE"
+                    ? "Deployment verified"
+                    : "Image & ETag verified";
                 byId("result-message").textContent =
                   cache === "EDGE"
                     ? "Transform, edge cache, and ETag checks passed."

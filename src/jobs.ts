@@ -1,6 +1,11 @@
 import { RENDERER_VERSION } from "../container/renderer";
 import { DERIVATIVE_PREFIX } from "./constants";
-import { derivativeKey, normalizeSourceUrl, ALLOWED_QUALITIES, ALLOWED_WIDTHS } from "./options";
+import {
+  derivativeKey,
+  normalizeSourceUrl,
+  ALLOWED_QUALITIES,
+  ALLOWED_WIDTHS,
+} from "./options";
 
 export interface ResizeJob {
   outputKey: string;

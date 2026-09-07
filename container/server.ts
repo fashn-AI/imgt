@@ -19,7 +19,9 @@ const server = createTransformServer({
 });
 const port = Number(process.env.PORT ?? "8080");
 server.listen(port, "0.0.0.0", () =>
-  console.log(`imgt container listening on ${(server.address() as { port: number }).port}`),
+  console.log(
+    `imgt container listening on ${(server.address() as { port: number }).port}`,
+  ),
 );
 
 // Node as container PID 1 needs an explicit signal handler. Stop accepting

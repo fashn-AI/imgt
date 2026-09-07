@@ -7,11 +7,15 @@ for (const [name, value] of Object.entries(config.cache)) {
 
 // A null lifetime means the source forbids public storage. Zero permits
 // transformation, but the result must be returned without caching.
-export function sourceMaxAge(cacheControl: string | null, age = 0): number | null {
+export function sourceMaxAge(
+  cacheControl: string | null,
+  age = 0,
+): number | null {
   const values = new Map<string, string>();
   for (const part of (cacheControl ?? "").split(",")) {
     const [name, value = ""] = part.trim().split("=", 2);
-    if (name) values.set(name.trim().toLowerCase(), value.trim().replace(/^"|"$/g, ""));
+    if (name)
+      values.set(name.trim().toLowerCase(), value.trim().replace(/^"|"$/g, ""));
   }
   if (values.has("private") || values.has("no-store")) return null;
   if (values.has("no-cache")) return 0;
@@ -25,7 +29,10 @@ export function sourceMaxAge(cacheControl: string | null, age = 0): number | nul
     }
   }
   const lifetime = Math.max(originAge, config.cache.minFreshSeconds);
-  return Math.max(0, lifetime - (Number.isSafeInteger(age) && age > 0 ? age : 0));
+  return Math.max(
+    0,
+    lifetime - (Number.isSafeInteger(age) && age > 0 ? age : 0),
+  );
 }
 
 export function remainingSeconds(deadline: number, now = Date.now()): number {
@@ -33,5 +40,7 @@ export function remainingSeconds(deadline: number, now = Date.now()): number {
 }
 
 export function cacheControl(maxAge: number): string {
-  return maxAge > 0 ? `public, max-age=${Math.floor(maxAge)}, must-revalidate` : "no-store";
+  return maxAge > 0
+    ? `public, max-age=${Math.floor(maxAge)}, must-revalidate`
+    : "no-store";
 }

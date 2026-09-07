@@ -14,7 +14,13 @@ async function serve(
   options: Partial<ServerOptions> = {},
 ) {
   const server = createTransformServer(
-    { maxInputBytes: 1024 * 1024, maxInFlight: 4, timeoutMs: 2000, effort: 2, ...options },
+    {
+      maxInputBytes: 1024 * 1024,
+      maxInFlight: 4,
+      timeoutMs: 2000,
+      effort: 2,
+      ...options,
+    },
     encode,
   );
   server.listen(0, "127.0.0.1");
@@ -48,7 +54,9 @@ async function until(predicate: () => Promise<boolean>) {
 
 test("a complete image encodes while an earlier upload is stalled", async (t) => {
   const app = await serve(t);
-  const input = await sharp({ create: { width: 16, height: 8, channels: 3, background: "red" } })
+  const input = await sharp({
+    create: { width: 16, height: 8, channels: 3, background: "red" },
+  })
     .png()
     .toBuffer();
   const slow = http.request(
@@ -57,7 +65,10 @@ test("a complete image encodes while an earlier upload is stalled", async (t) =>
       port: app.port,
       path: "/transform?w=32&q=77",
       method: "POST",
-      headers: { "content-length": input.length, "x-imgt-deadline": String(Date.now() + 2000) },
+      headers: {
+        "content-length": input.length,
+        "x-imgt-deadline": String(Date.now() + 2000),
+      },
     },
     (response) => response.resume(),
   );
@@ -69,7 +80,9 @@ test("a complete image encodes while an earlier upload is stalled", async (t) =>
   assert.equal(fast.status, 200);
   assert.equal(fast.headers.get("x-imgt-renderer"), "v3");
   assert.match(fast.headers.get("server-timing")!, /queue;dur=/);
-  const metadata = await sharp(Buffer.from(await fast.arrayBuffer())).metadata();
+  const metadata = await sharp(
+    Buffer.from(await fast.arrayBuffer()),
+  ).metadata();
   assert.equal(metadata.format, "webp");
   assert.equal(metadata.width, 16);
   assert.equal((await app.health()).uploading, 1);
@@ -78,7 +91,9 @@ test("a complete image encodes while an earlier upload is stalled", async (t) =>
 });
 
 test("upload deadlines release admission without blocking subsequent images", async (t) => {
-  const app = await serve(t, async () => Buffer.from("webp"), { maxInFlight: 1 });
+  const app = await serve(t, async () => Buffer.from("webp"), {
+    maxInFlight: 1,
+  });
   const received = deferred<number>();
   const slow = http.request(
     {
@@ -86,7 +101,10 @@ test("upload deadlines release admission without blocking subsequent images", as
       port: app.port,
       path: "/transform?w=32&q=77",
       method: "POST",
-      headers: { "content-length": 10, "x-imgt-deadline": String(Date.now() + 80) },
+      headers: {
+        "content-length": 10,
+        "x-imgt-deadline": String(Date.now() + 80),
+      },
     },
     (response) => {
       response.resume();
@@ -199,7 +217,9 @@ test("bounds admission and rejects invalid, expired, and oversized input", async
 });
 
 test("chunked uploads enforce the byte limit without trusting Content-Length", async (t) => {
-  const app = await serve(t, async () => Buffer.from("webp"), { maxInputBytes: 8 });
+  const app = await serve(t, async () => Buffer.from("webp"), {
+    maxInputBytes: 8,
+  });
   const result = deferred<number>();
   const request = http.request(
     {
@@ -222,13 +242,18 @@ test("chunked uploads enforce the byte limit without trusting Content-Length", a
 });
 
 test("disconnecting during upload releases admission without an unhandled stream error", async (t) => {
-  const app = await serve(t, async () => Buffer.from("webp"), { maxInFlight: 1 });
+  const app = await serve(t, async () => Buffer.from("webp"), {
+    maxInFlight: 1,
+  });
   const slow = http.request({
     hostname: "127.0.0.1",
     port: app.port,
     path: "/transform?w=32&q=77",
     method: "POST",
-    headers: { "content-length": 100, "x-imgt-deadline": String(Date.now() + 2000) },
+    headers: {
+      "content-length": 100,
+      "x-imgt-deadline": String(Date.now() + 2000),
+    },
   });
   slow.on("error", () => {});
   t.after(() => slow.destroy());

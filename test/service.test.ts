@@ -16,7 +16,10 @@ test("miss persists once, fresh R2 skips transformation, and content validators 
   const first = await h.gateway(imageRequest());
   assert.equal(first.status, 200);
   assert.equal(first.headers.get("x-imgt-cache"), "MISS");
-  assert.match(first.headers.get("server-timing")!, /r2;dur=\d+, resize;dur=\d+/);
+  assert.match(
+    first.headers.get("server-timing")!,
+    /r2;dur=\d+, resize;dur=\d+/,
+  );
   assert.match(first.headers.get("server-timing")!, /cache_fetch;dur=\d+/);
   await h.drain();
   const stored = await h.gateway(imageRequest());
@@ -46,14 +49,19 @@ test("container startup overlaps origin fetch and fresh derivatives skip both", 
   const pending = h.gateway(imageRequest());
   // Neither operation can finish until both have demonstrably started.
   await Promise.all([originStarted.promise, startupStarted.promise]);
-  originReady.resolve(new Response("source", { headers: { "content-type": "image/jpeg" } }));
+  originReady.resolve(
+    new Response("source", { headers: { "content-type": "image/jpeg" } }),
+  );
   assert.equal(h.transforms, 0);
   startupReady.resolve();
   const response = await pending;
   assert.equal(response.status, 200);
   assert.match(response.headers.get("server-timing")!, /startup;dur=/);
   await h.drain();
-  assert.equal((await h.gateway(imageRequest())).headers.get("x-imgt-cache"), "R2");
+  assert.equal(
+    (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+    "R2",
+  );
   assert.equal(starts, 1);
   assert.equal(h.downloads, 1);
 });
@@ -72,11 +80,17 @@ test("startup failure aborts the concurrent source and releases the job for retr
       originStarted.resolve();
       if (fail)
         await new Promise((_, reject) =>
-          originSignal!.addEventListener("abort", () => reject(originSignal!.reason), {
-            once: true,
-          }),
+          originSignal!.addEventListener(
+            "abort",
+            () => reject(originSignal!.reason),
+            {
+              once: true,
+            },
+          ),
         );
-      return new Response("source", { headers: { "content-type": "image/jpeg" } });
+      return new Response("source", {
+        headers: { "content-type": "image/jpeg" },
+      });
     },
   });
   assert.equal((await h.gateway(imageRequest())).status, 500);
@@ -174,7 +188,10 @@ test("concurrent misses and arrivals during persistence share one transform", as
   const duringPersistence = await h.gateway(imageRequest());
   assert.equal(await duringPersistence.text(), "same bytes");
   assert.equal(h.transforms, 1);
-  assert.equal(responses[0].headers.get("etag"), responses[1].headers.get("etag"));
+  assert.equal(
+    responses[0].headers.get("etag"),
+    responses[1].headers.get("etag"),
+  );
   persistence.resolve();
   await h.drain();
 });
@@ -198,13 +215,22 @@ test("refresh changes the content ETag and conditional requests match only curre
   await h.drain();
   const oldTag = original.headers.get("etag")!;
   assert.equal(
-    (await h.gateway(imageRequest("", { "if-none-match": `"other", W/${oldTag}` }))).status,
+    (
+      await h.gateway(
+        imageRequest("", { "if-none-match": `"other", W/${oldTag}` }),
+      )
+    ).status,
     304,
   );
   expire(h);
-  assert.equal((await h.gateway(imageRequest())).headers.get("x-imgt-cache"), "STALE");
+  assert.equal(
+    (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+    "STALE",
+  );
   await h.drain();
-  const replacement = await h.gateway(imageRequest("", { "if-none-match": oldTag }));
+  const replacement = await h.gateway(
+    imageRequest("", { "if-none-match": oldTag }),
+  );
   assert.equal(replacement.status, 200);
   assert.notEqual(replacement.headers.get("etag"), oldTag);
   assert.equal(await replacement.text(), "webp-2");
@@ -214,7 +240,10 @@ test("stale delivery ends at its deadline despite repeated temporary refresh fai
   let status = 200;
   const h = createHarness({
     sourceFetch: async () =>
-      new Response("source", { status, headers: { "content-type": "image/jpeg" } }),
+      new Response("source", {
+        status,
+        headers: { "content-type": "image/jpeg" },
+      }),
   });
   await h.gateway(imageRequest());
   await h.drain();
@@ -222,7 +251,10 @@ test("stale delivery ends at its deadline despite repeated temporary refresh fai
   status = 503;
   const stale = await h.gateway(imageRequest());
   assert.equal(stale.headers.get("x-imgt-cache"), "STALE");
-  assert.equal(stale.headers.get("cache-control"), "public, max-age=1, must-revalidate");
+  assert.equal(
+    stale.headers.get("cache-control"),
+    "public, max-age=1, must-revalidate",
+  );
   await h.drain();
   assert.equal(h.bucket.objects.size, 1);
   expire(h, -1000);
@@ -245,7 +277,10 @@ for (const status of [403, 404, 410]) {
     await h.drain();
     expire(h);
     deleted = true;
-    assert.equal((await h.gateway(imageRequest())).headers.get("x-imgt-cache"), "STALE");
+    assert.equal(
+      (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+      "STALE",
+    );
     await h.drain();
     assert.equal(h.bucket.objects.size, 0);
     assert.equal((await h.gateway(imageRequest())).status, status);
@@ -298,14 +333,20 @@ test("full shard rejects distinct jobs while accepting duplicates", async () => 
       return new Response("webp");
     },
   });
-  const requests = [0, 1, 2, 3].map((id) => h.gateway(imageRequest(`?v=${id}`)));
+  const requests = [0, 1, 2, 3].map((id) =>
+    h.gateway(imageRequest(`?v=${id}`)),
+  );
   await allStarted.promise;
   const rejected = await h.gateway(imageRequest("?v=4"));
   assert.equal(rejected.status, 429);
   assert.equal(rejected.headers.get("retry-after"), "1");
   const duplicate = h.gateway(imageRequest("?v=0"));
   release.resolve();
-  assert.ok((await Promise.all([...requests, duplicate])).every((r) => r.status === 200));
+  assert.ok(
+    (await Promise.all([...requests, duplicate])).every(
+      (r) => r.status === 200,
+    ),
+  );
   await h.drain();
   assert.equal(h.transforms, 4);
 });
@@ -319,7 +360,9 @@ test("transformation timeout aborts work and permits a later retry", async () =>
       assert.ok(deadline <= Date.now() + 30);
       if (!shouldTimeout) return new Response("recovered");
       await new Promise<void>((_, reject) =>
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        }),
       );
       return new Response("unreachable");
     },
@@ -332,8 +375,13 @@ test("transformation timeout aborts work and permits a later retry", async () =>
 
 test("coordinator rejects mismatched output keys before storage or origin access", async () => {
   const h = createHarness();
-  const options = parseImageOptions(new URL(imageRequest().url), ["images.unsplash.com"]);
-  const outputKey = await derivativeKey(DERIVATIVE_PREFIX, { ...options, width: 1920 });
+  const options = parseImageOptions(new URL(imageRequest().url), [
+    "images.unsplash.com",
+  ]);
+  const outputKey = await derivativeKey(DERIVATIVE_PREFIX, {
+    ...options,
+    width: 1920,
+  });
   const response = await h.coordinator.fetch(
     new Request("http://coordinator/job", {
       method: "POST",
@@ -347,7 +395,9 @@ test("coordinator rejects mismatched output keys before storage or origin access
 
 test("the routed image service validates jobs before its R2 lookup", async () => {
   const h = createHarness();
-  const options = parseImageOptions(new URL(imageRequest().url), ["images.unsplash.com"]);
+  const options = parseImageOptions(new URL(imageRequest().url), [
+    "images.unsplash.com",
+  ]);
   const response = await h.imageJob(
     new Request("http://container/job", {
       method: "POST",
@@ -374,7 +424,9 @@ test("rollout rejects old renderer bytes without caching and recovers on the new
             },
           }),
         );
-      return new Response("new renderer", { headers: { "x-imgt-renderer": "v3" } });
+      return new Response("new renderer", {
+        headers: { "x-imgt-renderer": "v3" },
+      });
     },
   });
   const rejected = await h.gateway(imageRequest());

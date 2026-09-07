@@ -5,21 +5,24 @@ import { imageRequest } from "./helpers";
 
 test("rate limiting runs before cache access and never caches a rejection", async () => {
   let cacheCalls = 0;
-  const response = await handleGateway(imageRequest("", { "cf-connecting-ip": "192.0.2.1" }), {
-    allowedHosts: ["images.unsplash.com"],
-    imageCache: {
-      fetch: async () => {
-        cacheCalls += 1;
-        return new Response("image");
+  const response = await handleGateway(
+    imageRequest("", { "cf-connecting-ip": "192.0.2.1" }),
+    {
+      allowedHosts: ["images.unsplash.com"],
+      imageCache: {
+        fetch: async () => {
+          cacheCalls += 1;
+          return new Response("image");
+        },
+      },
+      rateLimiter: {
+        limit: async ({ key }) => {
+          assert.equal(key, "imgt:image:192.0.2.1");
+          return { success: false };
+        },
       },
     },
-    rateLimiter: {
-      limit: async ({ key }) => {
-        assert.equal(key, "imgt:image:192.0.2.1");
-        return { success: false };
-      },
-    },
-  });
+  );
   assert.equal(response.status, 429);
   assert.equal(cacheCalls, 0);
   assert.equal(response.headers.get("retry-after"), "60");
@@ -62,15 +65,18 @@ test("edge responses honor client ETags after canonical fetching without leaking
 });
 
 test("invalid public parameters return 400 through the shared error handler", async () => {
-  const response = await handleGateway(new Request("https://img.example/image?w=640"), {
-    allowedHosts: ["images.unsplash.com"],
-    imageCache: {
-      fetch: async () => {
-        throw new Error("must not reach the cache");
+  const response = await handleGateway(
+    new Request("https://img.example/image?w=640"),
+    {
+      allowedHosts: ["images.unsplash.com"],
+      imageCache: {
+        fetch: async () => {
+          throw new Error("must not reach the cache");
+        },
       },
+      rateLimiter: { limit: async () => ({ success: true }) },
     },
-    rateLimiter: { limit: async () => ({ success: true }) },
-  });
+  );
   assert.equal(response.status, 400);
   assert.equal(await response.text(), "url is required");
   assert.equal(response.headers.get("cache-control"), "no-store");

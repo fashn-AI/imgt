@@ -10,20 +10,25 @@ test("redirects validate every destination and cancel discarded bodies", async (
   let calls = 0;
   let canceled = false;
   await assert.rejects(
-    fetchSource(source, new AbortController().signal, ["images.unsplash.com"], async () => {
-      calls += 1;
-      return new Response(
-        new ReadableStream({
-          cancel() {
-            canceled = true;
+    fetchSource(
+      source,
+      new AbortController().signal,
+      ["images.unsplash.com"],
+      async () => {
+        calls += 1;
+        return new Response(
+          new ReadableStream({
+            cancel() {
+              canceled = true;
+            },
+          }),
+          {
+            status: 302,
+            headers: { location: "https://untrusted.example/image.jpg" },
           },
-        }),
-        {
-          status: 302,
-          headers: { location: "https://untrusted.example/image.jpg" },
-        },
-      );
-    }),
+        );
+      },
+    ),
     (cause) => cause instanceof ImageError && cause.status === 502,
   );
   assert.equal(calls, 1);
@@ -39,7 +44,10 @@ test("allowed relative redirects succeed and redirect loops terminate", async ()
     async (url) => {
       seen.push(url);
       return seen.length === 1
-        ? new Response(null, { status: 302, headers: { location: "/other.jpg" } })
+        ? new Response(null, {
+            status: 302,
+            headers: { location: "/other.jpg" },
+          })
         : new Response("image", { headers: { "content-type": "image/jpeg" } });
     },
   );
@@ -47,10 +55,18 @@ test("allowed relative redirects succeed and redirect loops terminate", async ()
   assert.equal(seen[1], "https://images.unsplash.com/other.jpg");
   let calls = 0;
   await assert.rejects(
-    fetchSource(source, new AbortController().signal, ["images.unsplash.com"], async () => {
-      calls += 1;
-      return new Response(null, { status: 302, headers: { location: "/loop" } });
-    }),
+    fetchSource(
+      source,
+      new AbortController().signal,
+      ["images.unsplash.com"],
+      async () => {
+        calls += 1;
+        return new Response(null, {
+          status: 302,
+          headers: { location: "/loop" },
+        });
+      },
+    ),
     /too many times/,
   );
   assert.equal(calls, 4);

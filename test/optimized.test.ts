@@ -31,19 +31,28 @@ function swatches() {
   const pixels = Buffer.alloc(96 * 64 * 3);
   for (let y = 0; y < 64; y++)
     for (let x = 0; x < 96; x++) {
-      pixels.set(colors[(y >= 32 ? 2 : 0) + (x >= 48 ? 1 : 0)]!, (y * 96 + x) * 3);
+      pixels.set(
+        colors[(y >= 32 ? 2 : 0) + (x >= 48 ? 1 : 0)]!,
+        (y * 96 + x) * 3,
+      );
     }
   return sharp(pixels, { raw: { width: 96, height: 64, channels: 3 } });
 }
 
 test("optimized pipeline retains supported formats, sRGB pixels and all EXIF orientations", async () => {
   for (const format of ["jpeg", "png", "webp", "avif"] as const) {
-    const input = await swatches().withIccProfile("srgb").toFormat(format).toBuffer();
+    const input = await swatches()
+      .withIccProfile("srgb")
+      .toFormat(format)
+      .toBuffer();
     const { baseline, optimized } = await compare(input);
     assert.deepEqual(optimized, baseline, format);
   }
   for (let orientation = 1; orientation <= 8; orientation++) {
-    const input = await swatches().withMetadata({ orientation }).jpeg().toBuffer();
+    const input = await swatches()
+      .withMetadata({ orientation })
+      .jpeg()
+      .toBuffer();
     const { baseline, optimized } = await compare(input);
     assert.deepEqual(optimized, baseline, `orientation ${orientation}`);
     const meta = await sharp(optimized).metadata();
@@ -58,7 +67,11 @@ test("P3 profiles are converted, not discarded, after resizing", async () => {
   const input = await swatches().withIccProfile("p3").png().toBuffer();
   assert.ok((await sharp(input).metadata()).icc);
   const full = await compare(input, 96);
-  assert.deepEqual(full.optimized, full.baseline, "no-resize conversion must match");
+  assert.deepEqual(
+    full.optimized,
+    full.baseline,
+    "no-resize conversion must match",
+  );
   const { baseline, optimized } = await compare(input);
   const expected = await sharp(baseline).removeAlpha().raw().toBuffer();
   const actual = await sharp(optimized).removeAlpha().raw().toBuffer();
@@ -72,7 +85,10 @@ test("P3 profiles are converted, not discarded, after resizing", async () => {
   ]) {
     for (let channel = 0; channel < 3; channel++) {
       const i = (y! * 48 + x!) * 3 + channel;
-      assert.ok(Math.abs(actual[i]! - expected[i]!) <= 5, `swatch ${x},${y},${channel}`);
+      assert.ok(
+        Math.abs(actual[i]! - expected[i]!) <= 5,
+        `swatch ${x},${y},${channel}`,
+      );
     }
   }
   assert.equal((await sharp(optimized).metadata()).icc, undefined);
@@ -96,7 +112,12 @@ test("CMYK, grayscale, 16-bit images and transparency retain the baseline behavi
 test("optimized metadata inspection preserves input limits and cancellation", async () => {
   const signal = new AbortController().signal;
   await assert.rejects(
-    encodeOptimized(Buffer.from("not an image"), settings, Date.now() + 20000, signal),
+    encodeOptimized(
+      Buffer.from("not an image"),
+      settings,
+      Date.now() + 20000,
+      signal,
+    ),
   );
   const tooLarge = Buffer.from(
     '<svg xmlns="http://www.w3.org/2000/svg" width="8000" height="7000"/>',
@@ -108,7 +129,12 @@ test("optimized metadata inspection preserves input limits and cancellation", as
   const controller = new AbortController();
   controller.abort(new Error("canceled"));
   await assert.rejects(
-    encodeOptimized(Buffer.from("unused"), settings, Date.now() + 20000, controller.signal),
+    encodeOptimized(
+      Buffer.from("unused"),
+      settings,
+      Date.now() + 20000,
+      controller.signal,
+    ),
     /canceled/,
   );
 });

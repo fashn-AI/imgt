@@ -11,7 +11,11 @@ export interface ServerOptions {
   effort: TransformOptions["effort"];
 }
 
-function sendError(response: ServerResponse, status: number, message: string): void {
+function sendError(
+  response: ServerResponse,
+  status: number,
+  message: string,
+): void {
   if (response.destroyed || response.writableEnded) return;
   response.writeHead(status, {
     "content-type": "text/plain; charset=utf-8",
@@ -29,14 +33,16 @@ function parseOptions(
   const url = new URL(request.url!, "http://container");
   const width = Number(url.searchParams.get("w"));
   const quality = Number(url.searchParams.get("q"));
-  if (!Number.isSafeInteger(width) || width < 1) throw new InputError("invalid width", 400);
+  if (!Number.isSafeInteger(width) || width < 1)
+    throw new InputError("invalid width", 400);
   if (!Number.isInteger(quality) || quality < 1 || quality > 100)
     throw new InputError("invalid quality", 400);
   const requestedDeadline = Number(request.headers["x-imgt-deadline"]);
   if (!Number.isSafeInteger(requestedDeadline) || requestedDeadline <= 0)
     throw new InputError("invalid transform deadline", 400);
   const deadline = Math.min(requestedDeadline, Date.now() + settings.timeoutMs);
-  if (deadline <= Date.now()) throw new InputError("image transformation timed out", 504);
+  if (deadline <= Date.now())
+    throw new InputError("image transformation timed out", 504);
   if (Number(request.headers["content-length"]) > settings.maxInputBytes)
     throw new InputError("input too large", 413);
   return { options: { width, quality, effort: settings.effort }, deadline };
@@ -55,7 +61,10 @@ export function createTransformServer(
   let uploading = 0;
   const counters = { completed: 0, rejected: 0, timedOut: 0, disconnected: 0 };
 
-  async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  async function handle(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
     if (request.method === "GET" && request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
@@ -106,7 +115,11 @@ export function createTransformServer(
       uploading += 1;
       let input: Buffer;
       try {
-        input = await readBody(request, settings.maxInputBytes, controller.signal);
+        input = await readBody(
+          request,
+          settings.maxInputBytes,
+          controller.signal,
+        );
       } finally {
         uploading -= 1;
       }
@@ -129,7 +142,9 @@ export function createTransformServer(
       response.end(result.data);
       counters.completed += 1;
     } catch (cause) {
-      const error = controller.signal.aborted ? controller.signal.reason : cause;
+      const error = controller.signal.aborted
+        ? controller.signal.reason
+        : cause;
       sendError(
         response,
         error instanceof InputError ? error.status : 400,

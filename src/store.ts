@@ -3,7 +3,9 @@ import { cacheControl } from "./cache";
 
 // Service tests supply a small bucket without emulating the Cloudflare runtime.
 export interface DerivativeBucket {
-  get(key: string): Promise<Pick<R2ObjectBody, "body" | "customMetadata"> | null>;
+  get(
+    key: string,
+  ): Promise<Pick<R2ObjectBody, "body" | "customMetadata"> | null>;
   put(key: string, body: ArrayBuffer, options: R2PutOptions): Promise<unknown>;
   delete(key: string): Promise<void>;
 }
@@ -44,7 +46,12 @@ export class DerivativeStore {
     return { body: object.body, etag, freshUntil, staleUntil };
   }
 
-  async put(key: string, body: ArrayBuffer, etag: string, freshUntil: number): Promise<void> {
+  async put(
+    key: string,
+    body: ArrayBuffer,
+    etag: string,
+    freshUntil: number,
+  ): Promise<void> {
     await this.bucket.put(key, body, {
       httpMetadata: {
         contentType: "image/webp",
