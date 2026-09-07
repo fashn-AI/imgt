@@ -3,6 +3,9 @@ __pycache__/
 node_modules/
 .wrangler/
 dist/
+.benchmark-results/
+.next/
+target/
 .DS_Store
 
 .dev.vars*

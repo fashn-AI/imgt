@@ -1,6 +1,9 @@
 import sharp from "sharp";
 import { InputError } from "../../container/body.ts";
 
+// Reference pipeline with ICC conversion before resizing. Keep it independent
+// of the optimized encoder so color, format and orientation regressions surface.
+
 export interface TransformOptions {
   width: number;
   quality: number;

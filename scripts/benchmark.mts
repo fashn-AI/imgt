@@ -1,7 +1,8 @@
 // Bounded production verification: 1–10 misses per width, each with a hit and validator check.
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { dirname } from "node:path";
 import sharp from "sharp";
 import { encodeImage } from "../container/transform.ts";
 import { RENDERER_VERSION } from "../container/renderer.ts";
@@ -11,15 +12,16 @@ import { config } from "../imgt.config.ts";
 
 const endpoint = process.argv[2];
 if (!endpoint) {
-  throw Error("Usage: npx tsx benchmark/production.mts https://imgt.YOUR-SUBDOMAIN.workers.dev");
+  throw Error("Usage: npm run benchmark -- https://imgt.YOUR-SUBDOMAIN.workers.dev");
 }
 
-const samples = Number(process.env.PRODUCTION_SAMPLES ?? 2);
+const samples = Number(process.env.BENCH_SAMPLES ?? 2);
 if (!Number.isInteger(samples) || samples < 1 || samples > 10) {
-  throw Error("PRODUCTION_SAMPLES must be 1–10");
+  throw Error("BENCH_SAMPLES must be 1–10");
 }
 
-const output = process.env.PRODUCTION_REPORT ?? "/tmp/imgt-production.json";
+const output = process.env.BENCH_OUTPUT ?? ".benchmark-results/production.json";
+await mkdir(dirname(output), { recursive: true });
 const report = {
   date: new Date().toISOString(),
   endpoint,

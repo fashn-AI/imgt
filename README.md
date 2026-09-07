@@ -133,23 +133,19 @@ The starter configuration uses two container shards, each with 1 vCPU and
 routes work to two containers instead of four and reduces the idle timeout
 from ten minutes to two. The platform cap remains four to accommodate existing
 instance records during upgrades. Each container admits four jobs and processes
-one image at a time. [Why we did not choose `basic` or `lite`](benchmark/SMALLER_CONTAINERS.md).
+one image at a time. See [performance decisions](docs/performance.md).
 
 The public endpoint limits each client IP to approximately 120 image requests
 per minute. Source `private`/`no-store` responses are rejected; `no-cache` images
 are transformed without storage. Freshness follows the source cache headers
 with a four-hour minimum and a bounded 24-hour stale window.
 
+Renderer changes version both R2 and edge cache keys. During an incompatible
+container rollout, fresh misses can briefly return a retryable 503 until the new
+renderer is ready.
+
 - [Configuration, costs, updates, and troubleshooting](docs/deployment.md)
 - [Architecture and cache semantics](docs/architecture.md)
-- [Container benchmarks](benchmark/SMALLER_CONTAINERS.md)
-- [Go, Rust, and native alternatives](benchmark/ALTERNATIVES.md)
+- [Performance decisions and benchmarking](docs/performance.md)
 - [Contributing](CONTRIBUTING.md)
 - [MIT license](LICENSE)
-
-
-Engine research and measured tradeoffs are documented in
-[the engine decision](benchmark/ENGINE_DECISION.md). imgt uses self-hosted
-Sharp/libvips; it does not require Cloudflare Images. Renderer changes version
-both R2 and edge cache keys. During an incompatible container rollout, fresh
-misses can briefly return a retryable 503 until the new renderer is ready.

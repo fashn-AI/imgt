@@ -100,8 +100,7 @@ The fixed shard count is configured in `imgt.config.ts`. It must not exceed
 `max_instances` in `wrangler.jsonc`; keep it stable between deployments to
 preserve deterministic routing. The queue limit and other safety limits are
 internal defaults rather than deployment configuration. See
-[benchmark results](../benchmark/RESULTS.md) for the container comparison and
-one-vCPU concurrency measurements.
+[performance notes](performance.md) for the allocation and engine decisions.
 
 
 ## Code organization
@@ -135,7 +134,7 @@ The coordinator separately reports `startup`, `origin_headers`, `do_r2`, and
 container work; startup and origin-header fetching overlap. Structured
 `container_stopped` events record the platform's exit reason and code.
 The benchmark decision is documented in
-[the engine decision](../benchmark/ENGINE_DECISION.md).
+[performance notes](performance.md).
 
 The current `derivatives/v3` namespace isolates the late-ICC renderer from older
 outputs. Shard names also include the renderer version, and the Worker checks

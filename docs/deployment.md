@@ -94,7 +94,7 @@ Application settings live in `imgt.config.ts`. Deployment allocation lives in
 - To keep containers warm longer, adjust `config.containers.sleepAfter`.
 - Keep the custom 1-vCPU/3-GiB allocation for large source images. The smaller
   `basic` and `lite` profiles did not pass our large-image workload; see the
-  [benchmark report](../benchmark/SMALLER_CONTAINERS.md).
+  [performance notes](performance.md).
 
 Our production downsize to a platform cap of two returned instance-limit errors
 even after the application reported ready, with four stopped instance records

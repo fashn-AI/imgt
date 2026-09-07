@@ -29,10 +29,11 @@ Run `npm run check` and `npx wrangler deploy --dry-run` before merging. CI runs
 the tests and builds/starts the Linux container using native Node TypeScript.
 Deployments are owned by Cloudflare's Git integration, not the CI workflow.
 
-For performance changes, use `benchmark/containers.mjs` and report architecture,
-resource limits, inputs, sample count, failures, and cold versus warm behavior.
-Do not present local Docker results as Cloudflare measurements. Keep source
-images out of Git; retain their URLs and measured output in the report.
+For performance changes, run `npm run benchmark -- YOUR_ENDPOINT`; see
+[performance notes](docs/performance.md). Report region, resource limits,
+inputs, sample count, failures, and startup versus warm behavior. Keep raw
+results and source images out of Git. Put exploratory engines and deployment
+labs on research branches; bring back only qualified changes and concise findings.
 
 Never commit `.env`, `.dev.vars`, credentials, or account tokens. Dependency
 updates must include both the root and container lockfiles when applicable.

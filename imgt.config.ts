@@ -22,7 +22,7 @@ export const config = {
     widths: [32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840],
     qualities: [60, 75, 77, 85],
     // 0 is fastest and 6 is smallest. Effort 2 / quality 77 balanced encoding
-    // time and the measured SSIM proxy; see benchmark/ENGINE_DECISION.md.
+    // time and the measured SSIM proxy; see docs/performance.md.
     defaultQuality: 77,
     webpEffort: 2,
   },

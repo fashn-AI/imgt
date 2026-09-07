@@ -1,6 +1,0 @@
-{
-  "name": "imgt-benchmark-metrics",
-  "private": true,
-  "type": "module",
-  "dependencies": { "ssim.js": "3.5.0" }
-}
