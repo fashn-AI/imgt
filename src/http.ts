@@ -2,7 +2,11 @@ import { RENDERER_VERSION } from "../container/renderer";
 import { cacheControl } from "./cache";
 
 export class ImageError extends Error {
-  constructor(message: string, readonly status: number, readonly retryAfter?: string) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter?: string,
+  ) {
     super(message);
   }
 }
@@ -17,7 +21,8 @@ export function errorResponse(message: string, status = 400, retryAfter?: string
 }
 
 export function failureResponse(cause: unknown): Response {
-  if (cause instanceof ImageError) return errorResponse(cause.message, cause.status, cause.retryAfter);
+  if (cause instanceof ImageError)
+    return errorResponse(cause.message, cause.status, cause.retryAfter);
   console.error("image request failed", cause);
   return errorResponse("image request failed", 500);
 }

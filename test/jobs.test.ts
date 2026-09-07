@@ -11,7 +11,10 @@ test("routes a derivative key to a stable container shard", () => {
   const shards = new Set(
     Array.from({ length: 64 }, (_, index) => containerNameForKey(`derivative-${index}`, 4)),
   );
-  assert.deepEqual(shards, new Set(["instance-v3-0", "instance-v3-1", "instance-v3-2", "instance-v3-3"]));
+  assert.deepEqual(
+    shards,
+    new Set(["instance-v3-0", "instance-v3-1", "instance-v3-2", "instance-v3-3"]),
+  );
 });
 
 test("rejects an invalid container shard count", () => {

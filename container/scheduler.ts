@@ -8,8 +8,12 @@ export class TransformScheduler {
   #active = false;
   readonly #queue: QueuedJob[] = [];
 
-  get active(): boolean { return this.#active; }
-  get queued(): number { return this.#queue.length; }
+  get active(): boolean {
+    return this.#active;
+  }
+  get queued(): number {
+    return this.#queue.length;
+  }
 
   run<T>(task: () => Promise<T>, signal: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {
@@ -25,10 +29,13 @@ export class TransformScheduler {
           this.#active = true;
           // Keep the slot until native processing actually settles, even if its
           // HTTP caller has gone away. Otherwise canceled work overlaps new work.
-          void Promise.resolve().then(task).then(resolve, reject).finally(() => {
-            this.#active = false;
-            this.#queue.shift()?.start();
-          });
+          void Promise.resolve()
+            .then(task)
+            .then(resolve, reject)
+            .finally(() => {
+              this.#active = false;
+              this.#queue.shift()?.start();
+            });
         },
       };
       signal.addEventListener("abort", job.cancel, { once: true });

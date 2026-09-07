@@ -1,0 +1,11 @@
+# Dependencies and generated output, including nested benchmark projects.
+**/node_modules/
+**/.wrangler/
+**/.next/
+**/dist/
+**/target/
+**/coverage/
+
+# Preserve recorded benchmark data and dependency lockfiles.
+benchmark/**/*.json
+**/package-lock.json

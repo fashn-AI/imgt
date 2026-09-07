@@ -17,19 +17,33 @@ interface ImageServiceDependencies extends ImageRouterDependencies {
 
 async function refresh(job: ResizeJob, resize: ImageServiceDependencies["resize"]): Promise<void> {
   const response = await resize(job);
-  if (!response.ok) console.error(`background image refresh failed: ${response.status} ${await response.text()}`);
-  else await response.body?.cancel();
+  if (!response.ok) {
+    console.error(`background image refresh failed: ${response.status} ${await response.text()}`);
+  } else {
+    await response.body?.cancel();
+  }
 }
 
-export async function handleImageJob(request: Request, deps: ImageServiceDependencies): Promise<Response> {
-  if (request.method !== "POST" || new URL(request.url).pathname !== "/job") return errorResponse("not found", 404);
+export async function handleImageJob(
+  request: Request,
+  deps: ImageServiceDependencies,
+): Promise<Response> {
+  if (request.method !== "POST" || new URL(request.url).pathname !== "/job") {
+    return errorResponse("not found", 404);
+  }
   let job: ResizeJob;
-  try { job = await parseResizeJob(await request.json(), deps.allowedHosts); }
-  catch { return errorResponse("invalid resize job"); }
+  try {
+    job = await parseResizeJob(await request.json(), deps.allowedHosts);
+  } catch {
+    return errorResponse("invalid resize job");
+  }
   return serveImage(job, deps);
 }
 
-export async function routeImage(request: Request, deps: ImageRouterDependencies): Promise<Response> {
+export async function routeImage(
+  request: Request,
+  deps: ImageRouterDependencies,
+): Promise<Response> {
   const url = new URL(request.url);
   if (request.method !== "GET" || url.pathname !== "/image") return errorResponse("not found", 404);
   try {
@@ -54,7 +68,11 @@ async function serveImage(job: ResizeJob, deps: ImageServiceDependencies): Promi
       if (maxAge > 0) return imageResponse(stored.body, stored.etag, "R2", maxAge);
       const staleTtl = Math.min(STALE_CACHE_TTL_SECONDS, remainingSeconds(stored.staleUntil));
       if (staleTtl > 0) {
-        deps.waitUntil(refresh(job, deps.resize).catch((cause) => console.error("background image refresh failed", cause)));
+        deps.waitUntil(
+          refresh(job, deps.resize).catch((cause) =>
+            console.error("background image refresh failed", cause),
+          ),
+        );
         return imageResponse(stored.body, stored.etag, "STALE", staleTtl);
       }
       await stored.body.cancel();
@@ -63,7 +81,10 @@ async function serveImage(job: ResizeJob, deps: ImageServiceDependencies): Promi
     const response = await deps.resize(job);
     const measured = new Response(response.body, response);
     // resize includes the local coordinator's job span. Remote routing is timed by the caller.
-    measured.headers.append("server-timing", `r2;dur=${r2Ms}, resize;dur=${Date.now() - resizeStarted}`);
+    measured.headers.append(
+      "server-timing",
+      `r2;dur=${r2Ms}, resize;dur=${Date.now() - resizeStarted}`,
+    );
     return measured;
   } catch (cause) {
     return failureResponse(cause);

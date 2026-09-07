@@ -7,11 +7,20 @@ export interface TransformOptions {
   effort: 0 | 1 | 2 | 3 | 4 | 5 | 6;
 }
 
-export async function encodeImage(input: Buffer, options: TransformOptions, deadline: number, signal: AbortSignal): Promise<Buffer> {
+export async function encodeImage(
+  input: Buffer,
+  options: TransformOptions,
+  deadline: number,
+  signal: AbortSignal,
+): Promise<Buffer> {
   signal.throwIfAborted();
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) throw new InputError("image transformation timed out", 504);
-  const result = await sharp(input, { failOn: "warning", limitInputPixels: 50_000_000, sequentialRead: true })
+  const result = await sharp(input, {
+    failOn: "warning",
+    limitInputPixels: 50_000_000,
+    sequentialRead: true,
+  })
     .rotate()
     .resize({ width: options.width, withoutEnlargement: true, fit: "inside" })
     .webp({ quality: options.quality, effort: options.effort })

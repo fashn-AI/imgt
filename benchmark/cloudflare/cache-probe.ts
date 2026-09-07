@@ -5,10 +5,13 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 export const CACHE_PROBE_UNTIL = 0;
 const payload = Uint8Array.from({ length: 65536 }, (_, index) => index % 251);
 function generatedResponse(): Response {
-  return new Response(payload, { headers: {
-    "content-type": "application/octet-stream", "cache-control": "public, max-age=300",
-    "x-probe-generation": crypto.randomUUID(),
-  } });
+  return new Response(payload, {
+    headers: {
+      "content-type": "application/octet-stream",
+      "cache-control": "public, max-age=300",
+      "x-probe-generation": crypto.randomUUID(),
+    },
+  });
 }
 
 export class ProbeCache extends WorkerEntrypoint {

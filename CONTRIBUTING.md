@@ -8,6 +8,13 @@ npm run check
 npm run dev
 ```
 
+Run `npm run format` before committing TypeScript or JavaScript changes. The
+repository uses a pinned Prettier version with two-space indentation, double
+quotes, semicolons, and a 100-column target. Editors can use the root
+`.prettierrc.json` configuration. `npm run format:check` verifies formatting
+without changing files and is included in `npm run check`, CI, and deployment
+checks. Generated output and recorded benchmark data are excluded.
+
 Open a pull request describing the problem, resulting behavior, and validation.
 Keep changes focused. Preserve the small public API and avoid adding frameworks
 or services unless they solve a demonstrated need. Add regression tests when

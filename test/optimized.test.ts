@@ -7,16 +7,32 @@ import { encodeImage as encodeOptimized } from "../container/transform";
 const settings = { width: 48, quality: 77, effort: 2 as const };
 async function compare(input: Buffer, width = settings.width) {
   const options = { ...settings, width };
-  const baseline = await encodeImage(input, options, Date.now() + 20000, new AbortController().signal);
-  const optimized = await encodeOptimized(input, options, Date.now() + 20000, new AbortController().signal);
+  const baseline = await encodeImage(
+    input,
+    options,
+    Date.now() + 20000,
+    new AbortController().signal,
+  );
+  const optimized = await encodeOptimized(
+    input,
+    options,
+    Date.now() + 20000,
+    new AbortController().signal,
+  );
   return { baseline, optimized };
 }
 function swatches() {
-  const colors = [[230, 40, 30], [20, 210, 70], [40, 60, 220], [200, 180, 30]];
+  const colors = [
+    [230, 40, 30],
+    [20, 210, 70],
+    [40, 60, 220],
+    [200, 180, 30],
+  ];
   const pixels = Buffer.alloc(96 * 64 * 3);
-  for (let y = 0; y < 64; y++) for (let x = 0; x < 96; x++) {
-    pixels.set(colors[(y >= 32 ? 2 : 0) + (x >= 48 ? 1 : 0)]!, (y * 96 + x) * 3);
-  }
+  for (let y = 0; y < 64; y++)
+    for (let x = 0; x < 96; x++) {
+      pixels.set(colors[(y >= 32 ? 2 : 0) + (x >= 48 ? 1 : 0)]!, (y * 96 + x) * 3);
+    }
   return sharp(pixels, { raw: { width: 96, height: 64, channels: 3 } });
 }
 
@@ -48,7 +64,12 @@ test("P3 profiles are converted, not discarded, after resizing", async () => {
   const actual = await sharp(optimized).removeAlpha().raw().toBuffer();
   // Interior colors must survive ICC conversion; resize boundary pixels may
   // differ because the conversion and filtering operations do not commute.
-  for (const [x, y] of [[12, 8], [36, 8], [12, 24], [36, 24]]) {
+  for (const [x, y] of [
+    [12, 8],
+    [36, 8],
+    [12, 24],
+    [36, 24],
+  ]) {
     for (let channel = 0; channel < 3; channel++) {
       const i = (y! * 48 + x!) * 3 + channel;
       assert.ok(Math.abs(actual[i]! - expected[i]!) <= 5, `swatch ${x},${y},${channel}`);
@@ -74,9 +95,20 @@ test("CMYK, grayscale, 16-bit images and transparency retain the baseline behavi
 
 test("optimized metadata inspection preserves input limits and cancellation", async () => {
   const signal = new AbortController().signal;
-  await assert.rejects(encodeOptimized(Buffer.from("not an image"), settings, Date.now() + 20000, signal));
-  const tooLarge = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="8000" height="7000"/>');
-  await assert.rejects(encodeOptimized(tooLarge, settings, Date.now() + 20000, signal), /pixel limit/i);
-  const controller = new AbortController(); controller.abort(new Error("canceled"));
-  await assert.rejects(encodeOptimized(Buffer.from("unused"), settings, Date.now() + 20000, controller.signal), /canceled/);
+  await assert.rejects(
+    encodeOptimized(Buffer.from("not an image"), settings, Date.now() + 20000, signal),
+  );
+  const tooLarge = Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="8000" height="7000"/>',
+  );
+  await assert.rejects(
+    encodeOptimized(tooLarge, settings, Date.now() + 20000, signal),
+    /pixel limit/i,
+  );
+  const controller = new AbortController();
+  controller.abort(new Error("canceled"));
+  await assert.rejects(
+    encodeOptimized(Buffer.from("unused"), settings, Date.now() + 20000, controller.signal),
+    /canceled/,
+  );
 });

@@ -11,16 +11,27 @@ export interface ResizeJob {
 
 export function jobRequest(job: ResizeJob): Request {
   return new Request("http://container/job", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(job),
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(job),
   });
 }
 
-export async function parseResizeJob(value: unknown, allowedHosts: readonly string[]): Promise<ResizeJob> {
+export async function parseResizeJob(
+  value: unknown,
+  allowedHosts: readonly string[],
+): Promise<ResizeJob> {
   if (!value || typeof value !== "object") throw new Error("invalid job");
   const job = value as ResizeJob;
-  if (typeof job.sourceUrl !== "string" || normalizeSourceUrl(job.sourceUrl, allowedHosts) !== job.sourceUrl ||
-    !ALLOWED_WIDTHS.has(job.width) || !ALLOWED_QUALITIES.has(job.quality) ||
-    job.outputKey !== await derivativeKey(DERIVATIVE_PREFIX, job)) throw new Error("invalid job");
+  if (
+    typeof job.sourceUrl !== "string" ||
+    normalizeSourceUrl(job.sourceUrl, allowedHosts) !== job.sourceUrl ||
+    !ALLOWED_WIDTHS.has(job.width) ||
+    !ALLOWED_QUALITIES.has(job.quality) ||
+    job.outputKey !== (await derivativeKey(DERIVATIVE_PREFIX, job))
+  ) {
+    throw new Error("invalid job");
+  }
   return job;
 }
 
@@ -48,17 +59,14 @@ export class SingleFlight<T> {
     const cleanup = () => {
       if (this.#jobs.get(key) === promise) this.#jobs.delete(key);
     };
-    void promise.then(
-      (value) => {
-        const retained = retainUntil?.(value);
-        if (!retained) {
-          cleanup();
-          return;
-        }
-        void Promise.resolve(retained).then(cleanup, cleanup);
-      },
-      cleanup,
-    );
+    void promise.then((value) => {
+      const retained = retainUntil?.(value);
+      if (!retained) {
+        cleanup();
+        return;
+      }
+      void Promise.resolve(retained).then(cleanup, cleanup);
+    }, cleanup);
     return promise;
   }
 }

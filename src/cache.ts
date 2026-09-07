@@ -1,7 +1,8 @@
 import { config } from "../imgt.config";
 
 for (const [name, value] of Object.entries(config.cache)) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cache.${name} must be a nonnegative integer`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`cache.${name} must be a nonnegative integer`);
 }
 
 // A null lifetime means the source forbids public storage. Zero permits

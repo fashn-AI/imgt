@@ -7,7 +7,10 @@ import { contentEtag, DerivativeStore } from "./store";
 import { config } from "../imgt.config";
 
 export type Transform = (
-  body: ReadableStream<Uint8Array>, job: ResizeJob, signal: AbortSignal, deadline: number,
+  body: ReadableStream<Uint8Array>,
+  job: ResizeJob,
+  signal: AbortSignal,
+  deadline: number,
 ) => Promise<Response>;
 
 interface ResizeResult {
@@ -35,7 +38,8 @@ export class TransformCoordinator {
   constructor(private readonly deps: CoordinatorDependencies) {}
 
   async fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST" || new URL(request.url).pathname !== "/job") return errorResponse("not found", 404);
+    if (request.method !== "POST" || new URL(request.url).pathname !== "/job")
+      return errorResponse("not found", 404);
     let job: ResizeJob;
     try {
       job = await parseResizeJob(await request.json(), this.deps.allowedHosts);
@@ -45,18 +49,44 @@ export class TransformCoordinator {
     const coalesced = this.#singleFlight.has(job.outputKey);
     const shard = containerNameForKey(job.outputKey, config.containers.shards);
     if (!coalesced && this.#singleFlight.size >= MAX_DISTINCT_JOBS_PER_SHARD) {
-      console.log(JSON.stringify({ event: "transform_rejected", shard, inFlight: this.#singleFlight.size }));
+      console.log(
+        JSON.stringify({ event: "transform_rejected", shard, inFlight: this.#singleFlight.size }),
+      );
       return errorResponse("transform queue is full", 429, "1");
     }
     const started = performance.now();
     try {
-      const result = await this.#singleFlight.run(job.outputKey, () => this.resize(job), (value) => value.persistence);
-      console.log(JSON.stringify({ event: "transform_request", shard, coalesced, cache: result.cacheStatus,
-        durationMs: performance.now() - started, serverTiming: result.serverTiming }));
-      return imageResponse(result.body, result.etag, result.cacheStatus, remainingSeconds(result.freshUntil), result.serverTiming);
+      const result = await this.#singleFlight.run(
+        job.outputKey,
+        () => this.resize(job),
+        (value) => value.persistence,
+      );
+      console.log(
+        JSON.stringify({
+          event: "transform_request",
+          shard,
+          coalesced,
+          cache: result.cacheStatus,
+          durationMs: performance.now() - started,
+          serverTiming: result.serverTiming,
+        }),
+      );
+      return imageResponse(
+        result.body,
+        result.etag,
+        result.cacheStatus,
+        remainingSeconds(result.freshUntil),
+        result.serverTiming,
+      );
     } catch (cause) {
-      console.error(JSON.stringify({ event: "transform_failed", shard, durationMs: performance.now() - started,
-        status: cause instanceof ImageError ? cause.status : 500 }));
+      console.error(
+        JSON.stringify({
+          event: "transform_failed",
+          shard,
+          durationMs: performance.now() - started,
+          status: cause instanceof ImageError ? cause.status : 500,
+        }),
+      );
       return failureResponse(cause);
     }
   }
@@ -66,8 +96,12 @@ export class TransformCoordinator {
     const stored = await this.deps.store.get(job.outputKey);
     const r2Ms = performance.now() - started;
     if (stored && remainingSeconds(stored.freshUntil) > 0) {
-      return { body: await new Response(stored.body).arrayBuffer(), etag: stored.etag,
-        freshUntil: stored.freshUntil, cacheStatus: "R2" };
+      return {
+        body: await new Response(stored.body).arrayBuffer(),
+        etag: stored.etag,
+        freshUntil: stored.freshUntil,
+        cacheStatus: "R2",
+      };
     }
     await stored?.body.cancel();
 
@@ -82,7 +116,12 @@ export class TransformCoordinator {
       let freshUntil = 0;
       // Boot only after a validated cache miss, overlapping the origin request.
       const [source] = await Promise.all([
-        fetchSource(job.sourceUrl, controller.signal, this.deps.allowedHosts, this.deps.sourceFetch).then(async (source) => {
+        fetchSource(
+          job.sourceUrl,
+          controller.signal,
+          this.deps.allowedHosts,
+          this.deps.sourceFetch,
+        ).then(async (source) => {
           sourceBody = source.body;
           if (controller.signal.aborted) {
             await sourceBody.cancel().catch(() => {});
@@ -92,16 +131,26 @@ export class TransformCoordinator {
           freshUntil = source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
           return source;
         }),
-        Promise.resolve().then(() => this.deps.prepare?.(controller.signal)).then(() => {
-          startupMs = performance.now() - originStarted;
-        }),
+        Promise.resolve()
+          .then(() => this.deps.prepare?.(controller.signal))
+          .then(() => {
+            startupMs = performance.now() - originStarted;
+          }),
       ]);
       const containerStarted = performance.now();
       const response = await this.deps.transform(source.body, job, controller.signal, deadline);
-      if (!response.ok) throw new ImageError((await response.text()) || "image transformation failed", response.status, response.headers.get("retry-after") ?? undefined);
+      if (!response.ok)
+        throw new ImageError(
+          (await response.text()) || "image transformation failed",
+          response.status,
+          response.headers.get("retry-after") ?? undefined,
+        );
       // Worker code can activate before the container finishes rolling out.
       // Never persist old renderer bytes under the new derivative namespace.
-      if (this.deps.rendererVersion && response.headers.get("x-imgt-renderer") !== this.deps.rendererVersion) {
+      if (
+        this.deps.rendererVersion &&
+        response.headers.get("x-imgt-renderer") !== this.deps.rendererVersion
+      ) {
         await response.body?.cancel();
         throw new ImageError("image renderer is updating", 503, "5");
       }
@@ -110,18 +159,34 @@ export class TransformCoordinator {
       const containerMs = performance.now() - containerStarted;
       const etag = await contentEtag(body);
       const persistenceStarted = performance.now();
-      const persistence = (remainingSeconds(freshUntil) > 0
-        ? this.deps.store.put(job.outputKey, body, etag, freshUntil)
-        : this.deps.store.delete(job.outputKey))
-        .then(() => { console.log(JSON.stringify({ event: "derivative_persisted", key: job.outputKey, durationMs: performance.now() - persistenceStarted })); })
-        .catch((cause) => { console.error("failed to persist transformed image", cause); });
+      const persistence = (
+        remainingSeconds(freshUntil) > 0
+          ? this.deps.store.put(job.outputKey, body, etag, freshUntil)
+          : this.deps.store.delete(job.outputKey)
+      )
+        .then(() => {
+          console.log(
+            JSON.stringify({
+              event: "derivative_persisted",
+              key: job.outputKey,
+              durationMs: performance.now() - persistenceStarted,
+            }),
+          );
+        })
+        .catch((cause) => {
+          console.error("failed to persist transformed image", cause);
+        });
       this.deps.waitUntil(persistence);
       const serverTiming = [
-        `do_r2;dur=${r2Ms.toFixed(1)}`, `origin_headers;dur=${originMs.toFixed(1)}`,
+        `do_r2;dur=${r2Ms.toFixed(1)}`,
+        `origin_headers;dur=${originMs.toFixed(1)}`,
         this.deps.prepare ? `startup;dur=${startupMs.toFixed(1)}` : undefined,
-        response.headers.get("server-timing"), `container;dur=${containerMs.toFixed(1)}`,
+        response.headers.get("server-timing"),
+        `container;dur=${containerMs.toFixed(1)}`,
         `job;dur=${(performance.now() - started).toFixed(1)}`,
-      ].filter(Boolean).join(", ");
+      ]
+        .filter(Boolean)
+        .join(", ");
       return { body, etag, freshUntil, cacheStatus: "MISS", serverTiming, persistence };
     } catch (cause) {
       if (controller.signal.aborted) throw new ImageError("image transformation timed out", 504);

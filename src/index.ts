@@ -38,15 +38,27 @@ export class ImgtImageTransformer extends Container<Env> {
     waitUntil: (promise) => this.ctx.waitUntil(promise),
     prepare: async (signal) => {
       if ((await this.getState()).status !== "healthy") {
-        const response = await this.containerFetch(new Request("http://container/health", { signal }));
-        if (!response.ok) throw new ImageError(await response.text(), response.status, response.headers.get("retry-after") ?? undefined);
+        const response = await this.containerFetch(
+          new Request("http://container/health", { signal }),
+        );
+        if (!response.ok)
+          throw new ImageError(
+            await response.text(),
+            response.status,
+            response.headers.get("retry-after") ?? undefined,
+          );
         await response.body?.cancel();
       }
     },
-    transform: (body, job, signal, deadline) => this.containerFetch(new Request(
-      `http://container/transform?w=${job.width}&q=${job.quality}`,
-      { method: "POST", body, signal, headers: { "x-imgt-deadline": String(deadline) } },
-    )),
+    transform: (body, job, signal, deadline) =>
+      this.containerFetch(
+        new Request(`http://container/transform?w=${job.width}&q=${job.quality}`, {
+          method: "POST",
+          body,
+          signal,
+          headers: { "x-imgt-deadline": String(deadline) },
+        }),
+      ),
   });
 
   fetch(request: Request): Promise<Response> {
@@ -59,13 +71,21 @@ export class ImgtImageTransformer extends Container<Env> {
   }
 
   onStop(params: StopParams) {
-    console.log(JSON.stringify({ event: "container_stopped", containerId: this.ctx.id.toString(), ...params }));
+    console.log(
+      JSON.stringify({
+        event: "container_stopped",
+        containerId: this.ctx.id.toString(),
+        ...params,
+      }),
+    );
   }
-
 }
 
 async function requestResize(job: ResizeJob, env: Env): Promise<Response> {
-  const container = getContainer(env.IMGT_TRANSFORMER, containerNameForKey(job.outputKey, config.containers.shards));
+  const container = getContainer(
+    env.IMGT_TRANSFORMER,
+    containerNameForKey(job.outputKey, config.containers.shards),
+  );
   const started = Date.now();
   const response = await container.fetch(jobRequest(job));
   const measured = new Response(response.body, response);
@@ -85,6 +105,10 @@ export class ImgtImageCache extends WorkerEntrypoint<Env> {
 export default {
   fetch(request, env, ctx): Promise<Response> {
     const imageCache = (ctx.exports as unknown as { ImgtImageCache: Fetcher }).ImgtImageCache;
-    return handleGateway(request, { imageCache, rateLimiter: env.IMAGE_RATE_LIMITER, allowedHosts: parseAllowedHosts(env.ALLOWED_HOSTS) });
+    return handleGateway(request, {
+      imageCache,
+      rateLimiter: env.IMAGE_RATE_LIMITER,
+      allowedHosts: parseAllowedHosts(env.ALLOWED_HOSTS),
+    });
   },
 } satisfies ExportedHandler<Env>;

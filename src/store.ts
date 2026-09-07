@@ -30,8 +30,14 @@ export class DerivativeStore {
     const freshUntil = Number(metadata?.freshUntil);
     const staleUntil = Number(metadata?.staleUntil);
     const etag = metadata?.etag;
-    if (!etag || !/^"[a-f0-9]{64}"$/.test(etag) || !Number.isSafeInteger(freshUntil) || freshUntil <= 0 ||
-      !Number.isSafeInteger(staleUntil) || staleUntil < freshUntil) {
+    if (
+      !etag ||
+      !/^"[a-f0-9]{64}"$/.test(etag) ||
+      !Number.isSafeInteger(freshUntil) ||
+      freshUntil <= 0 ||
+      !Number.isSafeInteger(staleUntil) ||
+      staleUntil < freshUntil
+    ) {
       await object.body.cancel();
       return null;
     }
@@ -40,7 +46,10 @@ export class DerivativeStore {
 
   async put(key: string, body: ArrayBuffer, etag: string, freshUntil: number): Promise<void> {
     await this.bucket.put(key, body, {
-      httpMetadata: { contentType: "image/webp", cacheControl: cacheControl((freshUntil - Date.now()) / 1000) },
+      httpMetadata: {
+        contentType: "image/webp",
+        cacheControl: cacheControl((freshUntil - Date.now()) / 1000),
+      },
       customMetadata: {
         etag,
         freshUntil: String(freshUntil),

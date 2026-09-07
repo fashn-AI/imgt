@@ -4,7 +4,8 @@ import { createTransformServer } from "./app.ts";
 import type { TransformOptions } from "./transform.ts";
 
 const effort = Number(process.env.WEBP_EFFORT ?? "2");
-if (!Number.isInteger(effort) || effort < 0 || effort > 6) throw new Error("WEBP_EFFORT must be an integer from 0 to 6");
+if (!Number.isInteger(effort) || effort < 0 || effort > 6)
+  throw new Error("WEBP_EFFORT must be an integer from 0 to 6");
 sharp.concurrency(Number(process.env.VIPS_CONCURRENCY ?? "1"));
 // Requests have distinct input buffers; completed derivatives are cached in R2.
 sharp.cache(false);
@@ -17,7 +18,9 @@ const server = createTransformServer({
   effort: effort as TransformOptions["effort"],
 });
 const port = Number(process.env.PORT ?? "8080");
-server.listen(port, "0.0.0.0", () => console.log(`imgt container listening on ${(server.address() as { port: number }).port}`));
+server.listen(port, "0.0.0.0", () =>
+  console.log(`imgt container listening on ${(server.address() as { port: number }).port}`),
+);
 
 // Node as container PID 1 needs an explicit signal handler. Stop accepting
 // work, drain requests within their existing deadline, then release the VM.
@@ -33,7 +36,10 @@ function shutdown() {
   draining = true;
   server.close(() => process.exit(0));
   server.closeIdleConnections();
-  setTimeout(() => process.exit(1), Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000") + 1000).unref();
+  setTimeout(
+    () => process.exit(1),
+    Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000") + 1000,
+  ).unref();
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

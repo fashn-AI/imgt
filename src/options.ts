@@ -8,7 +8,11 @@ export const ALLOWED_QUALITIES = new Set<number>(config.transforms.qualities);
 if (!ALLOWED_QUALITIES.has(config.transforms.defaultQuality)) {
   throw new Error("defaultQuality must be included in transforms.qualities");
 }
-if (!Number.isInteger(config.transforms.webpEffort) || config.transforms.webpEffort < 0 || config.transforms.webpEffort > 6) {
+if (
+  !Number.isInteger(config.transforms.webpEffort) ||
+  config.transforms.webpEffort < 0 ||
+  config.transforms.webpEffort > 6
+) {
   throw new Error("webpEffort must be an integer from 0 to 6");
 }
 
@@ -27,10 +31,7 @@ function hostMatches(hostname: string, pattern: string): boolean {
   return hostname === normalized;
 }
 
-export function normalizeSourceUrl(
-  rawSource: string,
-  allowedHosts: readonly string[],
-): string {
+export function normalizeSourceUrl(rawSource: string, allowedHosts: readonly string[]): string {
   if (rawSource.length > MAX_SOURCE_URL_LENGTH) throw new ImageError("source URL is too long", 400);
 
   let source: URL;
@@ -40,7 +41,8 @@ export function normalizeSourceUrl(
     throw new ImageError("url must be an absolute HTTPS URL", 400);
   }
   if (source.protocol !== "https:") throw new ImageError("url must use HTTPS", 400);
-  if (source.username || source.password) throw new ImageError("url must not include credentials", 400);
+  if (source.username || source.password)
+    throw new ImageError("url must not include credentials", 400);
   if (source.port) throw new ImageError("url must use the default HTTPS port", 400);
   if (!allowedHosts.some((pattern) => hostMatches(source.hostname, pattern))) {
     throw new ImageError(`source host is not allowed: ${source.hostname}`, 400);
@@ -50,10 +52,7 @@ export function normalizeSourceUrl(
   return source.toString();
 }
 
-export function parseImageOptions(
-  url: URL,
-  allowedHosts: readonly string[],
-): ImageOptions {
+export function parseImageOptions(url: URL, allowedHosts: readonly string[]): ImageOptions {
   const rawSource = url.searchParams.get("url");
   if (!rawSource) throw new ImageError("url is required", 400);
   const sourceUrl = normalizeSourceUrl(rawSource, allowedHosts);
@@ -86,7 +85,9 @@ export async function derivativeKey(prefix: string, options: ImageOptions): Prom
     config.transforms.webpEffort,
   ].join("\0");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
-  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const hex = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
   return withPrefix(prefix, `${hex}.${OUTPUT_FORMAT}`);
 }
 

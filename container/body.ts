@@ -2,10 +2,17 @@ import type { IncomingMessage } from "node:http";
 
 export class InputError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) { super(message); this.status = status; }
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
 }
 
-export function readBody(request: IncomingMessage, maxBytes: number, signal: AbortSignal): Promise<Buffer> {
+export function readBody(
+  request: IncomingMessage,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
     const chunks: Buffer[] = [];
@@ -17,12 +24,19 @@ export function readBody(request: IncomingMessage, maxBytes: number, signal: Abo
       request.off("aborted", aborted);
       signal.removeEventListener("abort", canceled);
     };
-    const fail = (error: Error) => { cleanup(); request.pause(); reject(error); };
+    const fail = (error: Error) => {
+      cleanup();
+      request.pause();
+      reject(error);
+    };
     const aborted = () => fail(new InputError("upload disconnected", 400));
     const canceled = () => fail(signal.reason);
     const data = (chunk: Buffer) => {
       size += chunk.length;
-      if (size > maxBytes) { fail(new InputError("input too large", 413)); return; }
+      if (size > maxBytes) {
+        fail(new InputError("input too large", 413));
+        return;
+      }
       chunks.push(chunk);
     };
     const end = () => {

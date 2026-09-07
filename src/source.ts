@@ -17,17 +17,22 @@ export async function fetchSource(
     let response: Response;
     try {
       response = await fetcher(currentUrl, {
-        redirect: "manual", signal,
+        redirect: "manual",
+        signal,
         headers: { accept: "image/avif,image/webp,image/png,image/jpeg" },
       });
     } catch {
-      throw new ImageError(signal.aborted ? "source image timed out" : "failed to fetch source image", signal.aborted ? 504 : 502);
+      throw new ImageError(
+        signal.aborted ? "source image timed out" : "failed to fetch source image",
+        signal.aborted ? 504 : 502,
+      );
     }
     try {
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         if (!location) throw new ImageError("source redirect has no location", 502);
-        if (redirects === MAX_SOURCE_REDIRECTS) throw new ImageError("source redirected too many times", 502);
+        if (redirects === MAX_SOURCE_REDIRECTS)
+          throw new ImageError("source redirected too many times", 502);
         try {
           currentUrl = normalizeSourceUrl(new URL(location, currentUrl).toString(), allowedHosts);
         } catch {
@@ -41,11 +46,16 @@ export async function fetchSource(
         throw new ImageError(`source image returned HTTP ${response.status}`, status);
       }
       // This deployment serves public images, not private assets.
-      const maxAge = sourceMaxAge(response.headers.get("cache-control"), Number(response.headers.get("age")));
+      const maxAge = sourceMaxAge(
+        response.headers.get("cache-control"),
+        Number(response.headers.get("age")),
+      );
       if (maxAge === null) throw new ImageError("source image does not allow public caching", 403);
-      if (Number(response.headers.get("content-length")) > MAX_SOURCE_BYTES) throw new ImageError("source image is too large", 413);
+      if (Number(response.headers.get("content-length")) > MAX_SOURCE_BYTES)
+        throw new ImageError("source image is too large", 413);
       const type = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-      if (type && !ALLOWED_SOURCE_TYPES.has(type)) throw new ImageError("unsupported source image type", 415);
+      if (type && !ALLOWED_SOURCE_TYPES.has(type))
+        throw new ImageError("unsupported source image type", 415);
       if (!response.body) throw new ImageError("source image has an empty body", 502);
       return { body: response.body, maxAge };
     } catch (cause) {
