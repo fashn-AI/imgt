@@ -7,8 +7,9 @@ Image results persist in R2 and Workers Cache; Cloudflare Images is not required
 ## Native Container scheduling
 
 On October 1, 2026, a production trial deployed Cloudflare's native `ctx.container`
-API and `durable_object` scheduling policy. Routing was restored to legacy after
-the first native transform timed out. The encoder, renderer namespace,
+API and `durable_object` scheduling policy. The first trial timed out; subsequent
+canary work fixed idle shutdown and verified native restarts. Native is now the
+default route. The encoder, renderer namespace,
 two shards, 1-vCPU/3-GiB/2,000-MB allocation and two-minute inactivity timeout
 remain the same. The retained legacy application supports a configuration
 rollback; see the [deployment migration notes](deployment.md).
@@ -45,12 +46,71 @@ The baseline startup-span median was 1,586 ms across six cold requests. All
 failure reached `ImgtNativeImageTransformer` and exhausted the 20-second job
 deadline. Dashboard logs show the container listening on port 8080 after the
 HTTP timeout. This suggests slow initial provisioning, but does not identify
-the allocation or readiness root cause. No native speedup is established.
+the allocation or readiness root cause. This failed trial establishes no speedup.
 
 Rollback commit `9b0bf34` deployed successfully. Public health reported legacy
 version `a52042a6-ffce-4d4d-819a-514ed2398fda`; the exact failed source then
 passed the smoke test (MISS 3,132 ms, EDGE 46 ms, ETag 304). Native startup must
 be diagnosed and verified with a controlled canary before another traffic switch.
+
+### Native canary and lifecycle diagnosis
+
+Commit `08e23cc` kept normal traffic on legacy and routed only a unique source
+query prefix to native. Its first build passed all checks but failed uploading
+the Docker image with a registry internal error; retrying the unchanged build
+succeeded. Version `f2e5d07d-278d-4bec-a533-2fb9dff56377` then passed 42 new
+transforms and 42 EDGE repeats, all matching the local production encoder byte
+for byte. Two preliminary probes also passed, with readiness spans of 6,084 ms
+and 4,008 ms.
+
+Warm medians from the canary were 764 / 1,567 / 2,623 ms at 640 / 1920 / 3840px,
+versus 940 / 1,567 / 2,996 ms in the legacy baseline (12 observations per width).
+EDGE medians stayed about 36 / 40 / 47 ms. The thumbnail and large-image changes
+are promising observations, not causal proof: these were sequential runs on
+potentially different hosts, rather than randomized paired comparisons.
+
+The canary's later idle candidates are **not valid cold-start comparisons**. After
+135-second pauses, later readiness spans were only 5–10 ms. Runtime logs showed
+readiness events without corresponding starts. Native `setInactivityTimeout`
+counts from Durable Object inactivity, and a pending `monitor()` can prevent
+eviction for up to 15 minutes. A readiness span alone cannot prove a Linux boot.
+
+Commit `0e492a0` adds a durable alarm for two minutes after the last completed
+request, defers shutdown during active requests, and serializes destruction
+against new events. The native inactivity timeout remains a fallback. Each
+native start also gets a random label reported as `container_boot` in MISS
+`Server-Timing`; a changed identity proves a new start, and a stable identity
+checks that warm requests reuse it. These lifecycle changes do not change the
+encoder, output namespace, CPU/RAM allocation, or transform deadline.
+
+The first request on version `68dbd8ac-8632-4066-8ac1-643140ea30a2` also failed
+after 20,562 ms. Its native start occurred at 15:34:52.723 UTC; waiting for the
+inactivity-timeout setup exhausted the readiness budget before health polling.
+This is a second observed first-use failure, not a resolved first-provisioning
+issue. Later fresh probes passed on both shards with different boot labels,
+readiness spans of 1,001 / 5,882 ms and total times of 2,269 / 6,809 ms.
+
+After the image initialized, two 135-second idle cycles passed on both shards.
+Every cold request had a changed boot label from its prior request, while warm
+MISS responses kept that label. All 18 transforms (two priming, four verified
+cold, twelve warm) and 18 EDGE repeats matched the expected bytes on version
+`68dbd8ac-8632-4066-8ac1-643140ea30a2`. The four readiness spans were
+1,000 / 1,431 / 1,183 / 1,312 ms (median 1,248 ms), versus a 1,586 ms legacy
+baseline median. Native did not reproduce a 6x startup gain.
+
+| Output width | Legacy cold median | Native verified cold median | Samples per backend |
+| --- | --- | --- | --- |
+| 640 | 3,820 ms | 2,083 ms | 2 |
+| 3,840 | 4,612 ms | 4,219 ms | 2 |
+
+There is no verified post-fix native cold comparison at 1,920px. Warm post-fix
+medians were 783 / 1,463 / 2,821 ms (four samples per width). These results
+verify functioning restarts with an initialized image; they do not guarantee
+that a newly built image will initialize within the first request's deadline.
+The exact cost/benefit and first-provisioning cause remain unmeasured. A larger
+paired multi-image, multi-region trial should follow before claiming general
+performance gains. Snapshot restore is a possible separate experiment, not
+part of this migration or these measurements.
 
 Results are sequential small samples on one scene and one client location.
 The baseline has two cold observations and twelve warm observations per width,

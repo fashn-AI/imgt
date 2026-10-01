@@ -6,8 +6,7 @@
   "build": { "command": "npm run check" },
   "vars": {
     "ALLOWED_HOSTS": "images.unsplash.com",
-    "IMGT_CONTAINER_BACKEND": "legacy",
-    "IMGT_NATIVE_CANARY_PREFIX": "6b293d3a-89b4-4fef-9293-ce850b51fb4d"
+    "IMGT_CONTAINER_BACKEND": "native"
   },
   "compatibility_date": "2026-09-01",
   "version_metadata": { "binding": "CF_VERSION_METADATA" },

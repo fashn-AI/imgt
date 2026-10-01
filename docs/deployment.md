@@ -138,6 +138,18 @@ deadlines still apply. The response backend header identifies the selected
 route. Remove the prefix after the experiment. A successful deployment does
 not establish that the first allocation meets the image job deadline.
 
+The repository now selects native by default. An explicit durable alarm enforces
+the two-minute idle interval, in addition to the platform inactivity timeout.
+The canary prefix is unset after rollout. First-use custom-image initialization
+exceeded the 20-second deadline in two migration trials; later starts on the
+initialized image passed. After a build, validate fresh transforms on both
+configured shards and allow initialization to settle before declaring the
+deployment ready. Keep these first-use failures in any performance report.
+Native images do not receive a platform-managed fleet rollout: running instances
+keep their image until they stop, and later starts use the new named-image digest.
+The idle alarm bounds that transition; renderer changes still require a new
+renderer version and derivative namespace.
+
 Wrangler 4.145.0 supports the native configuration. Refer to Cloudflare's
 [scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/)
 and [native API migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-container-api/).
