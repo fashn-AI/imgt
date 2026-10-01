@@ -28,11 +28,10 @@ For a second copy in the same account, change all of these before deploying:
 | --- | --- |
 | `name` | `shop-images` |
 | `containers[0].name` | `shop-images-transformer` |
-| `containers[1].name` | `shop-images-native-transformer` |
 | `r2_buckets[0].bucket_name` | `shop-image-derivatives` |
 | `ratelimits[0].namespace_id` | A numeric string unused by your other limiters |
 
-Keep the binding names (`DERIVATIVES`, `IMGT_TRANSFORMER`, `IMGT_NATIVE_TRANSFORMER`, and
+Keep the binding names (`DERIVATIVES`, `IMGT_NATIVE_TRANSFORMER`, and
 `IMAGE_RATE_LIMITER`) and Durable Object class names unchanged. Do not rename
 an existing installation's container or bucket just to apply an upgrade.
 Resource names and allowlisted hosts belong to that installation.
@@ -50,9 +49,6 @@ and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 The default routes work to two 1-vCPU/3-GiB containers and sleeps each after
 two idle minutes. Two running shards allocate 6 GiB. Native scheduling bounds
 shard IDs in application code; it has no platform `max_instances` setting.
-The retained legacy application has a four-instance cap to accommodate existing
-instance records during upgrades. During a backend switch, both applications
-can briefly have running containers until the previous backend becomes idle.
 The idle timeout is 80% shorter. These are configuration changes, not guaranteed
 bill reductions. More frequent cold starts are
 the tradeoff; image requests served from Workers Cache or R2 do not start a
@@ -92,19 +88,12 @@ See [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lif
 Application settings live in `imgt.config.ts`. Deployment allocation lives in
 `wrangler.jsonc`:
 
-- To use four shards, change `config.containers.shards` to `4`; the checked-in
-  native adapter permits at most four configured shard IDs and the retained
-  `containers[0].max_instances` also permits four.
+- To use four shards, change `config.containers.shards` to `4`; the adapter
+  permits at most four configured shard IDs.
 - To keep containers warm longer, adjust `config.containers.sleepAfter`.
 - Keep the custom 1-vCPU/3-GiB allocation for large source images. The smaller
   `basic` and `lite` profiles did not pass our large-image workload; see the
   [performance notes](performance.md).
-
-Our production downsize to a platform cap of two returned instance-limit errors
-even after the application reported ready, with four stopped instance records
-still present. Restoring the cap to four preserves the existing installation.
-A fresh account may be able to use a cap of two, but that path is not yet verified.
-Do not lower the cap below an existing fleet as a routine cost optimization.
 
 Changing shard count changes request routing and can temporarily run old and
 new work for the same derivative during rollout. R2 contents remain valid. Keep
@@ -133,11 +122,19 @@ request succeeds. The former migration preflight/fallback gate is no longer
 part of routine deployment.
 
 Keep the existing `v1` and `v2-native-container` migration history and namespace
-names. The legacy class, binding and application remain available for an explicit
-rollback with `IMGT_CONTAINER_BACKEND: "legacy"`; native is the default. Removing
-that deployed namespace is a separate infrastructure retirement. Changing an
-existing application's scheduling policy is unsupported. See Cloudflare's
-[scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/).
+names. The retired `ImgtImageTransformer` export returns `410` and preserves
+its historical namespace without a production binding or Container entry.
+Removing an entry from this file does not delete an existing Cloudflare Container
+application; retire the unused application separately without deleting namespace
+data. Changing an existing application's scheduling policy is unsupported. See
+Cloudflare's [scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/).
+
+Renaming an existing native Container application is not a configuration-only
+change: Wrangler checks its name against the application attached to the namespace.
+The [application update API](https://developers.cloudflare.com/api/resources/containers/subresources/applications/methods/edit/)
+does not expose a name field. Plan a separate replacement before changing its
+checked-in name; preserve the production namespace and account for a container
+restart.
 
 Your copy deploys your commits; upstream releases do not update it automatically.
 Use tagged releases from [imgt](https://github.com/relferreira/imgt/releases) and

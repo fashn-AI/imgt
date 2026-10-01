@@ -104,14 +104,13 @@ out, preventing canceled jobs from overlapping new work.
 
 The fixed shard count is configured in `imgt.config.ts`. Native scheduling
 admits only the configured shard IDs and caps the count at four in application
-code. The legacy backend additionally has `max_instances` in `wrangler.jsonc`.
-Keep the shard count stable between deployments to preserve deterministic
-routing. The queue limit and other safety limits are
-internal defaults rather than deployment configuration. See
+code. Keep the shard count stable between deployments to preserve deterministic
+routing. The queue limit and other safety limits are internal defaults rather
+than deployment configuration. See
 [performance notes](performance.md) for the allocation and engine decisions.
 
-`IMGT_CONTAINER_BACKEND` selects the legacy or native Container namespace.
-The native backend extends `DurableObject` and uses `ctx.container` with
+`IMGT_NATIVE_TRANSFORMER` routes requests to the active Container namespace.
+The transformer extends `DurableObject` and uses `ctx.container` with
 `scheduling_policy: "durable_object"`. Its allocation remains 1 vCPU, 3 GiB
 RAM and 2,000 MB disk. Startup is shared between callers and polls the private
 health endpoint before uploading a job; canceling one caller does not cancel
@@ -122,14 +121,13 @@ minutes after the last completed request, because native exit monitoring can
 delay Durable Object inactivity. The alarm defers shutdown during active jobs
 and blocks new events while stopping compute. Exit monitoring clears readiness
 for the next request. Native starts receive a random boot label, reported in
-the MISS response's `Server-Timing` for restart verification. Cache and encoder
-behavior are shared with the retained legacy adapter for explicit rollback.
+the MISS response's `Server-Timing` for restart verification.
 
-The two applications have separate namespaces because an existing application's
-scheduling policy cannot be changed. The legacy namespace remains available
-for rollback. Public gateway responses include `x-imgt-worker-version` and
-`x-imgt-container-backend`, attached outside the shared image cache. The backend
-header identifies the configured route; a cache hit does not run a container.
+The historical `ImgtImageTransformer` class remains as a retired export returning
+`410`, preserving its namespace data without a production binding or Container
+configuration. Public gateway responses include `x-imgt-worker-version` and
+`x-imgt-container-backend: native`, attached outside the shared image cache.
+A cache hit does not run a container.
 
 ## Code organization
 

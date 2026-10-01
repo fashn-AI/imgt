@@ -1,9 +1,4 @@
 import { RENDERER_VERSION } from "../container/renderer";
-import {
-  Container,
-  getContainer,
-  type StopParams,
-} from "@cloudflare/containers";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { parseAllowedHosts } from "./settings";
 import { config } from "../imgt.config";
@@ -14,7 +9,6 @@ import {
 } from "./constants";
 import { TransformCoordinator } from "./coordinator";
 import { handleGateway } from "./gateway";
-import { ImageError } from "./http";
 import { containerNameForKey, jobRequest, type ResizeJob } from "./jobs";
 import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
@@ -27,15 +21,13 @@ import {
 
 interface Env {
   ALLOWED_HOSTS?: string;
-  IMGT_TRANSFORMER: DurableObjectNamespace<ImgtImageTransformer>;
   IMGT_NATIVE_TRANSFORMER: DurableObjectNamespace<ImgtNativeImageTransformer>;
-  IMGT_CONTAINER_BACKEND: "legacy" | "native";
   CF_VERSION_METADATA: { id: string; tag: string; timestamp: string };
   DERIVATIVES: R2Bucket;
   IMAGE_RATE_LIMITER: RateLimit;
 }
 
-// Separate namespace: an existing Container application's policy is immutable.
+// The production transformer uses native Durable Object container scheduling.
 export class ImgtNativeImageTransformer extends DurableObject<Env> {
   readonly #idle: NativeIdleAlarm;
   readonly #transport: NativeContainerTransport;
@@ -131,78 +123,17 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
   }
 }
 
-export class ImgtImageTransformer extends Container<Env> {
-  defaultPort = 8080;
-  sleepAfter = config.containers.sleepAfter;
-  enableInternet = false;
-  envVars = {
-    MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
-    MAX_IN_FLIGHT: String(MAX_DISTINCT_JOBS_PER_SHARD),
-    TRANSFORM_TIMEOUT_MS: String(TRANSFORM_TIMEOUT_MS),
-    VIPS_CONCURRENCY: "1",
-    WEBP_EFFORT: String(config.transforms.webpEffort),
-  };
-  readonly #allowedHosts = parseAllowedHosts(this.env.ALLOWED_HOSTS);
-  readonly #store = new DerivativeStore(this.env.DERIVATIVES);
-  readonly #coordinator = new TransformCoordinator({
-    rendererVersion: RENDERER_VERSION,
-    allowedHosts: this.#allowedHosts,
-    store: this.#store,
-    waitUntil: (promise) => this.ctx.waitUntil(promise),
-    prepare: async (signal) => {
-      if ((await this.getState()).status !== "healthy") {
-        const response = await this.containerFetch(
-          new Request("http://container/health", { signal }),
-        );
-        if (!response.ok)
-          throw new ImageError(
-            await response.text(),
-            response.status,
-            response.headers.get("retry-after") ?? undefined,
-          );
-        await response.body?.cancel();
-      }
-    },
-    transform: (body, job, signal, deadline) =>
-      this.containerFetch(
-        new Request(
-          `http://container/transform?w=${job.width}&q=${job.quality}`,
-          {
-            method: "POST",
-            body,
-            signal,
-            headers: { "x-imgt-deadline": String(deadline) },
-          },
-        ),
-      ),
-  });
-
-  fetch(request: Request): Promise<Response> {
-    return handleImageJob(request, {
-      allowedHosts: this.#allowedHosts,
-      store: this.#store,
-      resize: (job) => this.#coordinator.fetch(jobRequest(job)),
-      waitUntil: (promise) => this.ctx.waitUntil(promise),
-    });
-  }
-
-  onStop(params: StopParams) {
-    console.log(
-      JSON.stringify({
-        event: "container_stopped",
-        containerId: this.ctx.id.toString(),
-        ...params,
-      }),
-    );
+// Keep the historical namespace export without deleting its stored data.
+// Its Container application and production binding are retired separately.
+export class ImgtImageTransformer extends DurableObject<Env> {
+  fetch(): Response {
+    return new Response("This transformer has been retired", { status: 410 });
   }
 }
 
 async function requestResize(job: ResizeJob, env: Env): Promise<Response> {
   const name = containerNameForKey(job.outputKey, config.containers.shards);
-  const container =
-    env.IMGT_CONTAINER_BACKEND === "native"
-      ? env.IMGT_NATIVE_TRANSFORMER.getByName(name)
-      : getContainer(env.IMGT_TRANSFORMER, name);
+  const container = env.IMGT_NATIVE_TRANSFORMER.getByName(name);
   const started = Date.now();
   const response = await container.fetch(jobRequest(job));
   const measured = new Response(response.body, response);
@@ -231,10 +162,7 @@ export default {
     // Attach outside the image cache, so every response identifies live code.
     const measured = new Response(response.body, response);
     measured.headers.set("x-imgt-worker-version", env.CF_VERSION_METADATA.id);
-    measured.headers.set(
-      "x-imgt-container-backend",
-      env.IMGT_CONTAINER_BACKEND,
-    );
+    measured.headers.set("x-imgt-container-backend", "native");
     return measured;
   },
 } satisfies ExportedHandler<Env>;
