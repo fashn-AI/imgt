@@ -4,8 +4,10 @@
 
 The README's deploy button creates a repository in your GitHub account and
 connects it to Cloudflare Workers Builds. The production deploy command is
-`npx wrangler deploy`; the checked-in Wrangler build command runs `npm run check`
-before upload. Cloudflare's GitHub integration handles deployment; no GitHub
+`npx wrangler deploy` for the initial provisioning. After both applications and
+the migrations exist, set the production deploy command to
+`npm run deploy -- https://YOUR_WORKER_ENDPOINT` for gated updates. The checked-in
+Wrangler build command runs `npm run check` before upload. Cloudflare's GitHub integration handles deployment; no GitHub
 Actions workflow is required.
 
 The deploy button requires the source repository to be public. You need Workers
@@ -149,6 +151,39 @@ Native images do not receive a platform-managed fleet rollout: running instances
 keep their image until they stop, and later starts use the new named-image digest.
 The idle alarm bounds that transition; renderer changes still require a new
 renderer version and derivative namespace.
+
+### Gated updates for an existing installation
+
+`npm run deploy -- https://YOUR_WORKER_ENDPOINT [PUBLIC_SOURCE_URL]` uploads a
+candidate with ordinary traffic routed to the retained legacy application.
+Wrangler's native named-image upload does not roll out the legacy application.
+First, the candidate is included at 0% and its legacy route is verified using a
+Worker version override. Then it receives traffic, the native shards are allowed
+to reach their normal two-minute idle shutdown, and controlled canary misses
+initialize the new image on both shards. Native Durable Objects cannot be tested
+at 0%: their version is assigned by deployment percentages, independently of the
+gateway override.
+
+Only after both native misses return the exact current encoder bytes does the
+gate promote native routing. Promotion uses `--containers-rollout none`, preserving
+the image that just passed preflight. It then requires one fresh native miss per
+shard on the promoted version. A failed check leaves the previous route active
+or restores the verified legacy candidate; the build fails instead of reporting
+the deployment ready. Each initialization phase permits at most four attempts
+per shard, with 30-second client limits and ten-second retry pauses. Public image
+jobs retain their existing 20-second deadline, resource limits and idle timeout.
+
+The gate uses the existing Workers Builds authorization; it adds no credential
+or public administrative endpoint. It briefly uses the existing legacy and native
+applications, with normal usage charges and bounded probes. The default source
+is the Unsplash sample. For another allowlist, supply an allowed, publicly cached
+source that accepts extra query parameters without changing its image bytes.
+The gate requires a single active production version and already-applied Durable
+Object migrations. Initial provisioning and lifecycle migrations still use
+`npx wrangler deploy`; verify and initialize those before normal traffic.
+
+See [version overrides](https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/)
+and [Durable Object deployment routing](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/).
 
 Wrangler 4.145.0 supports the native configuration. Refer to Cloudflare's
 [scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/)

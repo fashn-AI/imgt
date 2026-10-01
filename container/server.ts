@@ -1,6 +1,7 @@
 import process from "node:process";
 import sharp from "sharp";
 import { createTransformServer } from "./app.ts";
+import { RENDERER_VERSION } from "./renderer.ts";
 import type { TransformOptions } from "./transform.ts";
 
 const effort = Number(process.env.WEBP_EFFORT ?? "2");
@@ -20,7 +21,14 @@ const server = createTransformServer({
 const port = Number(process.env.PORT ?? "8080");
 server.listen(port, "0.0.0.0", () =>
   console.log(
-    `imgt container listening on ${(server.address() as { port: number }).port}`,
+    JSON.stringify({
+      event: "container_listening",
+      port: (server.address() as { port: number }).port,
+      renderer: RENDERER_VERSION,
+      node: process.version,
+      sharp: sharp.versions.sharp,
+      vips: sharp.versions.vips,
+    }),
   ),
 );
 

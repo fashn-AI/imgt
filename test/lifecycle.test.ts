@@ -18,7 +18,12 @@ test(
     });
     const exited = once(child, "exit");
     const [chunk] = await once(child.stdout, "data");
-    const port = Number(String(chunk).match(/listening on (\d+)/)?.[1]);
+    const listening = JSON.parse(String(chunk)) as {
+      event: string;
+      port: number;
+    };
+    assert.equal(listening.event, "container_listening");
+    const port = listening.port;
     assert.ok(port > 0);
     const input = await sharp({
       create: { width: 32, height: 32, channels: 3, background: "red" },

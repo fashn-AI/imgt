@@ -161,6 +161,8 @@ export class NativeContainerTransport {
           console.log(
             JSON.stringify({
               event: "native_container_start",
+              imageDigest:
+                this.container.images.sharp.match(/sha256:[a-f0-9]{64}/)?.[0],
               resources: CONTAINER_RESOURCES,
               bootId: this.#bootId,
             }),
