@@ -18,6 +18,26 @@ import { inactivityTimeoutMs } from "../src/native-container";
 
 const UUID = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
 
+export async function withDeadline<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms = 30000,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`Deployment probe exceeded ${ms}ms`);
+      controller.abort(error);
+      reject(error);
+    }, ms);
+  });
+  try {
+    return await Promise.race([work(controller.signal), timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 export function uploadedVersion(output: string): string {
   const version = output.match(
     new RegExp(`(?:Worker Version ID|Current Version ID):\\s*(${UUID})`),
@@ -184,6 +204,12 @@ export async function gatedDeploy(
 }
 
 async function wrangler(args: string[]): Promise<string> {
+  console.log(
+    JSON.stringify({
+      event: "deployment_cli",
+      command: args.slice(0, 2).join(" "),
+    }),
+  );
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
@@ -191,13 +217,13 @@ async function wrangler(args: string[]): Promise<string> {
       {
         env: { ...process.env, CI: "true", NO_COLOR: "1" },
         stdio: ["ignore", "pipe", "inherit"],
-        timeout: 600000,
+        timeout: 180000,
       },
     );
     let output = "";
     child.stdout.on("data", (data: Buffer) => {
       output += data.toString();
-      process.stdout.write(data);
+      if (!args.includes("--json")) process.stdout.write(data);
     });
     child.on("error", reject);
     child.on("close", (code) =>
@@ -225,12 +251,11 @@ async function main(): Promise<void> {
   const source =
     suppliedSource ??
     "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&w=1920&q=90";
-  const origin = await fetch(source, {
-    signal: AbortSignal.timeout(30000),
-    redirect: "error",
+  const input = await withDeadline(async (signal) => {
+    const origin = await fetch(source, { signal, redirect: "error" });
+    assert.equal(origin.status, 200, "Preflight source must be available");
+    return Buffer.from(await origin.arrayBuffer());
   });
-  assert.equal(origin.status, 200, "Preflight source must be available");
-  const input = Buffer.from(await origin.arrayBuffer());
   assert.ok(
     input.length > 0 && input.length <= MAX_SOURCE_BYTES,
     "Preflight source size",
@@ -250,12 +275,13 @@ async function main(): Promise<void> {
   const latest = deployments.sort((a, b) =>
     b.created_on.localeCompare(a.created_on),
   )[0];
+  const active = latest?.versions.filter(({ percentage }) => percentage > 0);
   assert.equal(
-    latest?.versions.length,
+    active?.length,
     1,
     "Gate requires one active production version",
   );
-  assert.equal(latest.versions[0].percentage, 100);
+  assert.equal(active[0].percentage, 100);
   const nonce = randomUUID();
   const tools: DeploymentTools = {
     run: wrangler,
@@ -266,6 +292,15 @@ async function main(): Promise<void> {
       for (let shard = 0; shard < config.containers.shards; shard += 1) {
         let lastError: unknown;
         for (let attempt = 1; attempt <= attempts; attempt += 1) {
+          console.log(
+            JSON.stringify({
+              event: "deployment_shard_probe",
+              version,
+              backend,
+              shard,
+              attempt,
+            }),
+          );
           const sources = await shardSources(
             source,
             `${nonce}-${phase}-${attempt}`,
@@ -278,18 +313,15 @@ async function main(): Promise<void> {
             q: "77",
           }).toString();
           try {
-            const response = await fetch(url, {
-              headers: {
-                "Cloudflare-Workers-Version-Overrides": `${settings.name}="${version}"`,
-              },
-              signal: AbortSignal.timeout(30000),
+            const boot = await withDeadline(async (signal) => {
+              const response = await fetch(url, {
+                headers: {
+                  "Cloudflare-Workers-Version-Overrides": `${settings.name}="${version}"`,
+                },
+                signal,
+              });
+              return verifyProbe(response, expected, version, backend);
             });
-            const boot = await verifyProbe(
-              response,
-              expected,
-              version,
-              backend,
-            );
             console.log(
               JSON.stringify({
                 event: "deployment_shard_ready",
@@ -320,11 +352,7 @@ async function main(): Promise<void> {
       }
     },
   };
-  const version = await gatedDeploy(
-    latest.versions[0].version_id,
-    tools,
-    nonce,
-  );
+  const version = await gatedDeploy(active[0].version_id, tools, nonce);
   console.log(JSON.stringify({ event: "deployment_ready", version }));
 }
 

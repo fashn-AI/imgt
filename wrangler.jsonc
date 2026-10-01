@@ -25,6 +25,7 @@
     }
   },
   "observability": {
+    "enabled": true,
     "logs": { "enabled": true },
     "traces": {
       "enabled": true,

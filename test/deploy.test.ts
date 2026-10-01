@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gatedDeploy, shardSources, verifyProbe } from "../scripts/deploy.mts";
+import {
+  gatedDeploy,
+  shardSources,
+  verifyProbe,
+  withDeadline,
+} from "../scripts/deploy.mts";
 import { DERIVATIVE_PREFIX } from "../src/constants";
 import { containerNameForKey } from "../src/jobs";
 import { derivativeKey } from "../src/options";
@@ -8,6 +13,18 @@ import { derivativeKey } from "../src/options";
 const previous = "11111111-1111-1111-1111-111111111111";
 const candidate = "22222222-2222-2222-2222-222222222222";
 const promoted = "33333333-3333-3333-3333-333333333333";
+
+test("deployment probes expire even when an underlying operation ignores cancellation", async () => {
+  let signal: AbortSignal | undefined;
+  await assert.rejects(
+    withDeadline((value) => {
+      signal = value;
+      return new Promise(() => {});
+    }, 10),
+    /exceeded 10ms/,
+  );
+  assert.equal(signal?.aborted, true);
+});
 
 function harness(fail?: "legacy" | "native" | "promotion") {
   const commands: string[][] = [];
