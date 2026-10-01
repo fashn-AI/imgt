@@ -40,7 +40,7 @@
   ],
   "containers": [
     {
-      "name": "imgt-native-transformer",
+      "name": "imgt-transformer",
       "class_name": "ImgtNativeImageTransformer",
       "scheduling_policy": "durable_object",
       "images": {
