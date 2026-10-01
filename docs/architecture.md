@@ -102,11 +102,29 @@ native processing timeout rounded up to whole seconds. Active native work
 retains its slot until it settles, even if the HTTP caller disconnects or times
 out, preventing canceled jobs from overlapping new work.
 
-The fixed shard count is configured in `imgt.config.ts`. It must not exceed
-`max_instances` in `wrangler.jsonc`; keep it stable between deployments to
-preserve deterministic routing. The queue limit and other safety limits are
+The fixed shard count is configured in `imgt.config.ts`. Native scheduling
+admits only the configured shard IDs and caps the count at four in application
+code. The legacy backend additionally has `max_instances` in `wrangler.jsonc`.
+Keep the shard count stable between deployments to preserve deterministic
+routing. The queue limit and other safety limits are
 internal defaults rather than deployment configuration. See
 [performance notes](performance.md) for the allocation and engine decisions.
+
+`IMGT_CONTAINER_BACKEND` selects the legacy or native Container namespace.
+The native backend extends `DurableObject` and uses `ctx.container` with
+`scheduling_policy: "durable_object"`. Its allocation remains 1 vCPU, 3 GiB
+RAM and 2,000 MB disk. Startup is shared between callers and polls the private
+health endpoint before uploading a job; canceling one caller does not cancel
+another caller's startup. Transform uploads are never automatically replayed.
+The native inactivity timeout is two minutes and is restored when an object
+reconnects to a running container. Exit monitoring clears readiness for the
+next request. Cache and encoder behavior are shared with the legacy adapter.
+
+The two applications have separate namespaces because an existing application's
+scheduling policy cannot be changed. The legacy namespace remains available
+for rollback. Public gateway responses include `x-imgt-worker-version` and
+`x-imgt-container-backend`, attached outside the shared image cache. The backend
+header identifies the configured route; a cache hit does not run a container.
 
 
 ## Code organization
@@ -119,6 +137,7 @@ are split into small modules:
 - `src/store.ts` and `src/cache.ts`: R2 metadata, content validators, cache policy.
 - `src/source.ts`: origin requests, redirects, source validation.
 - `src/coordinator.ts`: admission, deduplication, transformation, persistence.
+- `src/native-container.ts`: native startup, readiness, inactivity and restart handling.
 - `container/app.ts`, `body.ts`, `scheduler.ts`, and `transform.ts`: HTTP job
   lifecycle, bounded uploads, the ready queue, and Sharp processing.
 

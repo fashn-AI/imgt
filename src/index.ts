@@ -4,7 +4,7 @@ import {
   getContainer,
   type StopParams,
 } from "@cloudflare/containers";
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { parseAllowedHosts } from "./settings";
 import { config } from "../imgt.config";
 import {
@@ -18,12 +18,102 @@ import { ImageError } from "./http";
 import { containerNameForKey, jobRequest, type ResizeJob } from "./jobs";
 import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
+import {
+  inactivityTimeoutMs,
+  isConfiguredShard,
+  NativeContainerTransport,
+} from "./native-container";
 
 interface Env {
   ALLOWED_HOSTS?: string;
   IMGT_TRANSFORMER: DurableObjectNamespace<ImgtImageTransformer>;
+  IMGT_NATIVE_TRANSFORMER: DurableObjectNamespace<ImgtNativeImageTransformer>;
+  IMGT_CONTAINER_BACKEND: "legacy" | "native";
+  CF_VERSION_METADATA: { id: string; tag: string; timestamp: string };
   DERIVATIVES: R2Bucket;
   IMAGE_RATE_LIMITER: RateLimit;
+}
+
+// Separate namespace: an existing Container application's policy is immutable.
+export class ImgtNativeImageTransformer extends DurableObject<Env> {
+  readonly #transport: NativeContainerTransport;
+  readonly #allowedHosts = parseAllowedHosts(this.env.ALLOWED_HOSTS);
+  readonly #store = new DerivativeStore(this.env.DERIVATIVES);
+  readonly #coordinator: TransformCoordinator;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.#transport = new NativeContainerTransport(ctx.container!, {
+      idleTimeoutMs: inactivityTimeoutMs(config.containers.sleepAfter),
+      env: {
+        MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
+        MAX_IN_FLIGHT: String(MAX_DISTINCT_JOBS_PER_SHARD),
+        TRANSFORM_TIMEOUT_MS: String(TRANSFORM_TIMEOUT_MS),
+        VIPS_CONCURRENCY: "1",
+        WEBP_EFFORT: String(config.transforms.webpEffort),
+      },
+      waitUntil: (promise) => ctx.waitUntil(promise),
+      stopped: (error) =>
+        console.log(
+          JSON.stringify({
+            event: "container_stopped",
+            backend: "native",
+            containerId: ctx.id.toString(),
+            reason:
+              error instanceof Error ? error.message : (error ?? "stopped"),
+            exitCode:
+              error && typeof error === "object" && "exitCode" in error
+                ? error.exitCode
+                : undefined,
+          }),
+        ),
+    });
+    ctx.blockConcurrencyWhile(() => this.#transport.restore());
+    this.#coordinator = new TransformCoordinator({
+      rendererVersion: RENDERER_VERSION,
+      allowedHosts: this.#allowedHosts,
+      store: this.#store,
+      waitUntil: (promise) => ctx.waitUntil(promise),
+      prepare: (signal) => this.#transport.prepare(signal),
+      transform: (body, job, signal, deadline) =>
+        this.#transport.fetch(
+          new Request(
+            `http://container/transform?w=${job.width}&q=${job.quality}`,
+            {
+              method: "POST",
+              body,
+              signal,
+              headers: { "x-imgt-deadline": String(deadline) },
+            },
+          ),
+        ),
+    });
+  }
+
+  fetch(request: Request): Promise<Response> {
+    // Native scheduling has no max_instances setting. Only the configured,
+    // bounded shard IDs may start compute, including through direct stub calls.
+    if (
+      !isConfiguredShard(
+        this.ctx.id.toString(),
+        config.containers.shards,
+        (shard) =>
+          this.env.IMGT_NATIVE_TRANSFORMER.idFromName(
+            `instance-${RENDERER_VERSION}-${shard}`,
+          ).toString(),
+      )
+    ) {
+      return Promise.resolve(
+        new Response("invalid container shard", { status: 503 }),
+      );
+    }
+    return handleImageJob(request, {
+      allowedHosts: this.#allowedHosts,
+      store: this.#store,
+      resize: (job) => this.#coordinator.fetch(jobRequest(job)),
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
+    });
+  }
 }
 
 export class ImgtImageTransformer extends Container<Env> {
@@ -93,10 +183,11 @@ export class ImgtImageTransformer extends Container<Env> {
 }
 
 async function requestResize(job: ResizeJob, env: Env): Promise<Response> {
-  const container = getContainer(
-    env.IMGT_TRANSFORMER,
-    containerNameForKey(job.outputKey, config.containers.shards),
-  );
+  const name = containerNameForKey(job.outputKey, config.containers.shards);
+  const container =
+    env.IMGT_CONTAINER_BACKEND === "native"
+      ? env.IMGT_NATIVE_TRANSFORMER.getByName(name)
+      : getContainer(env.IMGT_TRANSFORMER, name);
   const started = Date.now();
   const response = await container.fetch(jobRequest(job));
   const measured = new Response(response.body, response);
@@ -114,13 +205,21 @@ export class ImgtImageCache extends WorkerEntrypoint<Env> {
 }
 
 export default {
-  fetch(request, env, ctx): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const imageCache = (ctx.exports as unknown as { ImgtImageCache: Fetcher })
       .ImgtImageCache;
-    return handleGateway(request, {
+    const response = await handleGateway(request, {
       imageCache,
       rateLimiter: env.IMAGE_RATE_LIMITER,
       allowedHosts: parseAllowedHosts(env.ALLOWED_HOSTS),
     });
+    // Attach outside the image cache, so every response identifies live code.
+    const measured = new Response(response.body, response);
+    measured.headers.set("x-imgt-worker-version", env.CF_VERSION_METADATA.id);
+    measured.headers.set(
+      "x-imgt-container-backend",
+      env.IMGT_CONTAINER_BACKEND,
+    );
+    return measured;
   },
 } satisfies ExportedHandler<Env>;

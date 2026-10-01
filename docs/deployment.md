@@ -28,10 +28,11 @@ For a second copy in the same account, change all of these before deploying:
 | --- | --- |
 | `name` | `shop-images` |
 | `containers[0].name` | `shop-images-transformer` |
+| `containers[1].name` | `shop-images-native-transformer` |
 | `r2_buckets[0].bucket_name` | `shop-image-derivatives` |
 | `ratelimits[0].namespace_id` | A numeric string unused by your other limiters |
 
-Keep the binding names (`DERIVATIVES`, `IMGT_TRANSFORMER`, and
+Keep the binding names (`DERIVATIVES`, `IMGT_TRANSFORMER`, `IMGT_NATIVE_TRANSFORMER`, and
 `IMAGE_RATE_LIMITER`) and Durable Object class names unchanged. Do not rename
 an existing installation's container or bucket just to apply an upgrade.
 Resource names and allowlisted hosts belong to that installation.
@@ -47,8 +48,11 @@ Use the current [Workers pricing](https://developers.cloudflare.com/workers/plat
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
 The default routes work to two 1-vCPU/3-GiB containers and sleeps each after
-two idle minutes. Two running shards allocate 6 GiB; the platform cap remains
-four instances (12 GiB) to accommodate existing instance records during upgrades.
+two idle minutes. Two running shards allocate 6 GiB. Native scheduling bounds
+shard IDs in application code; it has no platform `max_instances` setting.
+The retained legacy application has a four-instance cap to accommodate existing
+instance records during upgrades. During a backend switch, both applications
+can briefly have running containers until the previous backend becomes idle.
 The idle timeout is 80% shorter. These are configuration changes, not guaranteed
 bill reductions. More frequent cold starts are
 the tradeoff; image requests served from Workers Cache or R2 do not start a
@@ -89,8 +93,8 @@ Application settings live in `imgt.config.ts`. Deployment allocation lives in
 `wrangler.jsonc`:
 
 - To use four shards, change `config.containers.shards` to `4`; the checked-in
-  `containers[0].max_instances` already permits four. Keep routing at or below
-  the platform cap.
+  native adapter permits at most four configured shard IDs and the retained
+  `containers[0].max_instances` also permits four.
 - To keep containers warm longer, adjust `config.containers.sleepAfter`.
 - Keep the custom 1-vCPU/3-GiB allocation for large source images. The smaller
   `basic` and `lite` profiles did not pass our large-image workload; see the
@@ -108,6 +112,27 @@ the shard count stable during routine releases. The per-shard queue limit and
 20-second deadline remain fixed safety limits.
 
 ## Updates
+
+### Native Container scheduling migration
+
+The new `imgt-native-transformer` application uses Durable Object scheduling
+and the native `ctx.container` API. The `v2-native-container` migration adds a
+separate SQLite Durable Object namespace. Keep the original `v1` migration,
+legacy container entry and binding intact: an existing application's scheduling
+policy is immutable.
+
+For an existing installation, first deploy the configuration with
+`vars.IMGT_CONTAINER_BACKEND` set to `legacy` to provision the new application.
+After Workers Builds succeeds, switch the variable to `native` in Git and
+deploy again. Verify `/health` returns the expected `x-imgt-container-backend`
+and `x-imgt-worker-version`, then run the smoke test with a fresh source URL.
+Roll back by committing `IMGT_CONTAINER_BACKEND: "legacy"`; retain both
+namespaces and migration history. No derivative namespace bump is needed
+because Sharp, output settings and cache semantics are unchanged.
+
+Wrangler 4.145.0 supports the native configuration. Refer to Cloudflare's
+[scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/)
+and [native API migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-container-api/).
 
 Your copy deploys your commits; upstream releases do not update it automatically.
 Use tagged releases from [imgt](https://github.com/relferreira/imgt/releases) and

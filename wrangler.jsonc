@@ -5,9 +5,11 @@
   "assets": { "directory": "./public" },
   "build": { "command": "npm run check" },
   "vars": {
-    "ALLOWED_HOSTS": "images.unsplash.com"
+    "ALLOWED_HOSTS": "images.unsplash.com",
+    "IMGT_CONTAINER_BACKEND": "legacy"
   },
   "compatibility_date": "2026-09-01",
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "cache": {
     "enabled": true,
     "cross_version_cache": true
@@ -47,6 +49,15 @@
         "memory_mib": 3072,
         "disk_mb": 2000
       }
+    },
+    {
+      "name": "imgt-native-transformer",
+      "class_name": "ImgtNativeImageTransformer",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "sharp": { "dockerfile": "./container/Dockerfile" }
+      },
+      "observability": { "logs": { "enabled": true } }
     }
   ],
   "durable_objects": {
@@ -54,6 +65,10 @@
       {
         "name": "IMGT_TRANSFORMER",
         "class_name": "ImgtImageTransformer"
+      },
+      {
+        "name": "IMGT_NATIVE_TRANSFORMER",
+        "class_name": "ImgtNativeImageTransformer"
       }
     ]
   },
@@ -61,6 +76,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["ImgtImageTransformer"]
+    },
+    {
+      "tag": "v2-native-container",
+      "new_sqlite_classes": ["ImgtNativeImageTransformer"]
     }
   ],
   "r2_buckets": [
