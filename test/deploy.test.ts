@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   gatedDeploy,
+  probeInput,
   shardSources,
   verifyProbe,
   withDeadline,
@@ -13,6 +14,35 @@ import { derivativeKey } from "../src/options";
 const previous = "11111111-1111-1111-1111-111111111111";
 const candidate = "22222222-2222-2222-2222-222222222222";
 const promoted = "33333333-3333-3333-3333-333333333333";
+
+test("reference inputs use the exact variant URL and reject invalid origin bodies", async () => {
+  const signal = new AbortController().signal;
+  const source =
+    "https://images.unsplash.com/test.jpg?imgt_native_eval=variant";
+  const body = Buffer.from("variant-specific-image");
+  const input = await probeInput(source, signal, async (url, init) => {
+    assert.equal(url, source);
+    assert.equal(init?.signal, signal);
+    assert.equal(
+      new Headers(init?.headers).get("accept"),
+      "image/avif,image/webp,image/png,image/jpeg",
+    );
+    return new Response(body);
+  });
+  assert.equal(input.toString(), body.toString());
+  await assert.rejects(
+    probeInput(source, signal, async () => new Response(null)),
+    /Preflight source size/,
+  );
+  await assert.rejects(
+    probeInput(
+      source,
+      signal,
+      async () => new Response("unavailable", { status: 503 }),
+    ),
+    /Preflight source must be available/,
+  );
+});
 
 test("deployment probes expire even when an underlying operation ignores cancellation", async () => {
   let signal: AbortSignal | undefined;

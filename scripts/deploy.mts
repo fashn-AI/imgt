@@ -136,6 +136,25 @@ export async function verifyProbe(
   return boot;
 }
 
+export async function probeInput(
+  source: string,
+  signal: AbortSignal,
+  fetcher: typeof fetch = fetch,
+): Promise<Buffer> {
+  const origin = await fetcher(source, {
+    signal,
+    redirect: "error",
+    headers: { accept: "image/avif,image/webp,image/png,image/jpeg" },
+  });
+  assert.equal(origin.status, 200, "Preflight source must be available");
+  const input = Buffer.from(await origin.arrayBuffer());
+  assert.ok(
+    input.length > 0 && input.length <= MAX_SOURCE_BYTES,
+    "Preflight source size",
+  );
+  return input;
+}
+
 interface DeploymentTools {
   run: (args: string[]) => Promise<string>;
   warm: (
@@ -267,21 +286,6 @@ async function main(): Promise<void> {
   const source =
     suppliedSource ??
     "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&w=1920&q=90";
-  const input = await withDeadline(async (signal) => {
-    const origin = await fetch(source, { signal, redirect: "error" });
-    assert.equal(origin.status, 200, "Preflight source must be available");
-    return Buffer.from(await origin.arrayBuffer());
-  });
-  assert.ok(
-    input.length > 0 && input.length <= MAX_SOURCE_BYTES,
-    "Preflight source size",
-  );
-  const expected = await encodeImage(
-    input,
-    { width: 640, quality: 77, effort: config.transforms.webpEffort },
-    Date.now() + 20000,
-    new AbortController().signal,
-  );
   const deployments = JSON.parse(
     await wrangler(["deployments", "list", "--json"]),
   ) as {
@@ -303,6 +307,26 @@ async function main(): Promise<void> {
     run: wrangler,
     wait: delay,
     async warm(version, backend, attempts) {
+      // Version propagation checks are cheap and must not consume transform
+      // attempts or make the post-promotion check fail on a stale Worker route.
+      await withDeadline(async (signal) => {
+        while (!signal.aborted) {
+          const response = await fetch(new URL("/health", endpoint), {
+            signal,
+            headers: {
+              "Cloudflare-Workers-Version-Overrides": `${settings.name}="${version}"`,
+            },
+          });
+          await response.arrayBuffer();
+          if (
+            response.status === 200 &&
+            response.headers.get("x-imgt-worker-version") === version
+          )
+            return;
+          await delay(2500, undefined, { signal });
+        }
+        signal.throwIfAborted();
+      });
       // A fresh key per phase proves the container runs; EDGE/R2 cannot pass.
       const phase = randomUUID();
       for (let shard = 0; shard < config.containers.shards; shard += 1) {
@@ -330,6 +354,19 @@ async function main(): Promise<void> {
           }).toString();
           try {
             const boot = await withDeadline(async (signal) => {
+              // Cache-busting Unsplash variants can contain different JPEG
+              // bytes. Compare each transform with its exact source URL.
+              const input = await probeInput(sources[shard], signal);
+              const expected = await encodeImage(
+                input,
+                {
+                  width: 640,
+                  quality: 77,
+                  effort: config.transforms.webpEffort,
+                },
+                Date.now() + 20000,
+                signal,
+              );
               const response = await fetch(url, {
                 headers: {
                   "Cloudflare-Workers-Version-Overrides": `${settings.name}="${version}"`,
@@ -361,7 +398,8 @@ async function main(): Promise<void> {
                 error: error instanceof Error ? error.message : String(error),
               }),
             );
-            if (attempt < attempts) await delay(10000);
+            if (attempt < attempts)
+              await delay(backend === "native" ? 45000 : 10000);
           }
         }
         if (lastError) throw lastError;

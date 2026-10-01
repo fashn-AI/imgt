@@ -170,14 +170,19 @@ the image that just passed preflight. It then requires one fresh native miss per
 shard on the promoted version. A failed check leaves the previous route active
 or restores the verified legacy candidate; the build fails instead of reporting
 the deployment ready. Each initialization phase permits at most four attempts
-per shard, with 30-second client limits and ten-second retry pauses. Public image
+per shard, with 30-second client limits, ten-second legacy retry pauses and
+45-second native retry pauses to allow initial allocation to finish. Public image
 jobs retain their existing 20-second deadline, resource limits and idle timeout.
 
 The gate uses the existing Workers Builds authorization; it adds no credential
 or public administrative endpoint. It briefly uses the existing legacy and native
 applications, with normal usage charges and bounded probes. The default source
-is the Unsplash sample. For another allowlist, supply an allowed, publicly cached
-source that accepts extra query parameters without changing its image bytes.
+is the Unsplash sample. Each probe fetches its exact source URL and compares
+the response with the current encoder's output for those bytes. Extra query
+parameters can change Unsplash JPEG bytes, so the unmodified URL is not a valid
+reference for every variant. For another allowlist, supply an allowed, publicly
+cached source that accepts extra query parameters. Cheap health checks wait for
+Worker version propagation before making fresh transformation probes.
 The gate requires a single active production version and already-applied Durable
 Object migrations. Initial provisioning and lifecycle migrations still use
 `npx wrangler deploy`; verify and initialize those before normal traffic.
