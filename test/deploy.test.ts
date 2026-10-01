@@ -149,4 +149,22 @@ test("a cached response or wrong Worker version cannot pass native readiness", a
   await assert.rejects(
     verifyProbe(new Response(body, { headers }), body, promoted, "native"),
   );
+  const expected = Buffer.alloc(70000, 1);
+  const actual = Buffer.alloc(70000, 2);
+  await assert.rejects(
+    verifyProbe(
+      new Response(actual, { headers }),
+      expected,
+      candidate,
+      "native",
+    ),
+    (error: Error) => {
+      assert.match(
+        error.message,
+        /expected 70000 bytes [a-f0-9]{64}, received 70000 bytes [a-f0-9]{64}/,
+      );
+      assert.ok(error.message.length < 300);
+      return true;
+    },
+  );
 });

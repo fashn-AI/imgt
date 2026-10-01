@@ -117,11 +117,16 @@ export async function verifyProbe(
     "Preflight must execute a transform",
   );
   assert.equal(response.headers.get("x-imgt-renderer"), RENDERER_VERSION);
-  assert.deepEqual(
-    body,
-    expected,
-    "Preflight output differs from the current renderer",
-  );
+  // Buffer assertion diffs can block Node's event loop for minutes on a large
+  // mismatch, preventing even the probe deadline from firing. Compare bytes
+  // directly and report compact digests while preserving strict validation.
+  if (!body.equals(expected)) {
+    const digest = (value: Buffer) =>
+      createHash("sha256").update(value).digest("hex");
+    throw new Error(
+      `Preflight output differs from the current renderer: expected ${expected.length} bytes ${digest(expected)}, received ${body.length} bytes ${digest(body)}`,
+    );
+  }
   const boot =
     response.headers
       .get("server-timing")
