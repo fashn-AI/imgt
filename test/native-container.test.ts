@@ -8,7 +8,10 @@ import {
 } from "../src/native-container";
 import { deferred } from "./helpers";
 
-function harness(health: (request: Request) => Promise<Response>) {
+function harness(
+  health: (request: Request) => Promise<Response>,
+  readinessTimeoutMs = 1000,
+) {
   let running = false;
   let starts = 0;
   let posts = 0;
@@ -53,7 +56,7 @@ function harness(health: (request: Request) => Promise<Response>) {
     env: { VIPS_CONCURRENCY: "1" },
     waitUntil: () => {},
     stopped: (error) => stopped.push(error),
-    readinessTimeoutMs: 1000,
+    readinessTimeoutMs,
   });
   return {
     transport,
@@ -88,6 +91,20 @@ test("concurrent misses share readiness; aborting one waiter does not cancel ano
   await Promise.all([failed, second]);
   assert.equal(h.starts, 1);
   assert.deepEqual(h.timeouts, [120000]);
+});
+
+test("readiness times out even when a port fetch ignores its abort signal", async () => {
+  const h = harness(() => new Promise(() => {}), 30);
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    await assert.rejects(h.transport.prepare(new AbortController().signal), {
+      status: 503,
+    });
+    assert.equal(h.starts, 1);
+    assert.equal(h.posts, 0);
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
 
 test("port readiness retries; a warm request does not restart or poll health", async () => {

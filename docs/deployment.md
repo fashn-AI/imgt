@@ -130,6 +130,14 @@ Roll back by committing `IMGT_CONTAINER_BACKEND: "legacy"`; retain both
 namespaces and migration history. No derivative namespace bump is needed
 because Sharp, output settings and cache semantics are unchanged.
 
+Before switching ordinary requests, validate a controlled canary with legacy
+routing retained. Set `IMGT_NATIVE_CANARY_PREFIX` to a distinct experiment ID;
+only sources whose `imgt_native_eval` query begins with that ID followed by a
+hyphen route to native. Existing host validation, rate limits, shard limits and
+deadlines still apply. The response backend header identifies the selected
+route. Remove the prefix after the experiment. A successful deployment does
+not establish that the first allocation meets the image job deadline.
+
 Wrangler 4.145.0 supports the native configuration. Refer to Cloudflare's
 [scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/)
 and [native API migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-container-api/).

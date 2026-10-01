@@ -100,6 +100,8 @@ export class NativeContainerTransport {
     if (!this.#preparing) {
       const preparing = this.startAndCheck();
       this.#preparing = preparing;
+      // Finish bounded readiness diagnostics even if every caller disconnects.
+      this.options.waitUntil(preparing.catch(() => {}));
       void preparing.then(
         () => {
           if (this.#preparing === preparing) this.#preparing = undefined;
@@ -134,35 +136,62 @@ export class NativeContainerTransport {
 
   private async startAndCheck(): Promise<void> {
     this.#ready = false;
+    const started = Date.now();
     const signal = AbortSignal.timeout(
       this.options.readinessTimeoutMs ?? TRANSFORM_TIMEOUT_MS,
     );
     let lastError: unknown;
+    let polls = 0;
     while (!signal.aborted) {
-      try {
-        if (!this.container.running) {
-          // A delayed exit notification belongs to the previous allocation.
+      if (!this.container.running) {
+        try {
           this.#monitor = undefined;
+          console.log(
+            JSON.stringify({
+              event: "native_container_start",
+              resources: CONTAINER_RESOURCES,
+            }),
+          );
           this.container.start({
             image: this.container.images.sharp,
             instance: CONTAINER_RESOURCES,
             enableInternet: false,
             env: this.options.env,
           });
-          await this.container.setInactivityTimeout(this.options.idleTimeoutMs);
+          await waitFor(
+            this.container.setInactivityTimeout(this.options.idleTimeoutMs),
+            signal,
+          );
+        } catch (error) {
+          console.error("native container start failed", error);
+          throw new ImageError("image container is unavailable", 503, "1");
         }
+      }
+      try {
         this.observe();
-        const response = await this.container
-          .getTcpPort(8080)
-          .fetch(new Request("http://container/health", { signal }));
-        await response.body?.cancel();
+        polls += 1;
+        const response = await waitFor(
+          this.container
+            .getTcpPort(8080)
+            .fetch(new Request("http://container/health", { signal })),
+          signal,
+        );
+        await waitFor(response.body?.cancel() ?? Promise.resolve(), signal);
         if (response.ok && this.container.running) {
           this.#ready = true;
+          console.log(
+            JSON.stringify({
+              event: "native_container_ready",
+              durationMs: Date.now() - started,
+              polls,
+            }),
+          );
           return;
         }
         lastError = new Error(`container health returned ${response.status}`);
       } catch (error) {
         lastError = error;
+        if (polls === 1) console.log("native container awaiting health", error);
       }
       try {
         await pause(100, signal);
@@ -170,7 +199,12 @@ export class NativeContainerTransport {
         break;
       }
     }
-    console.error("container readiness failed", lastError);
+    console.error("container readiness failed", {
+      durationMs: Date.now() - started,
+      polls,
+      running: this.container.running,
+      error: String(lastError),
+    });
     throw new ImageError("image container is unavailable", 503, "1");
   }
 }
