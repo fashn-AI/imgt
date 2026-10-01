@@ -142,6 +142,7 @@ are split into small modules:
 - `src/native-container.ts`: native startup, readiness, inactivity and restart handling.
 - `container/app.ts`, `body.ts`, `scheduler.ts`, and `transform.ts`: HTTP job
   lifecycle, bounded uploads, the ready queue, and Sharp processing.
+- `container/build.mjs`: build-time type stripping; the runtime loads JavaScript.
 
 Tests exercise the gateway, service, coordinator, and store together with an
 in-memory bucket and controlled upstreams, plus real local HTTP uploads and

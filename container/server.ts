@@ -23,6 +23,7 @@ server.listen(port, "0.0.0.0", () =>
   console.log(
     JSON.stringify({
       event: "container_listening",
+      processUptimeMs: Math.round(process.uptime() * 1000),
       port: (server.address() as { port: number }).port,
       renderer: RENDERER_VERSION,
       node: process.version,

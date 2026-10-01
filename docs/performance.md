@@ -62,6 +62,23 @@ migration-only gate and canary routing have been removed. See the
 
 ## Why these defaults
 
+### Local startup image experiment
+
+An October 1 experiment compared fresh processes in cached local Docker images
+on an ARM64 Mac, using Node 24.21.0, one CPU and 3 GiB of memory. Each comparison
+alternated 12 starts per image. A smaller final runtime reduced Docker's reported
+image size from 382 to 349 MB, but process-to-listening medians of 118 versus
+114 ms did not establish an initialization improvement. Keeping that runtime
+and stripping TypeScript at build time reduced the median from 124 to 68 ms;
+separate encoder-module import probes fell from 53.3 to 0.54 ms.
+
+Baseline and candidate outputs matched exactly across 19 format, color,
+orientation, transparency and size fixtures on both ARM64 and AMD64. These
+measurements exclude Cloudflare allocation, image transfer and public response
+delivery. The candidate's production cold-start benefit is not yet measured.
+
+### Allocation and encoding
+
 - **Sharp/libvips:** the tested C++ adapter did not show a consistent advantage
   over optimized Sharp. The Rust prototype was promising on large x86 JPEGs but
   lacked the ICC and AVIF support needed by the public API. Go wrappers and
