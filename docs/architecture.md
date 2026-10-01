@@ -117,8 +117,13 @@ RAM and 2,000 MB disk. Startup is shared between callers and polls the private
 health endpoint before uploading a job; canceling one caller does not cancel
 another caller's startup. Transform uploads are never automatically replayed.
 The native inactivity timeout is two minutes and is restored when an object
-reconnects to a running container. Exit monitoring clears readiness for the
-next request. Cache and encoder behavior are shared with the legacy adapter.
+reconnects to a running container. A durable alarm also stops the container two
+minutes after the last completed request, because native exit monitoring can
+delay Durable Object inactivity. The alarm defers shutdown during active jobs
+and blocks new events while stopping compute. Exit monitoring clears readiness
+for the next request. Native starts receive a random boot label, reported in
+the MISS response's `Server-Timing` for restart verification. Cache and encoder
+behavior are shared with the legacy adapter.
 
 The two applications have separate namespaces because an existing application's
 scheduling policy cannot be changed. The legacy namespace remains available

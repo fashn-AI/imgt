@@ -23,6 +23,7 @@ import {
 } from "./jobs";
 import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
+import { NativeIdleAlarm } from "./native-idle";
 import {
   inactivityTimeoutMs,
   isConfiguredShard,
@@ -42,6 +43,7 @@ interface Env {
 
 // Separate namespace: an existing Container application's policy is immutable.
 export class ImgtNativeImageTransformer extends DurableObject<Env> {
+  readonly #idle: NativeIdleAlarm;
   readonly #transport: NativeContainerTransport;
   readonly #allowedHosts = parseAllowedHosts(this.env.ALLOWED_HOSTS);
   readonly #store = new DerivativeStore(this.env.DERIVATIVES);
@@ -49,6 +51,13 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.#idle = new NativeIdleAlarm({
+      timeoutMs: inactivityTimeoutMs(config.containers.sleepAfter),
+      running: () => ctx.container!.running,
+      destroy: () => ctx.container!.destroy(),
+      setAlarm: (timestamp) => ctx.storage.setAlarm(timestamp),
+      serialize: (work) => ctx.blockConcurrencyWhile(work),
+    });
     this.#transport = new NativeContainerTransport(ctx.container!, {
       idleTimeoutMs: inactivityTimeoutMs(config.containers.sleepAfter),
       env: {
@@ -113,12 +122,18 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
         new Response("invalid container shard", { status: 503 }),
       );
     }
-    return handleImageJob(request, {
-      allowedHosts: this.#allowedHosts,
-      store: this.#store,
-      resize: (job) => this.#coordinator.fetch(jobRequest(job)),
-      waitUntil: (promise) => this.ctx.waitUntil(promise),
-    });
+    return this.#idle.run(() =>
+      handleImageJob(request, {
+        allowedHosts: this.#allowedHosts,
+        store: this.#store,
+        resize: (job) => this.#coordinator.fetch(jobRequest(job)),
+        waitUntil: (promise) => this.ctx.waitUntil(promise),
+      }),
+    );
+  }
+
+  alarm(): Promise<void> {
+    return this.#idle.alarm();
   }
 }
 

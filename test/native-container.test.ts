@@ -17,6 +17,7 @@ function harness(
   let posts = 0;
   const timeouts: number[] = [];
   const monitors: ReturnType<typeof deferred<void>>[] = [];
+  let labels: Record<string, string> = {};
   const api = {
     get running() {
       return running;
@@ -27,12 +28,16 @@ function harness(
       assert.equal(options?.enableInternet, false);
       assert.equal(options?.image, api.images.sharp);
       starts += 1;
+      labels = options?.labels ?? {};
       running = true;
     },
     monitor() {
       const monitor = deferred<void>();
       monitors.push(monitor);
       return monitor.promise;
+    },
+    async inspect() {
+      return running ? { image: api.images.sharp, labels } : null;
     },
     async setInactivityTimeout(ms: number | bigint) {
       timeouts.push(Number(ms));
@@ -124,6 +129,10 @@ test("port readiness retries; a warm request does not restart or poll health", a
   assert.equal(polls, 2);
   assert.equal(h.starts, 1);
   assert.equal(h.posts, 1);
+  assert.match(
+    response.headers.get("server-timing")!,
+    /container_boot;desc="[a-f0-9-]+"/,
+  );
 });
 
 test("container exit clears readiness and the next request restores its idle timeout", async () => {

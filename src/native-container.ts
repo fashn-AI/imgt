@@ -42,6 +42,7 @@ type ContainerApi = Pick<
   | "monitor"
   | "setInactivityTimeout"
   | "getTcpPort"
+  | "inspect"
 >;
 
 function waitFor<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -74,6 +75,7 @@ export class NativeContainerTransport {
   #ready = false;
   #preparing?: Promise<void>;
   #monitor?: Promise<void>;
+  #bootId?: string;
 
   constructor(
     private readonly container: ContainerApi,
@@ -89,6 +91,7 @@ export class NativeContainerTransport {
   async restore(): Promise<void> {
     if (this.container.running) {
       await this.container.setInactivityTimeout(this.options.idleTimeoutMs);
+      this.#bootId = (await this.container.inspect())?.labels.boot_id;
       this.observe();
     }
   }
@@ -117,7 +120,15 @@ export class NativeContainerTransport {
   async fetch(request: Request): Promise<Response> {
     await this.prepare(request.signal);
     // Do not replay a POST after upload begins: that can duplicate native work.
-    return this.container.getTcpPort(8080).fetch(request);
+    const response = await this.container.getTcpPort(8080).fetch(request);
+    if (!this.#bootId) return response;
+    const headers = new Headers(response.headers);
+    headers.append("server-timing", `container_boot;desc="${this.#bootId}"`);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   }
 
   private observe(): void {
@@ -146,10 +157,12 @@ export class NativeContainerTransport {
       if (!this.container.running) {
         try {
           this.#monitor = undefined;
+          this.#bootId = crypto.randomUUID();
           console.log(
             JSON.stringify({
               event: "native_container_start",
               resources: CONTAINER_RESOURCES,
+              bootId: this.#bootId,
             }),
           );
           this.container.start({
@@ -157,6 +170,7 @@ export class NativeContainerTransport {
             instance: CONTAINER_RESOURCES,
             enableInternet: false,
             env: this.options.env,
+            labels: { boot_id: this.#bootId },
           });
           await waitFor(
             this.container.setInactivityTimeout(this.options.idleTimeoutMs),
@@ -184,6 +198,7 @@ export class NativeContainerTransport {
               event: "native_container_ready",
               durationMs: Date.now() - started,
               polls,
+              bootId: this.#bootId,
             }),
           );
           return;
