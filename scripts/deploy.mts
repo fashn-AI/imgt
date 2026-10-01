@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,10 +10,11 @@ import { encodeImage } from "../container/transform";
 import {
   DERIVATIVE_PREFIX,
   MAX_SOURCE_BYTES,
+  OUTPUT_FORMAT,
   TRANSFORM_TIMEOUT_MS,
 } from "../src/constants";
 import { containerNameForKey } from "../src/jobs";
-import { derivativeKey } from "../src/options";
+import { withPrefix } from "../src/options";
 import { inactivityTimeoutMs } from "../src/native-container";
 
 const UUID = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
@@ -59,11 +60,18 @@ export async function shardSources(
         native ? "imgt_native_eval" : "imgt_deploy_eval",
         `${nonce}-${shard}-${index}`,
       );
-      const key = await derivativeKey(DERIVATIVE_PREFIX, {
-        sourceUrl: url.href,
-        width: 640,
-        quality: 77,
-      });
+      // Use Node's synchronous digest in this CLI. On Workers Builds the
+      // asynchronous digest stalled between successive HTTP probes. The test
+      // compares these keys against the application's Web Crypto implementation.
+      const identity = [
+        url.href,
+        640,
+        77,
+        OUTPUT_FORMAT,
+        config.transforms.webpEffort,
+      ].join("\0");
+      const digest = createHash("sha256").update(identity).digest("hex");
+      const key = withPrefix(DERIVATIVE_PREFIX, `${digest}.${OUTPUT_FORMAT}`);
       if (
         containerNameForKey(key, config.containers.shards) ===
         `instance-${RENDERER_VERSION}-${shard}`
