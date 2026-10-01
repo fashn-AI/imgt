@@ -217,7 +217,10 @@ async function wrangler(args: string[]): Promise<string> {
       {
         env: { ...process.env, CI: "true", NO_COLOR: "1" },
         stdio: ["ignore", "pipe", "inherit"],
-        timeout: 180000,
+        // Image preprocessing is asynchronous and may take several minutes.
+        // Traffic stays on the existing version throughout this upload.
+        timeout:
+          args[0] === "versions" && args[1] === "upload" ? 600000 : 180000,
       },
     );
     let output = "";
@@ -227,7 +230,7 @@ async function wrangler(args: string[]): Promise<string> {
     });
     child.on("error", reject);
     child.on("close", (code) =>
-      code === 0
+      code === 0 && !child.killed
         ? resolve(output)
         : reject(
             new Error(
