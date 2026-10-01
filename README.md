@@ -126,9 +126,8 @@ npm run dev
 
 Local R2 is emulated; no separate development bucket is required. For a manual
 deploy, run `npx wrangler login`, select the intended account, then
-`npx wrangler deploy` for initial provisioning. For subsequent updates, use
-`npm run deploy -- https://YOUR_WORKER_ENDPOINT` to initialize both native shards
-behind the legacy route before promotion. See the [deployment gate](docs/deployment.md#gated-updates-for-an-existing-installation).
+`npm run deploy`. After deployment, verify a fresh image with the
+[smoke check](docs/deployment.md#updates).
 Wrangler provisions the configured R2 bucket when needed.
 
 ## Defaults and operations

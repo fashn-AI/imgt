@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "tsx scripts/deploy.mts",
+    "deploy": "wrangler deploy",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx,html,css}\"",

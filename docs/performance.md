@@ -6,118 +6,59 @@ Image results persist in R2 and Workers Cache; Cloudflare Images is not required
 
 ## Native Container scheduling
 
-On October 1, 2026, a production trial deployed Cloudflare's native `ctx.container`
-API and `durable_object` scheduling policy. The first trial timed out; subsequent
-canary work fixed idle shutdown and verified native restarts. Native is now the
-default route. The encoder, renderer namespace,
-two shards, 1-vCPU/3-GiB/2,000-MB allocation and two-minute inactivity timeout
-remain the same. The retained legacy application supports a configuration
-rollback; see the [deployment migration notes](deployment.md).
+The October 1, 2026 migration moved production to the native `ctx.container`
+API with `durable_object` scheduling. Sharp, WebP quality 77/effort 2, the
+`derivatives/v3` namespace, two shards and each shard's 1-vCPU/3-GiB/2,000-MB
+allocation stayed unchanged. A durable alarm enforces shutdown two minutes
+after the last completed request, defers shutdown during active work, and
+serializes stopping against new requests. Boot labels in MISS `Server-Timing`
+distinguish an actual Linux restart from a repeated readiness check.
 
 Cloudflare's [announcement](https://blog.cloudflare.com/faster-agent-sandboxes/)
-reports faster sandbox allocation under a concurrent sandbox workload. That
-measurement does not establish a corresponding improvement in image encoding,
-warm transformations or cache-hit delivery. The relevant IMGT measurement is
-container startup on a derivative miss after its shard has become idle.
+measures concurrent agent sandbox startup. IMGT's relevant measurement is
+startup on an uncached derivative after its shard has stopped; image encoding
+and cache-hit delivery are separate measurements.
 
-The comparison used the personal production endpoint from a Brazil Mac, with
-all requests observed at GRU. The legacy baseline completed 42 new transformations:
-six verified cold starts after three 135-second idle periods, and 36 warm misses.
-Each miss was followed by an edge-cache repeat. The native run stopped on its
-first cold candidate, which returned HTTP 504 after 21.177 seconds. The source
-was a retained
-3,840 × 5,760 JPEG (3,292,435 bytes); every uniquely keyed origin response was
-checked against its SHA-256 before requesting a transform. Output settings were
-WebP quality 77, effort 2, with widths 640, 1,920 and 3,840. Every output was
-checked byte-for-byte against the local production encoder. The native run
-was pinned to successful Worker version `1b234287-4327-4523-849c-4a1131d65ff7`
-(commit `e3506fc`).
+A sequential legacy/native comparison used one 3,840 × 5,760 photographic scene
+from a Brazil Mac at GRU. Outputs were checked against the production encoder.
+The legacy baseline had 42 transforms and 42 EDGE repeats, including six cold
+starts and twelve warm misses per output width. After correcting native idle
+shutdown, 18 transforms and 18 EDGE repeats passed, including four cold starts
+with changed boot IDs and four warm misses per width. Earlier idle probes with
+unchanged boot IDs were excluded from cold-start comparisons.
 
-Baseline medians, measured through complete response-body receipt:
-
-| Output width | Cold miss (2 samples) | Warm miss (12 samples) | Edge hit (14 samples) |
+| Measurement | Legacy median | Native median | Samples per backend |
 | --- | --- | --- | --- |
-| 640 | 3,820 ms | 940 ms | 36 ms |
-| 1,920 | 3,623 ms | 1,567 ms | 40 ms |
-| 3,840 | 4,612 ms | 2,996 ms | 49 ms |
+| Startup span | 1,586 ms | 1,248 ms | 6 legacy / 4 native |
+| Cold 640px complete response | 3,820 ms | 2,083 ms | 2 |
+| Cold 3,840px complete response | 4,612 ms | 4,219 ms | 2 |
 
-The baseline startup-span median was 1,586 ms across six cold requests. All
-42 outputs and 42 edge repeats matched the expected encoder bytes. The native
-failure reached `ImgtNativeImageTransformer` and exhausted the 20-second job
-deadline. Dashboard logs show the container listening on port 8080 after the
-HTTP timeout. This suggests slow initial provisioning, but does not identify
-the allocation or readiness root cause. This failed trial establishes no speedup.
+The startup median reduction was approximately 21%; it is not an end-to-end
+speedup. There was no verified post-fix cold comparison at 1,920px. Warm medians
+at 640/1,920/3,840px were 940/1,567/2,996 ms for legacy and 783/1,463/2,821 ms
+for native. These sequential samples can differ in host placement and do not
+establish a causal speedup, p95, load capacity, cost savings or a 6x improvement.
+Timing spans overlap and must not be added to complete response time.
 
-Rollback commit `9b0bf34` deployed successfully. Public health reported legacy
-version `a52042a6-ffce-4d4d-819a-514ed2398fda`; the exact failed source then
-passed the smoke test (MISS 3,132 ms, EDGE 46 ms, ETag 304). Native startup must
-be diagnosed and verified with a controlled canary before another traffic switch.
+Some first allocations exceeded the public 20-second deadline. A temporary
+migration gate initialized and checked both shards behind legacy traffic before
+native promotion. Registry errors and verification-script errors also prolonged
+that migration; their cause must not be attributed to the encoder. The final
+application commit was `cd03c8484d78dd2873855624128fb0f0938704aa`, deployed as
+Worker `c592f32f-63f7-4c72-b579-6e6b6c69a8c7`; both preflight checks passed
+before promotion and promotion retained their boot IDs.
 
-### Native canary and lifecycle diagnosis
+Final public validation made four fresh 640px transformations, four EDGE repeats
+and four ETag 304 checks, all passing. Each reference used the exact source URL's
+bytes because Unsplash query variants can differ. After a 135-second idle wait,
+both containers had new boot IDs; complete requests took 2,225/2,252 ms and their
+startup spans were 1,204/1,303 ms. This was correctness/lifecycle validation,
+with no new paired legacy baseline. Initial allocation's underlying delay remains
+unmeasured, and success does not guarantee every future start meets the deadline.
 
-Commit `08e23cc` kept normal traffic on legacy and routed only a unique source
-query prefix to native. Its first build passed all checks but failed uploading
-the Docker image with a registry internal error; retrying the unchanged build
-succeeded. Version `f2e5d07d-278d-4bec-a533-2fb9dff56377` then passed 42 new
-transforms and 42 EDGE repeats, all matching the local production encoder byte
-for byte. Two preliminary probes also passed, with readiness spans of 6,084 ms
-and 4,008 ms.
-
-Warm medians from the canary were 764 / 1,567 / 2,623 ms at 640 / 1920 / 3840px,
-versus 940 / 1,567 / 2,996 ms in the legacy baseline (12 observations per width).
-EDGE medians stayed about 36 / 40 / 47 ms. The thumbnail and large-image changes
-are promising observations, not causal proof: these were sequential runs on
-potentially different hosts, rather than randomized paired comparisons.
-
-The canary's later idle candidates are **not valid cold-start comparisons**. After
-135-second pauses, later readiness spans were only 5–10 ms. Runtime logs showed
-readiness events without corresponding starts. Native `setInactivityTimeout`
-counts from Durable Object inactivity, and a pending `monitor()` can prevent
-eviction for up to 15 minutes. A readiness span alone cannot prove a Linux boot.
-
-Commit `0e492a0` adds a durable alarm for two minutes after the last completed
-request, defers shutdown during active requests, and serializes destruction
-against new events. The native inactivity timeout remains a fallback. Each
-native start also gets a random label reported as `container_boot` in MISS
-`Server-Timing`; a changed identity proves a new start, and a stable identity
-checks that warm requests reuse it. These lifecycle changes do not change the
-encoder, output namespace, CPU/RAM allocation, or transform deadline.
-
-The first request on version `68dbd8ac-8632-4066-8ac1-643140ea30a2` also failed
-after 20,562 ms. Its native start occurred at 15:34:52.723 UTC; waiting for the
-inactivity-timeout setup exhausted the readiness budget before health polling.
-This is a second observed first-use failure, not a resolved first-provisioning
-issue. Later fresh probes passed on both shards with different boot labels,
-readiness spans of 1,001 / 5,882 ms and total times of 2,269 / 6,809 ms.
-
-After the image initialized, two 135-second idle cycles passed on both shards.
-Every cold request had a changed boot label from its prior request, while warm
-MISS responses kept that label. All 18 transforms (two priming, four verified
-cold, twelve warm) and 18 EDGE repeats matched the expected bytes on version
-`68dbd8ac-8632-4066-8ac1-643140ea30a2`. The four readiness spans were
-1,000 / 1,431 / 1,183 / 1,312 ms (median 1,248 ms), versus a 1,586 ms legacy
-baseline median. Native did not reproduce a 6x startup gain.
-
-| Output width | Legacy cold median | Native verified cold median | Samples per backend |
-| --- | --- | --- | --- |
-| 640 | 3,820 ms | 2,083 ms | 2 |
-| 3,840 | 4,612 ms | 4,219 ms | 2 |
-
-There is no verified post-fix native cold comparison at 1,920px. Warm post-fix
-medians were 783 / 1,463 / 2,821 ms (four samples per width). These results
-verify functioning restarts with an initialized image; they do not guarantee
-that a newly built image will initialize within the first request's deadline.
-The exact cost/benefit and first-provisioning cause remain unmeasured. A larger
-paired multi-image, multi-region trial should follow before claiming general
-performance gains. Snapshot restore is a possible separate experiment, not
-part of this migration or these measurements.
-
-Results are sequential small samples on one scene and one client location.
-The baseline has two cold observations and twelve warm observations per width,
-and fourteen edge repeats per width. These samples do not establish p95,
-load capacity, US performance, R2-hit latency or a change in bills. The
-`Server-Timing` startup span includes readiness and is nested within the job
-duration; it is not an independent term to add to total response time.
+Routine deployment now uses Wrangler and the existing smoke command; the
+migration-only gate and canary routing have been removed. See the
+[deployment guide](deployment.md#updates) for native image update behavior.
 
 ## Why these defaults
 

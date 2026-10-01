@@ -4,11 +4,9 @@
 
 The README's deploy button creates a repository in your GitHub account and
 connects it to Cloudflare Workers Builds. The production deploy command is
-`npx wrangler deploy` for the initial provisioning. After both applications and
-the migrations exist, set the production deploy command to
-`npm run deploy -- https://YOUR_WORKER_ENDPOINT` for gated updates. The checked-in
-Wrangler build command runs `npm run check` before upload. Cloudflare's GitHub integration handles deployment; no GitHub
-Actions workflow is required.
+`npm run deploy` (equivalent to `npx wrangler deploy`). The checked-in Wrangler
+build command runs `npm run check` before upload. Cloudflare's GitHub integration
+handles deployment; no GitHub Actions workflow is required.
 
 The deploy button requires the source repository to be public. You need Workers
 Paid and an activated R2 subscription in the target account. Cloudflare builds
@@ -115,84 +113,31 @@ the shard count stable during routine releases. The per-shard queue limit and
 
 ## Updates
 
-### Native Container scheduling migration
+### Native image updates
 
-The new `imgt-native-transformer` application uses Durable Object scheduling
-and the native `ctx.container` API. The `v2-native-container` migration adds a
-separate SQLite Durable Object namespace. Keep the original `v1` migration,
-legacy container entry and binding intact: an existing application's scheduling
-policy is immutable.
+IMGT uses the native `ctx.container` API with `scheduling_policy:
+"durable_object"`. Deploy with `npm run deploy`, then verify a fresh image with
+`npm run smoke -- YOUR_ENDPOINT YOUR_SOURCE_URL --fresh`. Use a public source
+that permits extra query parameters; adding parameters can invalidate signed
+URLs. `/health` checks the Worker, so a successful health response alone does
+not establish container readiness.
 
-For an existing installation, first deploy the configuration with
-`vars.IMGT_CONTAINER_BACKEND` set to `legacy` to provision the new application.
-After Workers Builds succeeds, switch the variable to `native` in Git and
-deploy again. Verify `/health` returns the expected `x-imgt-container-backend`
-and `x-imgt-worker-version`, then run the smoke test with a fresh source URL.
-Roll back by committing `IMGT_CONTAINER_BACKEND: "legacy"`; retain both
-namespaces and migration history. No derivative namespace bump is needed
-because Sharp, output settings and cache semantics are unchanged.
+Cloudflare's [application-wide rolling deployments](https://developers.cloudflare.com/containers/configuration/rollouts/)
+apply to the `default` scheduling policy. With `durable_object`, a running
+container keeps its image until it stops; its next start selects the named
+`sharp` image from the deployed Worker. The two-minute idle alarm permits old
+jobs to finish before stopping. Readiness checks wait for the private container
+health endpoint before uploading an image. Fresh allocation can still exceed
+the public 20-second deadline; deploy success is not a promise that every image
+request succeeds. The former migration preflight/fallback gate is no longer
+part of routine deployment.
 
-Before switching ordinary requests, validate a controlled canary with legacy
-routing retained. Set `IMGT_NATIVE_CANARY_PREFIX` to a distinct experiment ID;
-only sources whose `imgt_native_eval` query begins with that ID followed by a
-hyphen route to native. Existing host validation, rate limits, shard limits and
-deadlines still apply. The response backend header identifies the selected
-route. Remove the prefix after the experiment. A successful deployment does
-not establish that the first allocation meets the image job deadline.
-
-The repository now selects native by default. An explicit durable alarm enforces
-the two-minute idle interval, in addition to the platform inactivity timeout.
-The canary prefix is unset after rollout. First-use custom-image initialization
-exceeded the 20-second deadline in two migration trials; later starts on the
-initialized image passed. After a build, validate fresh transforms on both
-configured shards and allow initialization to settle before declaring the
-deployment ready. Keep these first-use failures in any performance report.
-Native images do not receive a platform-managed fleet rollout: running instances
-keep their image until they stop, and later starts use the new named-image digest.
-The idle alarm bounds that transition; renderer changes still require a new
-renderer version and derivative namespace.
-
-### Gated updates for an existing installation
-
-`npm run deploy -- https://YOUR_WORKER_ENDPOINT [PUBLIC_SOURCE_URL]` uploads a
-candidate with ordinary traffic routed to the retained legacy application.
-Wrangler's native named-image upload does not roll out the legacy application.
-First, the candidate is included at 0% and its legacy route is verified using a
-Worker version override. Then it receives traffic, the native shards are allowed
-to reach their normal two-minute idle shutdown, and controlled canary misses
-initialize the new image on both shards. Native Durable Objects cannot be tested
-at 0%: their version is assigned by deployment percentages, independently of the
-gateway override.
-
-Only after both native misses return the exact current encoder bytes does the
-gate promote native routing. Promotion uses `--containers-rollout none`, preserving
-the image that just passed preflight. It then requires one fresh native miss per
-shard on the promoted version. A failed check leaves the previous route active
-or restores the verified legacy candidate; the build fails instead of reporting
-the deployment ready. Each initialization phase permits at most four attempts
-per shard, with 30-second client limits, ten-second legacy retry pauses and
-45-second native retry pauses to allow initial allocation to finish. Public image
-jobs retain their existing 20-second deadline, resource limits and idle timeout.
-
-The gate uses the existing Workers Builds authorization; it adds no credential
-or public administrative endpoint. It briefly uses the existing legacy and native
-applications, with normal usage charges and bounded probes. The default source
-is the Unsplash sample. Each probe fetches its exact source URL and compares
-the response with the current encoder's output for those bytes. Extra query
-parameters can change Unsplash JPEG bytes, so the unmodified URL is not a valid
-reference for every variant. For another allowlist, supply an allowed, publicly
-cached source that accepts extra query parameters. Cheap health checks wait for
-Worker version propagation before making fresh transformation probes.
-The gate requires a single active production version and already-applied Durable
-Object migrations. Initial provisioning and lifecycle migrations still use
-`npx wrangler deploy`; verify and initialize those before normal traffic.
-
-See [version overrides](https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/)
-and [Durable Object deployment routing](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/).
-
-Wrangler 4.145.0 supports the native configuration. Refer to Cloudflare's
-[scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/)
-and [native API migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-container-api/).
+Keep the existing `v1` and `v2-native-container` migration history and namespace
+names. The legacy class, binding and application remain available for an explicit
+rollback with `IMGT_CONTAINER_BACKEND: "legacy"`; native is the default. Removing
+that deployed namespace is a separate infrastructure retirement. Changing an
+existing application's scheduling policy is unsupported. See Cloudflare's
+[scheduling migration guide](https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/).
 
 Your copy deploys your commits; upstream releases do not update it automatically.
 Use tagged releases from [imgt](https://github.com/relferreira/imgt/releases) and
@@ -204,7 +149,7 @@ into a review branch. A repository created by the deploy button may be an
 independent copy: compare release changes and apply them in a branch in your
 copy rather than assuming GitHub's Sync fork button is available. Run
 `npm ci && npm run check`, review configuration changes, and merge to your
-production branch. After Workers Builds and the container rollout finish, run
+production branch. After Workers Builds succeeds, run
 `npm run smoke -- YOUR_ENDPOINT YOUR_SOURCE_URL`.
 
 Changing the encoder or persisted cache semantics may require a derivative
@@ -217,7 +162,7 @@ image available. Consult [container rollout behavior](https://developers.cloudfl
 | Symptom | Check |
 | --- | --- |
 | Source host is not allowed | Set `vars.ALLOWED_HOSTS` in your repo and redeploy. Wildcards do not include the parent domain. |
-| Health succeeds but images fail after deploy | Wait for initial provisioning or container rollout; check Workers Builds and container logs. |
+| Health succeeds but images fail after deploy | Check Workers Builds and container readiness logs; an existing native container uses the new image on its next start. |
 | Smoke test has no `EDGE` hit | The source must permit caching. Check its cache headers and the Worker cache configuration. |
 | Source returns 403/404/410 | The source must be publicly accessible. imgt does not forward client credentials. |
 | HTTP 429 | The IP rate limiter or shard admission limit was reached; honor `Retry-After`. |

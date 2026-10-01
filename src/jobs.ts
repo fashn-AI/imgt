@@ -14,20 +14,6 @@ export interface ResizeJob {
   quality: number;
 }
 
-export function containerBackend(
-  sourceUrl: string | null,
-  backend: "legacy" | "native",
-  canaryPrefix?: string,
-): "legacy" | "native" {
-  if (backend === "native" || !sourceUrl || !canaryPrefix) return backend;
-  try {
-    const token = new URL(sourceUrl).searchParams.get("imgt_native_eval");
-    return token?.startsWith(`${canaryPrefix}-`) ? "native" : backend;
-  } catch {
-    return backend;
-  }
-}
-
 export function jobRequest(job: ResizeJob): Request {
   return new Request("http://container/job", {
     method: "POST",

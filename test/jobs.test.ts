@@ -1,28 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  containerBackend,
-  containerNameForKey,
-  SingleFlight,
-} from "../src/jobs";
-
-test("native canary routing is limited to the configured source-query prefix", () => {
-  const source =
-    "https://images.unsplash.com/photo?imgt_native_eval=run-1-cold-0";
-  assert.equal(containerBackend(source, "legacy", "run-1"), "native");
-  assert.equal(containerBackend(source, "legacy", "run"), "native");
-  assert.equal(containerBackend(source, "legacy", "run-2"), "legacy");
-  assert.equal(containerBackend(source, "legacy", "run-1-cold-01"), "legacy");
-  assert.equal(containerBackend(source, "legacy", ""), "legacy");
-  assert.equal(
-    containerBackend("https://images.unsplash.com/photo", "legacy", "run-1"),
-    "legacy",
-  );
-  assert.equal(containerBackend("invalid", "legacy", "run-1"), "legacy");
-  assert.equal(containerBackend(null, "legacy", "run-1"), "legacy");
-  assert.equal(containerBackend(source, "native"), "native");
-});
+import { containerNameForKey, SingleFlight } from "../src/jobs";
 
 test("routes a derivative key to a stable container shard", () => {
   const key = "derivatives/v1/abcdef.webp";

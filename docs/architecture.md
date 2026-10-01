@@ -123,14 +123,13 @@ delay Durable Object inactivity. The alarm defers shutdown during active jobs
 and blocks new events while stopping compute. Exit monitoring clears readiness
 for the next request. Native starts receive a random boot label, reported in
 the MISS response's `Server-Timing` for restart verification. Cache and encoder
-behavior are shared with the legacy adapter.
+behavior are shared with the retained legacy adapter for explicit rollback.
 
 The two applications have separate namespaces because an existing application's
 scheduling policy cannot be changed. The legacy namespace remains available
 for rollback. Public gateway responses include `x-imgt-worker-version` and
 `x-imgt-container-backend`, attached outside the shared image cache. The backend
 header identifies the configured route; a cache hit does not run a container.
-
 
 ## Code organization
 

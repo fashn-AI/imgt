@@ -15,12 +15,7 @@ import {
 import { TransformCoordinator } from "./coordinator";
 import { handleGateway } from "./gateway";
 import { ImageError } from "./http";
-import {
-  containerBackend,
-  containerNameForKey,
-  jobRequest,
-  type ResizeJob,
-} from "./jobs";
+import { containerNameForKey, jobRequest, type ResizeJob } from "./jobs";
 import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
 import { NativeIdleAlarm } from "./native-idle";
@@ -35,7 +30,6 @@ interface Env {
   IMGT_TRANSFORMER: DurableObjectNamespace<ImgtImageTransformer>;
   IMGT_NATIVE_TRANSFORMER: DurableObjectNamespace<ImgtNativeImageTransformer>;
   IMGT_CONTAINER_BACKEND: "legacy" | "native";
-  IMGT_NATIVE_CANARY_PREFIX?: string;
   CF_VERSION_METADATA: { id: string; tag: string; timestamp: string };
   DERIVATIVES: R2Bucket;
   IMAGE_RATE_LIMITER: RateLimit;
@@ -206,11 +200,7 @@ export class ImgtImageTransformer extends Container<Env> {
 async function requestResize(job: ResizeJob, env: Env): Promise<Response> {
   const name = containerNameForKey(job.outputKey, config.containers.shards);
   const container =
-    containerBackend(
-      job.sourceUrl,
-      env.IMGT_CONTAINER_BACKEND,
-      env.IMGT_NATIVE_CANARY_PREFIX,
-    ) === "native"
+    env.IMGT_CONTAINER_BACKEND === "native"
       ? env.IMGT_NATIVE_TRANSFORMER.getByName(name)
       : getContainer(env.IMGT_TRANSFORMER, name);
   const started = Date.now();
@@ -243,11 +233,7 @@ export default {
     measured.headers.set("x-imgt-worker-version", env.CF_VERSION_METADATA.id);
     measured.headers.set(
       "x-imgt-container-backend",
-      containerBackend(
-        new URL(request.url).searchParams.get("url"),
-        env.IMGT_CONTAINER_BACKEND,
-        env.IMGT_NATIVE_CANARY_PREFIX,
-      ),
+      env.IMGT_CONTAINER_BACKEND,
     );
     return measured;
   },
