@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Try imgt: simple image optimization on your own Cloudflare account."
+      content="Open source image optimization on your own Cloudflare account. Try the live demo and connect imgt to Next.js."
     />
-    <title>imgt — Image optimization, live</title>
+    <title>imgt — Image optimization on your Cloudflare</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/main.js" defer></script>
   </head>
@@ -15,17 +15,33 @@
     <main>
       <header>
         <a class="brand" href="/" aria-label="imgt home">imgt<span>.</span></a>
-        <a href="https://github.com/relferreira/imgt">GitHub ↗</a>
+        <nav aria-label="Main navigation">
+          <a href="#live-demo">Demo</a>
+          <a href="#nextjs">Use with Next.js</a>
+          <a href="https://github.com/relferreira/imgt">GitHub ↗</a>
+        </nav>
       </header>
-      <section aria-labelledby="title">
+      <section class="hero" aria-labelledby="title">
+        <p class="eyebrow">OPEN SOURCE · SELF-HOSTED</p>
+        <h1 id="title">Image optimization on your own Cloudflare.</h1>
+        <p class="intro">
+          Give imgt a public image URL and a width. Get a WebP, cached at the
+          edge and in your R2 bucket. A small service you can deploy and own.
+        </p>
+        <div class="actions">
+          <a class="primary-link" href="#live-demo">Try the demo ↓</a>
+          <a href="#nextjs">Use with Next.js →</a>
+        </div>
+      </section>
+      <section id="live-demo" aria-labelledby="demo-title">
         <p class="eyebrow">LIVE DEMO</p>
-        <h1 id="title">Image optimization, live.</h1>
+        <h2 id="demo-title">Try it on a real photo.</h2>
         <p class="intro">Pick a width. Turn this Unsplash photo into a WebP.</p>
         <figure>
           <img
             id="preview"
             src="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&amp;fit=crop&amp;w=1920&amp;h=1200&amp;q=90"
-            alt="A road winding between red sandstone cliffs"
+            alt="Landscape from Unsplash"
             width="1920"
             height="1200"
             fetchpriority="high"
@@ -52,7 +68,132 @@
         </p>
         <noscript><p>Enable JavaScript to try the demo.</p></noscript>
       </section>
-      <footer>Open source. Self-hosted on Cloudflare.</footer>
+      <section id="nextjs" aria-labelledby="nextjs-title">
+        <p class="eyebrow">THREE SMALL STEPS</p>
+        <h2 id="nextjs-title">Use with Next.js</h2>
+        <p class="intro">
+          Keep using <code>next/image</code>. Next.js handles responsive image
+          sizes and lazy loading; imgt serves the WebP. Add these files to your
+          Next.js app, then restart its development server.
+        </p>
+        <p class="source-note">
+          Use an absolute, public HTTPS image URL. Its hostname must be in your
+          imgt deployment’s <code>ALLOWED_HOSTS</code>; this photo uses
+          <code>images.unsplash.com</code>.
+        </p>
+        <ol class="steps">
+          <li>
+            <h3>Configure the image loader</h3>
+            <div class="code-heading">
+              <span>next.config.mjs</span>
+              <button
+                type="button"
+                class="copy"
+                data-copy="next-config"
+                aria-label="Copy next.config.mjs"
+                disabled
+              >
+                Copy
+              </button>
+            </div>
+            <pre
+              tabindex="0"
+              aria-label="next.config.mjs code"
+            ><code id="next-config">export default {
+  images: {
+    loader: "custom",
+    loaderFile: "./image-loader.js",
+    qualities: [60, 75, 77, 85],
+  },
+};</code></pre>
+          </li>
+          <li>
+            <h3>Point it at imgt</h3>
+            <p>
+              This example uses the deployment you’re viewing. Replace the
+              origin with your own imgt URL when you self-host.
+            </p>
+            <div class="code-heading">
+              <span>image-loader.js</span>
+              <button
+                type="button"
+                class="copy"
+                data-copy="image-loader"
+                aria-label="Copy image-loader.js"
+                disabled
+              >
+                Copy
+              </button>
+            </div>
+            <pre
+              tabindex="0"
+              aria-label="image-loader.js code"
+            ><code id="image-loader">"use client";
+
+export default function imageLoader({ src, width, quality = 77 }) {
+  const url = new URL("/image", "<span data-deployment-origin>https://imgt.YOUR-SUBDOMAIN.workers.dev</span>");
+  url.search = new URLSearchParams({
+    url: src,
+    w: String(width),
+    q: String(quality),
+  });
+  return url.href;
+}</code></pre>
+          </li>
+          <li>
+            <h3>Use your usual Image component</h3>
+            <div class="code-heading">
+              <span>app/page.jsx</span>
+              <button
+                type="button"
+                class="copy"
+                data-copy="next-page"
+                aria-label="Copy app/page.jsx"
+                disabled
+              >
+                Copy
+              </button>
+            </div>
+            <pre
+              tabindex="0"
+              aria-label="app/page.jsx code"
+            ><code id="next-page">import Image from "next/image";
+
+export default function Page() {
+  return (
+    &lt;main style={{ maxWidth: 800, margin: "0 auto" }}&gt;
+      &lt;Image
+        src="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&amp;fit=crop&amp;w=1920&amp;h=1200&amp;q=90"
+        alt="Landscape from Unsplash"
+        width={1920}
+        height={1200}
+        quality={77}
+        sizes="(max-width: 768px) 100vw, 800px"
+        style={{ width: "100%", height: "auto" }}
+      /&gt;
+    &lt;/main&gt;
+  );
+}</code></pre>
+          </li>
+        </ol>
+        <p id="copy-status" role="status" aria-live="polite"></p>
+        <p class="guide-links">
+          <a href="https://github.com/relferreira/imgt/blob/main/docs/nextjs.md"
+            >Read the imgt guide ↗</a
+          >
+          <a
+            href="https://nextjs.org/docs/app/api-reference/config/next-config-js/images"
+            >Next.js image loader docs ↗</a
+          >
+        </p>
+      </section>
+      <footer>
+        Open source. Self-hosted on Cloudflare.
+        <a
+          href="https://github.com/relferreira/imgt/blob/main/docs/deployment.md"
+          >Deploy your own ↗</a
+        >
+      </footer>
     </main>
   </body>
 </html>

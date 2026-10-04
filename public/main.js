@@ -9,6 +9,32 @@ const output = document.querySelector("#output");
 const source = preview.src;
 let previewUrl;
 
+for (const origin of document.querySelectorAll("[data-deployment-origin]")) {
+  origin.textContent = location.origin;
+}
+
+const copyStatus = document.querySelector("#copy-status");
+for (const copy of document.querySelectorAll("[data-copy]")) {
+  copy.disabled = false;
+  copy.addEventListener("click", async () => {
+    copy.disabled = true;
+    const filename = copy.getAttribute("aria-label").replace("Copy ", "");
+    copyStatus.dataset.error = "false";
+    copyStatus.textContent = `Copying ${filename}…`;
+    try {
+      await navigator.clipboard.writeText(
+        document.getElementById(copy.dataset.copy).textContent,
+      );
+      copyStatus.textContent = `Copied ${filename}.`;
+    } catch {
+      copyStatus.dataset.error = "true";
+      copyStatus.textContent = `Could not copy ${filename}. Select the code and copy it manually.`;
+    } finally {
+      copy.disabled = false;
+    }
+  });
+}
+
 controls.disabled = false;
 width.addEventListener("change", () => {
   button.textContent = "Optimize image";

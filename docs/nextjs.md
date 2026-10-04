@@ -1,0 +1,90 @@
+# Next.js
+
+Use imgt as the optimizer for `next/image`. Next.js generates responsive image
+URLs; the browser requests them from your imgt deployment. Configure these three
+files in your Next.js project, replacing the endpoint with your own.
+
+## Configure the loader
+
+Merge this `images` configuration into `next.config.mjs`:
+
+```js
+export default {
+  images: {
+    loader: "custom",
+    loaderFile: "./image-loader.js",
+    qualities: [60, 75, 77, 85],
+  },
+};
+```
+
+Create `image-loader.js` at the project root:
+
+```js
+"use client";
+
+export default function imageLoader({ src, width, quality = 77 }) {
+  const url = new URL("/image", "https://imgt.YOUR-SUBDOMAIN.workers.dev");
+  url.search = new URLSearchParams({
+    url: src,
+    w: String(width),
+    q: String(quality),
+  });
+  return url.href;
+}
+```
+
+The loader has a client boundary, as required by Next.js; the page can remain a
+Server Component because `loaderFile` configures `Image` without passing a
+function prop. See the [Next.js custom loader documentation](https://nextjs.org/docs/app/api-reference/config/next-config-js/images).
+
+## Render an image
+
+Use this in `app/page.jsx` (or `src/app/page.jsx`):
+
+```jsx
+import Image from "next/image";
+
+export default function Page() {
+  return (
+    <main style={{ maxWidth: 800, margin: "0 auto" }}>
+      <Image
+        src="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&fit=crop&w=1920&h=1200&q=90"
+        alt="Landscape from Unsplash"
+        width={1920}
+        height={1200}
+        quality={77}
+        sizes="(max-width: 768px) 100vw, 800px"
+        style={{ width: "100%", height: "auto" }}
+      />
+    </main>
+  );
+}
+```
+
+Keep `images.unsplash.com` in imgt's `ALLOWED_HOSTS` for this example. For your
+images, allow their source hosts and use publicly accessible HTTPS URLs.
+`remotePatterns` is not needed for this custom loader; imgt enforces its own
+allowlist before fetching sources.
+
+The default widths in `imgt.config.ts` match Next.js `deviceSizes` and
+`imageSizes`. Keep those lists aligned if you customize them. The quality list
+matches imgt's accepted values. `quality={77}` makes the chosen quality explicit,
+and the loader uses 77 when quality is omitted. Set `sizes` to the image's actual
+CSS layout so browsers choose an appropriate width. See the
+[Next.js Image reference](https://nextjs.org/docs/app/api-reference/components/image).
+
+## Local assets
+
+Paths such as `/photo.jpg` and static imports resolve to app-relative URLs.
+imgt needs an absolute HTTPS URL it can reach; `localhost` is not a valid source.
+To serve files from `public/` or built static imports, resolve `src` against your
+public app origin in the loader, replacing `url: src` with:
+
+```js
+url: new URL(src, "https://www.example.com").href,
+```
+
+Add `www.example.com` to imgt's `ALLOWED_HOSTS` and ensure that URL is deployed
+and publicly accessible. During local development, use an already deployed
+source or let Next.js serve a local image directly with `unoptimized`.

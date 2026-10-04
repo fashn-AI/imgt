@@ -3,9 +3,13 @@
 Self-hosted image optimization on Cloudflare. Serve resized WebP images from
 your own account using Sharp, Workers Cache, and a private R2 bucket.
 
+[Try the live demo](https://imgt.relferreira.workers.dev/) ·
+[Use with Next.js](docs/nextjs.md) · [Deployment guide](docs/deployment.md)
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/relferreira/imgt)
 
 <!-- dash-content-start -->
+
 Give imgt a public image URL and a width. It transforms the image once, stores
 the derivative in R2, and serves subsequent requests through Workers Cache.
 Works with Next.js custom loaders or any client that can request an image URL.
@@ -16,7 +20,8 @@ Original images are never stored. No Cloudflare Images subscription is needed.
 
 You need a GitHub account, Cloudflare Workers Paid, and R2 enabled. Workers Paid
 starts at $5/month; container, storage, and request usage can add charges.
-See [costs and configuration](docs/deployment.md#costs).
+The deploy button requires a public source repository. See
+[deployment requirements and costs](docs/deployment.md).
 
 1. Click **Deploy to Cloudflare** above. Select your account and create your own
    repository. Cloudflare provisions the R2 bucket and Durable Object, then
@@ -48,15 +53,23 @@ bucket, and rate-limit namespace names. See [deployment names](docs/deployment.m
 
 ## Use it
 
-```text
-https://imgt.YOUR-SUBDOMAIN.workers.dev/image?url=https%3A%2F%2Fcdn.example.com%2Fphoto.jpg&w=640&q=77
+Build a URL with your deployed endpoint and a public source image:
+
+```js
+const image = new URL("/image", "https://imgt.YOUR-SUBDOMAIN.workers.dev");
+image.search = new URLSearchParams({
+  url: "https://cdn.example.com/photo.jpg",
+  w: "640",
+  q: "77",
+});
+// Use image.href as an <img> src or fetch it directly.
 ```
 
-| Parameter | Meaning |
-| --- | --- |
-| `url` | Absolute HTTPS source URL on an allowed host. URL-encode it. |
-| `w` | Width: 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840. |
-| `q` | Quality: 60, 75, 77, or 85. Defaults to 77. |
+| Parameter | Meaning                                                                            |
+| --------- | ---------------------------------------------------------------------------------- |
+| `url`     | Absolute HTTPS source URL on an allowed host. `URLSearchParams` encodes it.        |
+| `w`       | Width: 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840. |
+| `q`       | Quality: 60, 75, 77, or 85. Defaults to 77.                                        |
 
 Output is WebP, with orientation corrected and aspect ratio preserved. Small
 sources are not enlarged. Supported inputs: JPEG, PNG, WebP, and AVIF, up to
@@ -68,31 +81,10 @@ include schemes, paths, ports, IP addresses, or a bare `*`.
 
 ## Next.js
 
-Create `image-loader.js` with your deployed endpoint:
-
-```js
-'use client';
-
-export default function imageLoader({ src, width, quality = 77 }) {
-  const query = new URLSearchParams({ url: src, w: String(width), q: String(quality) });
-  return `https://imgt.YOUR-SUBDOMAIN.workers.dev/image?${query}`;
-}
-```
-
-Configure `next.config.js`:
-
-```js
-export default {
-  images: {
-    loader: 'custom',
-    loaderFile: './image-loader.js',
-    qualities: [60, 75, 77, 85],
-  },
-};
-```
-
-Use absolute source URLs with `<Image>`. The default imgt widths match the
-standard Next.js sizes; keep them aligned if you customize either application.
+Use a custom loader so `<Image>` generates responsive URLs for your imgt
+deployment. The [Next.js guide](docs/nextjs.md) includes copyable configuration,
+loader, and page examples, plus notes for local assets. The default imgt widths
+match Next.js image sizes; keep them aligned if you customize either application.
 
 ## Verify a deployment
 
