@@ -85,12 +85,12 @@
           <li>
             <h3>Configure the image loader</h3>
             <div class="code-heading">
-              <span>next.config.mjs</span>
+              <span>next.config.ts</span>
               <button
                 type="button"
                 class="copy"
                 data-copy="next-config"
-                aria-label="Copy next.config.mjs"
+                aria-label="Copy next.config.ts"
                 disabled
               >
                 Copy
@@ -98,14 +98,18 @@
             </div>
             <pre
               tabindex="0"
-              aria-label="next.config.mjs code"
-            ><code id="next-config">export default {
+              aria-label="next.config.ts code"
+            ><code id="next-config">import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
   images: {
     loader: "custom",
-    loaderFile: "./image-loader.js",
+    loaderFile: "./image-loader.ts",
     qualities: [60, 75, 77, 85],
   },
-};</code></pre>
+};
+
+export default nextConfig;</code></pre>
           </li>
           <li>
             <h3>Point it at imgt</h3>
@@ -114,12 +118,12 @@
               origin with your own imgt URL when you self-host.
             </p>
             <div class="code-heading">
-              <span>image-loader.js</span>
+              <span>image-loader.ts</span>
               <button
                 type="button"
                 class="copy"
                 data-copy="image-loader"
-                aria-label="Copy image-loader.js"
+                aria-label="Copy image-loader.ts"
                 disabled
               >
                 Copy
@@ -127,28 +131,34 @@
             </div>
             <pre
               tabindex="0"
-              aria-label="image-loader.js code"
+              aria-label="image-loader.ts code"
             ><code id="image-loader">"use client";
 
-export default function imageLoader({ src, width, quality = 77 }) {
+import type { ImageLoaderProps } from "next/image";
+
+export default function imageLoader({
+  src,
+  width,
+  quality = 77,
+}: ImageLoaderProps) {
   const url = new URL("/image", "<span data-deployment-origin>https://imgt.YOUR-SUBDOMAIN.workers.dev</span>");
   url.search = new URLSearchParams({
     url: src,
     w: String(width),
     q: String(quality),
-  });
+  }).toString();
   return url.href;
 }</code></pre>
           </li>
           <li>
             <h3>Use your usual Image component</h3>
             <div class="code-heading">
-              <span>app/page.jsx</span>
+              <span>app/page.tsx</span>
               <button
                 type="button"
                 class="copy"
                 data-copy="next-page"
-                aria-label="Copy app/page.jsx"
+                aria-label="Copy app/page.tsx"
                 disabled
               >
                 Copy
@@ -156,7 +166,7 @@ export default function imageLoader({ src, width, quality = 77 }) {
             </div>
             <pre
               tabindex="0"
-              aria-label="app/page.jsx code"
+              aria-label="app/page.tsx code"
             ><code id="next-page">import Image from "next/image";
 
 export default function Page() {

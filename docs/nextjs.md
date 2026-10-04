@@ -6,30 +6,40 @@ files in your Next.js project, replacing the endpoint with your own.
 
 ## Configure the loader
 
-Merge this `images` configuration into `next.config.mjs`:
+Merge this `images` configuration into `next.config.ts`:
 
-```js
-export default {
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
   images: {
     loader: "custom",
-    loaderFile: "./image-loader.js",
+    loaderFile: "./image-loader.ts",
     qualities: [60, 75, 77, 85],
   },
 };
+
+export default nextConfig;
 ```
 
-Create `image-loader.js` at the project root:
+Create `image-loader.ts` at the project root:
 
-```js
+```ts
 "use client";
 
-export default function imageLoader({ src, width, quality = 77 }) {
+import type { ImageLoaderProps } from "next/image";
+
+export default function imageLoader({
+  src,
+  width,
+  quality = 77,
+}: ImageLoaderProps) {
   const url = new URL("/image", "https://imgt.YOUR-SUBDOMAIN.workers.dev");
   url.search = new URLSearchParams({
     url: src,
     w: String(width),
     q: String(quality),
-  });
+  }).toString();
   return url.href;
 }
 ```
@@ -40,9 +50,9 @@ function prop. See the [Next.js custom loader documentation](https://nextjs.org/
 
 ## Render an image
 
-Use this in `app/page.jsx` (or `src/app/page.jsx`):
+Use this in `app/page.tsx` (or `src/app/page.tsx`):
 
-```jsx
+```tsx
 import Image from "next/image";
 
 export default function Page() {
@@ -81,7 +91,7 @@ imgt needs an absolute HTTPS URL it can reach; `localhost` is not a valid source
 To serve files from `public/` or built static imports, resolve `src` against your
 public app origin in the loader, replacing `url: src` with:
 
-```js
+```ts
 url: new URL(src, "https://www.example.com").href,
 ```
 
