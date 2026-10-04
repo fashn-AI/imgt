@@ -1,0 +1,37 @@
+# imgt
+
+> A small, self-hosted image optimizer on Cloudflare. Sharp resizes public images to WebP; Workers Cache and a private R2 bucket cache derivatives. Original images are never stored.
+
+`GET /image?url=<encoded-HTTPS-source>&w=<width>&q=<quality>` returns WebP.
+Use `URLSearchParams` to encode the source. Width is required; quality defaults
+to 77. Default widths: 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080,
+1200, 1920, 2048, 3840. Default qualities: 60, 75, 77, 85.
+
+`vars.ALLOWED_HOSTS` in `wrangler.jsonc` contains original image hostnames.
+The frontend belongs here only if it serves originals. Exact entries allow
+only that host; `*.example.com` allows subdomains but excludes `example.com`.
+An empty list denies all sources; every redirect is checked against the list.
+Sources must be public HTTPS URLs. Inputs: JPEG, PNG, WebP or AVIF, up to
+25 MiB and 50 megapixels. Small images are not enlarged.
+
+For Next.js, use the TypeScript custom loader in the guide below. Keep widths
+and qualities aligned with `imgt.config.ts`. Relative local assets need a
+public HTTPS origin. `GET /health` checks Worker configuration; use the smoke
+command in the deployment guide to verify the image pipeline.
+
+These Markdown resources are served from this deployment without GitHub access.
+
+## Guides
+
+- [Overview and API](/index.md): Usage, defaults, deployment and local development.
+- [Configuration](/docs/configuration.md): Allowed source hosts, matching rules, application settings and fixed limits.
+- [Next.js integration](/docs/nextjs.md): `next.config.ts`, `image-loader.ts` and `app/page.tsx` examples.
+- [Deployment](/docs/deployment.md): Cloudflare setup, resource names, costs, cleanup, updates and troubleshooting.
+- [Complete documentation](/llms-full.txt): All repository guides combined into one text file.
+
+## Optional
+
+- [Architecture](/docs/architecture.md): Request flow, cache policy, deduplication, deadlines and container lifecycle.
+- [Performance](/docs/performance.md): Measured decisions behind the current runtime and defaults.
+- [Contributing](/CONTRIBUTING.md): Checks, change scope and release expectations.
+- [License](/LICENSE): MIT license.

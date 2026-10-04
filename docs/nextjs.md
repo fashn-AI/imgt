@@ -73,7 +73,9 @@ export default function Page() {
 ```
 
 Keep `images.unsplash.com` in imgt's `ALLOWED_HOSTS` for this example. For your
-images, allow their source hosts and use publicly accessible HTTPS URLs.
+images, allow their source hosts and use publicly accessible HTTPS URLs. Your
+Next.js domain needs to be listed only if it hosts the originals; see
+[source host configuration](configuration.md#allowed-source-hosts).
 `remotePatterns` is not needed for this custom loader; imgt enforces its own
 allowlist before fetching sources.
 

@@ -2,3 +2,22 @@
   Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: https://images.unsplash.com; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  Link: </llms.txt>; rel="describedby"
+
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+
+/llms-full.txt
+  Content-Type: text/plain; charset=utf-8
+
+/index.md
+  Content-Type: text/plain; charset=utf-8
+
+/CONTRIBUTING.md
+  Content-Type: text/plain; charset=utf-8
+
+/docs/*
+  Content-Type: text/plain; charset=utf-8
+
+/LICENSE
+  Content-Type: text/plain; charset=utf-8

@@ -13,12 +13,14 @@ for (const origin of document.querySelectorAll("[data-deployment-origin]")) {
   origin.textContent = location.origin;
 }
 
-const copyStatus = document.querySelector("#copy-status");
 for (const copy of document.querySelectorAll("[data-copy]")) {
   copy.disabled = false;
   copy.addEventListener("click", async () => {
     copy.disabled = true;
     const filename = copy.getAttribute("aria-label").replace("Copy ", "");
+    const copyStatus = copy
+      .closest("section")
+      .querySelector("[data-copy-status]");
     copyStatus.dataset.error = "false";
     copyStatus.textContent = `Copying ${filename}…`;
     try {

@@ -10,6 +10,8 @@
     />
     <title>imgt — Image optimization at the edge</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="describedby" href="/llms.txt" />
+    <link rel="alternate" type="text/plain" href="/index.md" />
     <link rel="stylesheet" href="/styles.css" />
     <script src="/main.js" defer></script>
   </head>
@@ -21,6 +23,7 @@
         <nav aria-label="Main navigation">
           <a href="#live-demo">Playground</a>
           <a href="#nextjs">Next.js</a>
+          <a href="#configuration">Setup</a>
           <a class="github-link" href="https://github.com/relferreira/imgt"
             >GitHub <span aria-hidden="true">↗</span></a
           >
@@ -264,13 +267,19 @@ export default function Page() {
             </div>
           </li>
         </ol>
-        <p id="copy-status" role="status" aria-live="polite"></p>
+        <p
+          id="copy-status"
+          data-copy-status
+          role="status"
+          aria-live="polite"
+        ></p>
         <aside class="source-note" aria-label="Image source requirements">
           <span class="note-label">SOURCE HOSTS</span>
           <p>
             Use a public, absolute HTTPS image URL. Its hostname must be in your
             deployment’s <code>ALLOWED_HOSTS</code>. This example uses
             <code>images.unsplash.com</code>.
+            <a href="#configuration">Configure your source domains below ↓</a>
           </p>
         </aside>
         <div class="guide-links">
@@ -282,14 +291,125 @@ export default function Page() {
           >
         </div>
       </section>
+      <section
+        id="configuration"
+        class="content-section"
+        aria-labelledby="configuration-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">03 / CONFIGURATION</p>
+            <h2 id="configuration-title">Allow your image domains.</h2>
+          </div>
+          <p class="section-intro">
+            Choose where originals come from.<br />
+            Keep the list in your repository.
+          </p>
+        </div>
+        <p class="integration-intro">
+          <code>ALLOWED_HOSTS</code> lists the hosts imgt can fetch original
+          images from. For <code>https://cdn.example.com/photo.jpg</code>, allow
+          <code>cdn.example.com</code>. Include your frontend domain only if it
+          serves the originals. This setting does not restrict which websites
+          can display optimized images.
+        </p>
+        <div class="configuration-grid">
+          <div class="step-description">
+            <h3>Edit wrangler.jsonc.</h3>
+            <p>
+              Merge this <code>vars</code> block into your existing file.
+              Replace the example domains with yours. Keep
+              <code>images.unsplash.com</code>
+              for the playground.
+            </p>
+            <p>
+              Commit and push to your production branch to redeploy. Changes
+              made only in the Cloudflare dashboard can be overwritten by a
+              later deployment.
+            </p>
+          </div>
+          <div class="code-panel">
+            <div class="code-heading">
+              <span>wrangler.jsonc</span
+              ><button
+                type="button"
+                class="copy"
+                data-copy="allowed-hosts"
+                aria-label="Copy wrangler.jsonc"
+                disabled
+              >
+                Copy
+              </button>
+            </div>
+            <pre
+              tabindex="0"
+              aria-label="Allowed source hosts configuration"
+            ><code id="allowed-hosts">{
+  "vars": {
+    "ALLOWED_HOSTS": "images.unsplash.com,cdn.example.com,*.images.example.com"
+  }
+}</code></pre>
+          </div>
+        </div>
+        <p
+          id="config-copy-status"
+          data-copy-status
+          role="status"
+          aria-live="polite"
+        ></p>
+        <table class="host-rules">
+          <caption>
+            How host matching works
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Entry</th>
+              <th scope="col">Allows</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>cdn.example.com</code></th>
+              <td>That exact host. Subdomains need their own entry.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>*.images.example.com</code></th>
+              <td>
+                Any subdomain, including nested ones. The parent
+                <code>images.example.com</code> needs a separate entry.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <aside class="source-note" aria-label="Source URL rules">
+          <span class="note-label">SOURCE RULES</span>
+          <p>
+            Use comma-separated hostnames, without <code>https://</code>, paths
+            or ports. An empty list denies every source. Images must be public
+            HTTPS URLs; every redirect must also lead to an allowed host.
+          </p>
+        </aside>
+        <div class="guide-links">
+          <a href="/docs/configuration.md"
+            >Read the configuration guide <span aria-hidden="true">↗</span></a
+          >
+          <a href="/llms.txt"
+            >Docs for agents <span aria-hidden="true">↗</span></a
+          >
+        </div>
+      </section>
       <footer>
         <span
           >imgt<span class="accent">.</span>
           <span class="footer-note">Open source. Self-hosted.</span></span
-        ><a
-          href="https://github.com/relferreira/imgt/blob/main/docs/deployment.md"
-          >Deploy on Cloudflare <span aria-hidden="true">↗</span></a
         >
+        <div class="footer-links">
+          <a href="/llms.txt">llms.txt</a
+          ><a
+            href="https://github.com/relferreira/imgt/blob/main/docs/deployment.md"
+            >Deploy on Cloudflare <span aria-hidden="true">↗</span></a
+          >
+        </div>
       </footer>
     </main>
   </body>

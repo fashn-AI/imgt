@@ -5,8 +5,9 @@
 The README's deploy button creates a repository in your GitHub account and
 connects it to Cloudflare Workers Builds. The production deploy command is
 `npm run deploy` (equivalent to `npx wrangler deploy`). The checked-in Wrangler
-build command runs `npm run check` before upload. Cloudflare's GitHub integration
-handles deployment; no GitHub Actions workflow is required.
+build command runs `npm run check`, then `npm run build:docs` to publish the
+canonical Markdown guides and `/llms-full.txt` alongside the site. Cloudflare's
+GitHub integration handles deployment; no GitHub Actions workflow is required.
 
 The deploy button requires the source repository to be public. You need Workers
 Paid and an activated R2 subscription in the target account. Cloudflare builds
@@ -14,21 +15,21 @@ the Docker image remotely; the browser flow requires no local Docker daemon
 or manually copied API token. See [Cloudflare's deployment flow](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
 and [container builds](https://developers.cloudflare.com/containers/guides/deploy/).
 
-The default sample host is `images.unsplash.com`. Replace it with your source
-hosts in `wrangler.jsonc` and commit that change. Keep Git as the source of truth:
-later deployments can overwrite variables edited only in the dashboard.
-Do not add allowlist exceptions to application source files.
+Configure source image domains in `wrangler.jsonc`; keep `images.unsplash.com`
+for the demo. The [configuration guide](configuration.md#allowed-source-hosts)
+explains host matching and includes a copyable example. Keep Git as the source
+of truth: later deployments can overwrite dashboard-only variable edits.
 
 ## Deployment names
 
 Names are scoped to the Cloudflare account. A new account can use the defaults.
 For a second copy in the same account, change all of these before deploying:
 
-| Setting in `wrangler.jsonc` | Example for a second deployment |
-| --- | --- |
-| `name` | `shop-images` |
-| `containers[0].name` | `shop-images-transformer` |
-| `r2_buckets[0].bucket_name` | `shop-image-derivatives` |
+| Setting in `wrangler.jsonc`  | Example for a second deployment                |
+| ---------------------------- | ---------------------------------------------- |
+| `name`                       | `shop-images`                                  |
+| `containers[0].name`         | `shop-images-transformer`                      |
+| `r2_buckets[0].bucket_name`  | `shop-image-derivatives`                       |
 | `ratelimits[0].namespace_id` | A numeric string unused by your other limiters |
 
 Keep the binding names (`DERIVATIVES`, `IMGT_NATIVE_TRANSFORMER`, and
@@ -71,16 +72,10 @@ See [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lif
 
 ## Capacity
 
-Application settings live in `imgt.config.ts`. Native container allocation is
-defined by `CONTAINER_RESOURCES` in `src/native-container.ts`; `wrangler.jsonc`
-defines the Container application, image and bindings:
-
-- To use four shards, change `config.containers.shards` to `4`; the adapter
-  permits at most four configured shard IDs.
-- To keep containers warm longer, adjust `config.containers.sleepAfter`.
-- Keep the custom 1-vCPU/3-GiB allocation for large source images. The smaller
-  `basic` and `lite` profiles did not pass our large-image workload; see the
-  [performance notes](performance.md).
+See [application defaults and fixed limits](configuration.md#application-defaults)
+for widths, qualities, shards, idle time, cache lifetimes and allocation.
+The smaller `basic` and `lite` resource profiles did not pass the large-image
+workload; see [performance decisions](performance.md).
 
 Changing shard count changes request routing and can temporarily run old and
 new work for the same derivative during rollout. R2 contents remain valid. Keep
@@ -151,15 +146,15 @@ image available. Consult [container rollout behavior](https://developers.cloudfl
 
 ## Troubleshooting
 
-| Symptom | Check |
-| --- | --- |
-| Source host is not allowed | Set `vars.ALLOWED_HOSTS` in your repo and redeploy. Wildcards do not include the parent domain. |
-| Health succeeds but images fail after deploy | Check Workers Builds and container readiness logs; an existing native container uses the new image on its next start. |
-| Smoke test has no `EDGE` hit | The source must permit caching. Check its cache headers and the Worker cache configuration. |
-| Source returns 403/404/410 | The source must be publicly accessible. imgt does not forward client credentials. |
-| HTTP 429 | The IP rate limiter or shard admission limit was reached; honor `Retry-After`. |
-| HTTP 504 | Source download, startup, queueing, or transform exceeded the deadline. Check timing and source size. |
-| Container name already exists | Use a distinct name for a new installation; do not delete an existing application's resources. |
+| Symptom                                      | Check                                                                                                                                     |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Source host is not allowed                   | Configure the original image's host in `vars.ALLOWED_HOSTS` and redeploy; see [source host rules](configuration.md#allowed-source-hosts). |
+| Health succeeds but images fail after deploy | Check Workers Builds and container readiness logs; an existing native container uses the new image on its next start.                     |
+| Smoke test has no `EDGE` hit                 | The source must permit caching. Check its cache headers and the Worker cache configuration.                                               |
+| Source returns 403/404/410                   | The source must be publicly accessible. imgt does not forward client credentials.                                                         |
+| HTTP 429                                     | The IP rate limiter or shard admission limit was reached; honor `Retry-After`.                                                            |
+| HTTP 504                                     | Source download, startup, queueing, or transform exceeded the deadline. Check timing and source size.                                     |
+| Container name already exists                | Use a distinct name for a new installation; do not delete an existing application's resources.                                            |
 
 The static homepage demonstrates resizing a fixed Unsplash photo. It requires
 `images.unsplash.com` in the allowlist. Opening the page loads the original from

@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:docs": "node scripts/build-docs.mjs",
+    "predev": "npm run build:docs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "tsx --test test/*.test.ts",

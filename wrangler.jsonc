@@ -3,7 +3,7 @@
   "name": "imgt",
   "main": "src/index.ts",
   "assets": { "directory": "./public" },
-  "build": { "command": "npm run check" },
+  "build": { "command": "npm run check && npm run build:docs" },
   "vars": {
     "ALLOWED_HOSTS": "images.unsplash.com"
   },

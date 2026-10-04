@@ -4,7 +4,8 @@ Self-hosted image optimization on Cloudflare. Serve resized WebP images from
 your own account using Sharp, Workers Cache, and a private R2 bucket.
 
 [Try the live demo](https://imgt.relferreira.workers.dev/) ·
-[Use with Next.js](docs/nextjs.md) · [Deployment guide](docs/deployment.md)
+[Use with Next.js](docs/nextjs.md) · [Configuration](docs/configuration.md) ·
+[Deployment guide](docs/deployment.md)
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/relferreira/imgt)
 
@@ -26,16 +27,10 @@ The deploy button requires a public source repository. See
 1. Click **Deploy to Cloudflare** above. Select your account and create your own
    repository. Cloudflare provisions the R2 bucket and Durable Object, then
    builds the Worker and Docker image through Workers Builds.
-2. Set `ALLOWED_HOSTS` to the domains that host your source images. The default
-   `images.unsplash.com` enables the sample image. Configure it during setup if
-   offered, or edit `vars.ALLOWED_HOSTS` in your new repository's
-   `wrangler.jsonc` and push to `main`:
-
-   ```json
-   "vars": {
-     "ALLOWED_HOSTS": "cdn.example.com,*.images.example.com"
-   }
-   ```
+2. Set `vars.ALLOWED_HOSTS` in `wrangler.jsonc` to your source image domains.
+   Keep `images.unsplash.com` for the sample image. See the
+   [configuration guide](docs/configuration.md#allowed-source-hosts) for a
+   copyable example, then commit and push to your production branch.
 
 3. Open the deployed Worker URL to try the Unsplash demo. Choose a width and
    optimize the photo; run it again to see a cache hit. The demo requires
@@ -48,8 +43,8 @@ Future pushes to your production branch deploy automatically through the
 GitHub integration. Docker is only needed for local development or CLI deploys.
 Each deploy runs typecheck and tests before uploading the Worker.
 
-For multiple deployments in one account, choose distinct Worker, container,
-bucket, and rate-limit namespace names. See [deployment names](docs/deployment.md#deployment-names).
+For multiple deployments in one account, choose distinct Worker, container and
+bucket names and a separate rate-limit namespace ID. See [deployment names](docs/deployment.md#deployment-names).
 
 ## Use it
 
@@ -75,9 +70,10 @@ Output is WebP, with orientation corrected and aspect ratio preserved. Small
 sources are not enlarged. Supported inputs: JPEG, PNG, WebP, and AVIF, up to
 25 MiB and 50 megapixels. Animated images are not preserved as animations.
 
-An exact allowed host matches only itself. `*.example.com` matches subdomains,
-not `example.com`. An empty `ALLOWED_HOSTS` denies all source images. Do not
-include schemes, paths, ports, IP addresses, or a bare `*`.
+`ALLOWED_HOSTS` contains the original image's host. Include your frontend domain
+if it serves the originals.
+See [allowed source hosts](docs/configuration.md#allowed-source-hosts) for exact
+and wildcard matching, redirects and URL requirements.
 
 ## Next.js
 
@@ -141,8 +137,13 @@ container rollout, fresh misses can briefly return a retryable 503 until the new
 renderer is ready. Changing `transforms.webpEffort` also requires a renderer
 version bump; see [native image updates](docs/deployment.md#native-image-updates).
 
-- [Configuration, costs, updates, and troubleshooting](docs/deployment.md)
+- [Configuration and allowed source hosts](docs/configuration.md)
+- [Deployment, costs, updates, and troubleshooting](docs/deployment.md)
 - [Architecture and cache semantics](docs/architecture.md)
 - [Performance decisions](docs/performance.md)
 - [Contributing](CONTRIBUTING.md)
 - [MIT license](LICENSE)
+
+For coding agents, [llms.txt](https://imgt.relferreira.workers.dev/llms.txt) links
+to the published Markdown guides and `/llms-full.txt`. Your own deployment serves
+the same documentation at `YOUR_ENDPOINT/llms.txt`.

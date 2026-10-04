@@ -372,7 +372,8 @@ fieldset:disabled button {
   cursor: wait;
 }
 #status,
-#copy-status {
+#copy-status,
+#config-copy-status {
   min-height: 22px;
   margin: 14px 0 0;
   color: var(--muted);
@@ -380,7 +381,8 @@ fieldset:disabled button {
   font-variant-numeric: tabular-nums;
 }
 #status[data-error="true"],
-#copy-status[data-error="true"] {
+#copy-status[data-error="true"],
+#config-copy-status[data-error="true"] {
   color: #fda4af;
 }
 
@@ -399,6 +401,15 @@ fieldset:disabled button {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
   gap: 36px;
+}
+.configuration-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+  gap: 36px;
+}
+.configuration-grid .step-description p + p {
+  margin-top: 16px;
 }
 .steps > li + li {
   margin-top: 36px;
@@ -478,8 +489,43 @@ pre code {
 pre:focus-visible {
   outline-offset: -2px;
 }
-#copy-status {
+#copy-status,
+#config-copy-status {
   margin-left: 256px;
+}
+.host-rules {
+  width: 100%;
+  margin-top: 24px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+  text-align: left;
+}
+.host-rules caption {
+  margin-bottom: 14px;
+  font-size: 14px;
+  text-align: left;
+}
+.host-rules th,
+.host-rules td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.host-rules th {
+  font-weight: 500;
+}
+.host-rules thead,
+.host-rules td {
+  color: var(--muted);
+}
+.host-rules th:first-child {
+  width: 38%;
+  padding-left: 0;
+}
+.host-rules td:last-child {
+  padding-right: 0;
 }
 .source-note {
   display: grid;
@@ -505,6 +551,11 @@ pre:focus-visible {
 .source-note code {
   color: #d4d4d4;
   overflow-wrap: anywhere;
+}
+.source-note a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
 .guide-links {
   display: flex;
@@ -533,6 +584,11 @@ footer {
 footer a {
   color: var(--muted);
 }
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
 
 @media (max-width: 760px) {
   .header-inner {
@@ -556,7 +612,8 @@ footer a {
   .section-intro br {
     display: none;
   }
-  .steps > li {
+  .steps > li,
+  .configuration-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 18px;
   }
@@ -566,7 +623,8 @@ footer a {
   .step-description p {
     max-width: 520px;
   }
-  #copy-status {
+  #copy-status,
+  #config-copy-status {
     margin-left: 0;
   }
   .source-note {
@@ -587,7 +645,10 @@ footer a {
     font-size: 25px;
   }
   nav {
-    gap: 16px;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    padding: 12px 0;
   }
   nav a {
     font-size: 12px;
@@ -659,6 +720,16 @@ footer a {
   }
   .guide-links {
     gap: 16px;
+  }
+  .host-rules {
+    font-size: 12px;
+  }
+  .host-rules th:first-child {
+    width: 50%;
+  }
+  .host-rules th,
+  .host-rules td {
+    padding: 12px 10px;
   }
   footer {
     flex-wrap: wrap;
