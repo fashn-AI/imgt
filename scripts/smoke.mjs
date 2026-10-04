@@ -52,6 +52,7 @@ try {
     metadata.width > 0 && metadata.width <= 640,
     "Output must fit the requested width",
   );
+  await sharp(first.body).raw().toBuffer();
   const etag = first.response.headers.get("etag");
   assert.equal(
     etag,

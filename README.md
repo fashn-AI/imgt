@@ -133,11 +133,11 @@ Wrangler provisions the configured R2 bucket when needed.
 ## Defaults and operations
 
 The starter configuration uses two container shards, each with 1 vCPU and
-3 GiB RAM, and sleeps after two idle minutes. Shards start on demand. This
-routes work to two containers instead of four and reduces the idle timeout
-from ten minutes to two. The platform cap remains four to accommodate existing
-instance records during upgrades. Each container admits four jobs and processes
-one image at a time. See [performance decisions](docs/performance.md).
+3 GiB RAM. Shards start on demand and stop after two idle minutes once foreground
+requests and background image refreshes finish. Native scheduling permits only
+the configured shard IDs, with an application limit of four shards. Each container
+admits four jobs and processes one image at a time. See
+[performance decisions](docs/performance.md).
 
 The public endpoint limits each client IP to approximately 120 image requests
 per minute. Source `private`/`no-store` responses are rejected; `no-cache` images
@@ -146,7 +146,8 @@ with a four-hour minimum and a bounded 24-hour stale window.
 
 Renderer changes version both R2 and edge cache keys. During an incompatible
 container rollout, fresh misses can briefly return a retryable 503 until the new
-renderer is ready.
+renderer is ready. Changing `transforms.webpEffort` also requires a renderer
+version bump; see [native image updates](docs/deployment.md#native-image-updates).
 
 - [Configuration, costs, updates, and troubleshooting](docs/deployment.md)
 - [Architecture and cache semantics](docs/architecture.md)

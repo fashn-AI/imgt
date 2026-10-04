@@ -17,6 +17,14 @@ test("applies the configured minimum and subtracts upstream Age", () => {
   assert.equal(sourceMaxAge("max-age=86400", 86400), 0);
 });
 
+test("bounds oversized origin lifetimes before creating cache deadlines", () => {
+  assert.equal(sourceMaxAge("max-age=9007199254740991"), 2_147_483_647);
+  assert.equal(
+    sourceMaxAge("s-maxage=9007199254740991, max-age=86400", 100),
+    2_147_483_547,
+  );
+});
+
 test("distinguishes private sources from public sources that require revalidation", () => {
   assert.equal(sourceMaxAge("private, max-age=86400"), null);
   assert.equal(sourceMaxAge("no-store"), null);

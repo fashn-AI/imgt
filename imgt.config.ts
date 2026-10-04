@@ -27,10 +27,12 @@ export const config = {
     // 0 is fastest and 6 is smallest. Effort 2 / quality 77 balanced encoding
     // time and the measured SSIM proxy; see docs/performance.md.
     defaultQuality: 77,
+    // Bump the renderer version when changing effort so running containers and
+    // the new cache keys cannot use different encoder settings.
     webpEffort: 2,
   },
   containers: {
-    // Routing count. Keep this at or below max_instances in wrangler.jsonc.
+    // Routing count. Native scheduling permits up to four configured shards.
     shards: 2,
     sleepAfter: "2m",
   },

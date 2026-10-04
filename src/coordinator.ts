@@ -23,7 +23,7 @@ export type Transform = (
   deadline: number,
 ) => Promise<Response>;
 
-interface ResizeResult {
+interface ResizedImage {
   body: ArrayBuffer;
   etag: string;
   freshUntil: number;
@@ -31,6 +31,9 @@ interface ResizeResult {
   serverTiming?: string;
   persistence?: Promise<void>;
 }
+
+type ResizeResult =
+  ResizedImage | { error: unknown; persistence?: Promise<void> };
 
 interface CoordinatorDependencies {
   allowedHosts: readonly string[];
@@ -75,6 +78,7 @@ export class TransformCoordinator {
         () => this.resize(job),
         (value) => value.persistence,
       );
+      if ("error" in result) throw result.error;
       console.log(
         JSON.stringify({
           event: "transform_request",
@@ -126,6 +130,7 @@ export class TransformCoordinator {
       Math.max(0, deadline - Date.now()),
     );
     let sourceBody: ReadableStream<Uint8Array> | undefined;
+    let invalidation: Promise<void> | undefined;
     try {
       const originStarted = performance.now();
       let originMs = 0;
@@ -140,11 +145,17 @@ export class TransformCoordinator {
           this.deps.sourceFetch,
         ).then(async (source) => {
           sourceBody = source.body;
+          originMs = performance.now() - originStarted;
+          if (source.maxAge === 0) {
+            // A new origin policy invalidates retained data even if startup or
+            // encoding fails. Keep deletion alive if startup rejects first.
+            invalidation = this.deps.store.delete(job.outputKey);
+            this.deps.waitUntil(invalidation);
+          }
           if (controller.signal.aborted) {
             await sourceBody.cancel().catch(() => {});
             controller.signal.throwIfAborted();
           }
-          originMs = performance.now() - originStarted;
           freshUntil =
             source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
           return source;
@@ -186,7 +197,7 @@ export class TransformCoordinator {
       const persistence = (
         remainingSeconds(freshUntil) > 0
           ? this.deps.store.put(job.outputKey, body, etag, freshUntil)
-          : this.deps.store.delete(job.outputKey)
+          : (invalidation ?? this.deps.store.delete(job.outputKey))
       )
         .then(() => {
           console.log(
@@ -220,17 +231,21 @@ export class TransformCoordinator {
         persistence,
       };
     } catch (cause) {
-      if (controller.signal.aborted)
-        throw new ImageError("image transformation timed out", 504);
+      const error = controller.signal.aborted
+        ? new ImageError("image transformation timed out", 504)
+        : cause;
       // Stop serving a previously cached image after the source is removed or
       // stops permitting public access. Temporary failures preserve stale data.
       if (
-        cause instanceof ImageError &&
-        [403, 404, 410].includes(cause.status)
+        error instanceof ImageError &&
+        [403, 404, 410].includes(error.status) &&
+        !invalidation
       ) {
-        await this.deps.store.delete(job.outputKey);
+        invalidation = this.deps.store.delete(job.outputKey);
+        this.deps.waitUntil(invalidation);
       }
-      throw cause;
+      // Return the error promptly while single-flight retains pending cleanup.
+      return { error, persistence: invalidation };
     } finally {
       clearTimeout(timeout);
       controller.abort();

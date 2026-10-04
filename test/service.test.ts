@@ -29,6 +29,30 @@ test("miss persists once, fresh R2 skips transformation, and content validators 
   assert.equal(h.transforms, 1);
 });
 
+test("oversized origin lifetimes persist safe deadlines and remain reusable", async () => {
+  const h = createHarness({
+    sourceFetch: async () =>
+      new Response("source", {
+        headers: {
+          "content-type": "image/jpeg",
+          "cache-control": "max-age=9007199254740991",
+        },
+      }),
+  });
+  assert.equal((await h.gateway(imageRequest())).status, 200);
+  await h.drain();
+  assert.equal(h.bucket.objects.size, 1);
+  for (const value of h.bucket.objects.values()) {
+    assert.ok(Number.isSafeInteger(Number(value.customMetadata.freshUntil)));
+    assert.ok(Number.isSafeInteger(Number(value.customMetadata.staleUntil)));
+  }
+  assert.equal(
+    (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+    "R2",
+  );
+  assert.equal(h.transforms, 1);
+});
+
 test("container startup overlaps origin fetch and fresh derivatives skip both", async () => {
   const originStarted = deferred();
   const startupStarted = deferred();
@@ -320,6 +344,178 @@ test("a transition to no-cache removes a previously retained derivative", async 
   await h.drain();
   assert.equal(h.bucket.objects.size, 0);
 });
+
+for (const status of [400, 429, 503]) {
+  test(`a no-cache transition removes retained data despite transform ${status}`, async () => {
+    let policy = "public, max-age=86400";
+    let failed = false;
+    const h = createHarness({
+      sourceFetch: async () =>
+        new Response("source", {
+          headers: { "cache-control": policy, "content-type": "image/jpeg" },
+        }),
+      transform: async (body) => {
+        await new Response(body).arrayBuffer();
+        return failed
+          ? new Response("transform failed", { status })
+          : new Response("webp");
+      },
+    });
+    assert.equal((await h.gateway(imageRequest())).status, 200);
+    await h.drain();
+    expire(h);
+    policy = "no-cache";
+    failed = true;
+    assert.equal(
+      (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+      "STALE",
+    );
+    await h.drain();
+    assert.equal(h.bucket.objects.size, 0);
+    const response = await h.gateway(imageRequest());
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    await h.drain();
+  });
+}
+
+test("a no-cache transition removes retained data despite startup failure", async () => {
+  let policy = "public, max-age=86400";
+  let failStartup = false;
+  const deleting = deferred();
+  const releaseDeletion = deferred();
+  const h = createHarness({
+    sourceFetch: async () =>
+      new Response("source", {
+        headers: { "cache-control": policy, "content-type": "image/jpeg" },
+      }),
+    prepare: async () => {
+      if (failStartup) {
+        await deleting.promise;
+        throw new Error("startup failed");
+      }
+    },
+  });
+  assert.equal((await h.gateway(imageRequest())).status, 200);
+  await h.drain();
+  const deleteObject = h.bucket.delete.bind(h.bucket);
+  h.bucket.delete = async (key) => {
+    deleting.resolve();
+    await releaseDeletion.promise;
+    await deleteObject(key);
+  };
+  expire(h);
+  policy = "no-cache";
+  failStartup = true;
+  assert.equal(
+    (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+    "STALE",
+  );
+  await deleting.promise;
+  let drained = false;
+  const draining = h.drain().then(() => {
+    drained = true;
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(drained, false);
+    assert.equal(
+      (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+      "STALE",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.downloads, 2);
+  } finally {
+    releaseDeletion.resolve();
+    await draining;
+  }
+  assert.equal(h.bucket.objects.size, 0);
+  assert.equal(h.transforms, 1);
+  assert.equal((await h.gateway(imageRequest())).status, 500);
+  await h.drain();
+});
+
+for (const phase of ["startup", "encoding"]) {
+  test(`slow no-cache invalidation does not extend the ${phase} deadline`, async () => {
+    let policy = "public, max-age=86400";
+    let timingOut = false;
+    const deleting = deferred();
+    const releaseDeletion = deferred();
+    const h = createHarness({
+      timeoutMs: 30,
+      sourceFetch: async () =>
+        new Response("source", {
+          headers: { "cache-control": policy, "content-type": "image/jpeg" },
+        }),
+      prepare:
+        phase === "startup"
+          ? async (signal) => {
+              if (timingOut)
+                await new Promise<void>((_, reject) => {
+                  signal.throwIfAborted();
+                  signal.addEventListener(
+                    "abort",
+                    () => reject(signal.reason),
+                    {
+                      once: true,
+                    },
+                  );
+                });
+            }
+          : undefined,
+      transform: async (body, _job, signal) => {
+        await new Response(body).arrayBuffer();
+        if (timingOut)
+          await new Promise<void>((_, reject) => {
+            signal.throwIfAborted();
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+          });
+        return new Response("webp");
+      },
+    });
+    assert.equal((await h.gateway(imageRequest())).status, 200);
+    await h.drain();
+    const deleteObject = h.bucket.delete.bind(h.bucket);
+    h.bucket.delete = async (key) => {
+      deleting.resolve();
+      await releaseDeletion.promise;
+      await deleteObject(key);
+    };
+    expire(h, -1000);
+    policy = "no-cache";
+    timingOut = true;
+    const pending = h.gateway(imageRequest());
+    await deleting.promise;
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const response = await Promise.race([
+        pending,
+        new Promise<never>((_, reject) => {
+          guard = setTimeout(
+            () => reject(new Error("deadline waited for R2 invalidation")),
+            150,
+          );
+        }),
+      ]);
+      assert.equal(response.status, 504);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(h.bucket.objects.size, 1, "deletion is still pending");
+      assert.equal((await h.gateway(imageRequest())).status, 504);
+      assert.equal(
+        h.downloads,
+        2,
+        "duplicates share failed work during cleanup",
+      );
+    } finally {
+      clearTimeout(guard);
+      releaseDeletion.resolve();
+      await h.drain();
+    }
+    assert.equal(h.bucket.objects.size, 0);
+  });
+}
 
 test("full shard rejects distinct jobs while accepting duplicates", async () => {
   const release = deferred();

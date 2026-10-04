@@ -85,8 +85,9 @@ See [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lif
 
 ## Capacity
 
-Application settings live in `imgt.config.ts`. Deployment allocation lives in
-`wrangler.jsonc`:
+Application settings live in `imgt.config.ts`. Native container allocation is
+defined by `CONTAINER_RESOURCES` in `src/native-container.ts`; `wrangler.jsonc`
+defines the Container application, image and bindings:
 
 - To use four shards, change `config.containers.shards` to `4`; the adapter
   permits at most four configured shard IDs.
@@ -114,12 +115,20 @@ not establish container readiness.
 Cloudflare's [application-wide rolling deployments](https://developers.cloudflare.com/containers/configuration/rollouts/)
 apply to the `default` scheduling policy. With `durable_object`, a running
 container keeps its image until it stops; its next start selects the named
-`sharp` image from the deployed Worker. The two-minute idle alarm permits old
-jobs to finish before stopping. Readiness checks wait for the private container
-health endpoint before uploading an image. Fresh allocation can still exceed
-the public 20-second deadline; deploy success is not a promise that every image
+`sharp` image from the deployed Worker. The two-minute idle alarm waits for
+foreground requests and background image refreshes to finish before
+stopping. Readiness checks wait for the private container health endpoint before
+uploading an image. Fresh allocation can still exceed the public 20-second
+deadline; deploy success is not a promise that every image
 request succeeds. The former migration preflight/fallback gate is no longer
 part of routine deployment.
+
+When changing `transforms.webpEffort`, bump `RENDERER_VERSION` in
+`container/renderer.ts` in the same change. Running native containers keep their
+previous environment until restart, so the new effort needs new renderer shard
+IDs and the renderer handshake to prevent old encoder output from being stored
+under the new cache keys. Review the version whenever output pixels or encoding
+defaults change.
 
 Keep the existing `v1` and `v2-native-container` migration history and namespace
 names. The retired `ImgtImageTransformer` export returns `410` and preserves
@@ -136,14 +145,16 @@ does not expose a name field. Plan a separate replacement before changing its
 checked-in name; preserve the production namespace and account for a container
 restart.
 
-Your copy deploys your commits; upstream releases do not update it automatically.
-Use tagged releases from [imgt](https://github.com/relferreira/imgt/releases) and
-read their migration notes. Preserve your `ALLOWED_HOSTS`, resource names,
-rate-limit namespace, and custom domain configuration when applying changes.
+Your copy deploys your commits; upstream changes do not update it automatically.
+Until the first tagged release, review changes on upstream `main` and record the
+commit you apply. When [releases](https://github.com/relferreira/imgt/releases)
+are available, use their tags and read the migration notes. Preserve your
+`ALLOWED_HOSTS`, resource names, rate-limit namespace, and custom domain
+configuration when applying changes.
 
-If your repository is a GitHub fork, sync the fork or merge the upstream release
-into a review branch. A repository created by the deploy button may be an
-independent copy: compare release changes and apply them in a branch in your
+If your repository is a GitHub fork, sync the fork or merge the desired upstream
+commit into a review branch. A repository created by the deploy button may be an
+independent copy: compare upstream changes and apply them in a branch in your
 copy rather than assuming GitHub's Sync fork button is available. Run
 `npm ci && npm run check`, review configuration changes, and merge to your
 production branch. After Workers Builds succeeds, run

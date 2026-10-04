@@ -36,9 +36,15 @@ updates must include both the root and container lockfiles when applicable.
 
 ## Releases
 
-After local checks and a deployment smoke test pass, create a version tag and release notes
-covering behavior, migration steps, and measured limitations. Test the deploy
-button against a fresh installation before calling a release independently
-deployable. Do not assume a green Worker build proves container readiness.
+Before the first release, changes are identified by their commit on `main`.
+After local checks and a deployment smoke test pass, create a version tag and
+release notes covering behavior, migration steps, and measured limitations.
+Test the deploy button against a fresh installation before calling a release
+independently deployable. Do not assume a green Worker build proves container
+readiness.
+
+Review `RENDERER_VERSION` in `container/renderer.ts` when changing image output
+or encoding defaults. Changing `transforms.webpEffort` requires a version bump
+so a running container with the old effort cannot populate the new cache keys.
 
 Changes to this project are distributed under the [MIT license](LICENSE).

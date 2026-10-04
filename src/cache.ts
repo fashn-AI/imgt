@@ -1,8 +1,13 @@
 import { config } from "../imgt.config";
 
+// Keep absolute millisecond deadlines safe, even with oversized origin headers.
+const MAX_CACHE_SECONDS = 2_147_483_647;
+
 for (const [name, value] of Object.entries(config.cache)) {
-  if (!Number.isSafeInteger(value) || value < 0)
-    throw new Error(`cache.${name} must be a nonnegative integer`);
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_CACHE_SECONDS)
+    throw new Error(
+      `cache.${name} must be an integer between 0 and ${MAX_CACHE_SECONDS}`,
+    );
 }
 
 // A null lifetime means the source forbids public storage. Zero permits
@@ -24,7 +29,7 @@ export function sourceMaxAge(
   for (const name of ["s-maxage", "max-age"]) {
     const value = values.get(name);
     if (value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) {
-      originAge = Number(value);
+      originAge = Math.min(Number(value), MAX_CACHE_SECONDS);
       break;
     }
   }

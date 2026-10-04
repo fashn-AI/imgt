@@ -112,7 +112,8 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
       handleImageJob(request, {
         allowedHosts: this.#allowedHosts,
         store: this.#store,
-        resize: (job) => this.#coordinator.fetch(jobRequest(job)),
+        resize: (job) =>
+          this.#idle.run(() => this.#coordinator.fetch(jobRequest(job))),
         waitUntil: (promise) => this.ctx.waitUntil(promise),
       }),
     );
