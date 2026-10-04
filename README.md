@@ -27,10 +27,11 @@ The deploy button requires a public source repository. See
 1. Click **Deploy to Cloudflare** above. Select your account and create your own
    repository. Cloudflare provisions the R2 bucket and Durable Object, then
    builds the Worker and Docker image through Workers Builds.
-2. Set `vars.ALLOWED_HOSTS` in `wrangler.jsonc` to your source image domains.
-   Keep `images.unsplash.com` for the sample image. See the
-   [configuration guide](docs/configuration.md#allowed-source-hosts) for a
-   copyable example, then commit and push to your production branch.
+2. In Cloudflare **Workers & Pages → your Worker → Settings → Variables and
+   Secrets**, add a **Text** variable named `ALLOWED_HOSTS` with your
+   comma-separated source image domains, then select **Deploy**. Include
+   `images.unsplash.com` for the sample image. New installations deny image
+   requests until this is set; see the [configuration guide](docs/configuration.md#allowed-source-hosts).
 
 3. Open the deployed Worker URL to try the Unsplash demo. Choose a width and
    optimize the photo; run it again to see a cache hit. The demo requires
@@ -42,6 +43,7 @@ The deploy button requires a public source repository. See
 Future pushes to your production branch deploy automatically through the
 GitHub integration. Docker is only needed for local development or CLI deploys.
 Each deploy runs typecheck and tests before uploading the Worker.
+`keep_vars: true` preserves dashboard variables across code deployments.
 
 For multiple deployments in one account, choose distinct Worker, container and
 bucket names and a separate rate-limit namespace ID. See [deployment names](docs/deployment.md#deployment-names).
@@ -108,14 +110,16 @@ Use Node.js 24 and a running Docker-compatible engine:
 
 ```bash
 npm ci
+cp .dev.vars.example .dev.vars
 npm run check
 npm run dev
 ```
 
+Edit `.dev.vars` for local source hosts; it is not uploaded to production.
 Local R2 is emulated; no separate development bucket is required. For a manual
 deploy, run `npx wrangler login`, select the intended account, then
-`npm run deploy`. After deployment, verify a fresh image with the
-[smoke check](docs/deployment.md#updates).
+`npm run deploy`. Configure production [source hosts](docs/configuration.md#allowed-source-hosts)
+in the dashboard, then verify a fresh image with the [smoke check](docs/deployment.md#updates).
 Wrangler provisions the configured R2 bucket when needed.
 
 ## Defaults and operations

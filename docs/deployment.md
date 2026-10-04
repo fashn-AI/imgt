@@ -15,10 +15,13 @@ the Docker image remotely; the browser flow requires no local Docker daemon
 or manually copied API token. See [Cloudflare's deployment flow](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
 and [container builds](https://developers.cloudflare.com/containers/guides/deploy/).
 
-Configure source image domains in `wrangler.jsonc`; keep `images.unsplash.com`
-for the demo. The [configuration guide](configuration.md#allowed-source-hosts)
-explains host matching and includes a copyable example. Keep Git as the source
-of truth: later deployments can overwrite dashboard-only variable edits.
+After the first deployment, set the `ALLOWED_HOSTS` **Text** variable in
+Cloudflare **Workers & Pages → your Worker → Settings → Variables and Secrets**,
+then select **Deploy**. New installations deny image requests until it is set.
+Include `images.unsplash.com` for the demo; see [source host configuration](configuration.md#allowed-source-hosts).
+`keep_vars: true` preserves dashboard variables on code deployments. An explicit
+`vars.ALLOWED_HOSTS` in `wrangler.jsonc` overrides that variable if you opt into
+repository management.
 
 ## Deployment names
 
@@ -146,15 +149,15 @@ image available. Consult [container rollout behavior](https://developers.cloudfl
 
 ## Troubleshooting
 
-| Symptom                                      | Check                                                                                                                                     |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Source host is not allowed                   | Configure the original image's host in `vars.ALLOWED_HOSTS` and redeploy; see [source host rules](configuration.md#allowed-source-hosts). |
-| Health succeeds but images fail after deploy | Check Workers Builds and container readiness logs; an existing native container uses the new image on its next start.                     |
-| Smoke test has no `EDGE` hit                 | The source must permit caching. Check its cache headers and the Worker cache configuration.                                               |
-| Source returns 403/404/410                   | The source must be publicly accessible. imgt does not forward client credentials.                                                         |
-| HTTP 429                                     | The IP rate limiter or shard admission limit was reached; honor `Retry-After`.                                                            |
-| HTTP 504                                     | Source download, startup, queueing, or transform exceeded the deadline. Check timing and source size.                                     |
-| Container name already exists                | Use a distinct name for a new installation; do not delete an existing application's resources.                                            |
+| Symptom                                      | Check                                                                                                                                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source host is not allowed                   | Add the original image's host to the dashboard `ALLOWED_HOSTS` Text variable and select Deploy; see [source host rules](configuration.md#allowed-source-hosts). |
+| Health succeeds but images fail after deploy | Check Workers Builds and container readiness logs; an existing native container uses the new image on its next start.                                           |
+| Smoke test has no `EDGE` hit                 | The source must permit caching. Check its cache headers and the Worker cache configuration.                                                                     |
+| Source returns 403/404/410                   | The source must be publicly accessible. imgt does not forward client credentials.                                                                               |
+| HTTP 429                                     | The IP rate limiter or shard admission limit was reached; honor `Retry-After`.                                                                                  |
+| HTTP 504                                     | Source download, startup, queueing, or transform exceeded the deadline. Check timing and source size.                                                           |
+| Container name already exists                | Use a distinct name for a new installation; do not delete an existing application's resources.                                                                  |
 
 The static homepage demonstrates resizing a fixed Unsplash photo. It requires
 `images.unsplash.com` in the allowlist. Opening the page loads the original from

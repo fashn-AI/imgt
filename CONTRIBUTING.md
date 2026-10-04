@@ -4,6 +4,7 @@ Use Node.js 24. Docker is needed for container builds and local Worker testing.
 
 ```bash
 npm ci
+cp .dev.vars.example .dev.vars
 npm run check
 npm run dev
 ```
@@ -11,6 +12,10 @@ npm run dev
 Run `npm run format` before committing code or static asset changes. Use
 the pinned Prettier version with its default settings. `npm run check` includes
 formatting validation, typechecking, and tests.
+
+Edit `.dev.vars` for local source hosts; the example permits `images.unsplash.com`.
+Production source hosts are managed in Cloudflare's dashboard and preserved by
+`keep_vars: true`; see [configuration](docs/configuration.md#allowed-source-hosts).
 
 Open a pull request describing the problem, resulting behavior, and validation.
 Keep changes focused. Preserve the small public API and avoid adding frameworks

@@ -303,39 +303,39 @@ export default function Page() {
           </div>
           <p class="section-intro">
             Choose where originals come from.<br />
-            Keep the list in your repository.
+            Set the list in Cloudflare.
           </p>
         </div>
         <p class="integration-intro">
-          <code>ALLOWED_HOSTS</code> lists the hosts imgt can fetch original
-          images from. For <code>https://cdn.example.com/photo.jpg</code>, allow
+          The <code>ALLOWED_HOSTS</code> environment variable lists the hosts
+          imgt can fetch original images from. For
+          <code>https://cdn.example.com/photo.jpg</code>, allow
           <code>cdn.example.com</code>. Include your frontend domain only if it
           serves the originals. This setting does not restrict which websites
           can display optimized images.
         </p>
         <div class="configuration-grid">
           <div class="step-description">
-            <h3>Edit wrangler.jsonc.</h3>
+            <h3>Set it in the dashboard.</h3>
             <p>
-              Merge this <code>vars</code> block into your existing file.
-              Replace the example domains with yours. Keep
-              <code>images.unsplash.com</code>
-              for the playground.
+              In Cloudflare, open Workers &amp; Pages, select your Worker, then
+              go to Settings → Variables and Secrets. Add or edit a Text
+              variable named <code>ALLOWED_HOSTS</code>.
             </p>
             <p>
-              Commit and push to your production branch to redeploy. Changes
-              made only in the Cloudflare dashboard can be overwritten by a
-              later deployment.
+              Paste your comma-separated hosts and select Deploy. Keep
+              <code>images.unsplash.com</code> for the playground. This value is
+              preserved when you deploy code updates.
             </p>
           </div>
           <div class="code-panel">
             <div class="code-heading">
-              <span>wrangler.jsonc</span
+              <span>ALLOWED_HOSTS</span
               ><button
                 type="button"
                 class="copy"
                 data-copy="allowed-hosts"
-                aria-label="Copy wrangler.jsonc"
+                aria-label="Copy ALLOWED_HOSTS"
                 disabled
               >
                 Copy
@@ -344,11 +344,7 @@ export default function Page() {
             <pre
               tabindex="0"
               aria-label="Allowed source hosts configuration"
-            ><code id="allowed-hosts">{
-  "vars": {
-    "ALLOWED_HOSTS": "images.unsplash.com,cdn.example.com,*.images.example.com"
-  }
-}</code></pre>
+            ><code id="allowed-hosts">images.unsplash.com,cdn.example.com,*.images.example.com</code></pre>
           </div>
         </div>
         <p

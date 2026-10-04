@@ -30,7 +30,7 @@
     "label": "imgt",
     "bindings": {
       "ALLOWED_HOSTS": {
-        "description": "Comma-separated image source hostnames, e.g. cdn.example.com, *.images.example.com. images.unsplash.com enables the sample image; replace it with your own hosts."
+        "description": "Set this Text environment variable in Worker Settings → Variables and Secrets. Use comma-separated image source hosts, e.g. cdn.example.com, *.images.example.com; include images.unsplash.com for the demo. Dashboard values are preserved across code deployments."
       },
       "DERIVATIVES": {
         "description": "Private cache of generated WebP images. Original images are not stored."

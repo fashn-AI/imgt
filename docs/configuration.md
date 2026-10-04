@@ -1,31 +1,38 @@
 # Configuration
 
-Keep configuration in your repository so every deployment uses the same settings.
+Configure production source hosts in Cloudflare and keep application and resource
+settings in your repository.
 
-| File                    | What belongs here                                                                            |
+| Location                | What belongs here                                                                            |
 | ----------------------- | -------------------------------------------------------------------------------------------- |
-| `wrangler.jsonc`        | Source hosts, Worker/container/bucket names, Cloudflare bindings and rate limiter.           |
+| Cloudflare dashboard    | Production `ALLOWED_HOSTS` text variable.                                                    |
+| `.dev.vars`             | Local source hosts; copy `.dev.vars.example` to get started.                                 |
+| `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`.            |
 | `imgt.config.ts`        | Allowed widths and qualities, encoding defaults, shard count, idle time and cache lifetimes. |
 | `src/` and `container/` | Fixed resource and safety limits; these are implementation constraints.                      |
 
 ## Allowed source hosts
 
-`vars.ALLOWED_HOSTS` lists the hosts of the **original images** imgt fetches.
+The `ALLOWED_HOSTS` Worker environment variable lists the hosts of the
+**original images** imgt fetches.
 For `https://cdn.example.com/photo.jpg`, allow `cdn.example.com`. Your frontend
 domain belongs here only if it serves the originals. The Worker hostname does
 not need to be listed just because it serves optimized images. This setting
 does not restrict which websites can display the results.
 
-Merge this `vars` object into `wrangler.jsonc`, keeping the rest of the file:
+In Cloudflare **Workers & Pages → your Worker → Settings → Variables and
+Secrets**, add or edit a **Text** variable named `ALLOWED_HOSTS`. Set its value
+to comma-separated domains such as
+`images.unsplash.com,cdn.example.com,*.images.example.com`, then select **Deploy**.
+See [Cloudflare's dashboard instructions](https://developers.cloudflare.com/workers/configuration/environment-variables/#add-environment-variables-via-the-dashboard).
 
-```json
-{
-  "vars": {
-    "ALLOWED_HOSTS": "images.unsplash.com,cdn.example.com,*.images.example.com"
-  }
-}
+For local development, run `cp .dev.vars.example .dev.vars` and edit `.dev.vars`:
+
+```bash
+ALLOWED_HOSTS="images.unsplash.com,cdn.example.com,*.images.example.com"
 ```
 
+`.dev.vars` is local-only and is not uploaded to production.
 Keep `images.unsplash.com` to use the demo and default smoke image. Replace the
 other examples with your own source domains, separated by commas.
 
@@ -44,10 +51,13 @@ does not forward a visitor's cookies or authorization headers. Each redirect
 destination must also match the allowlist. `private` and `no-store` sources are
 rejected; see [cache policy](architecture.md#cache-policy).
 
-Commit your changes and push to the configured production branch (`main` by
-default). Workers Builds runs the checks and deploys automatically. Dashboard-only
-variable edits can be overwritten by later deployments. After the build finishes,
-[verify an image](deployment.md#updates) from each intended source host.
+The checked-in `keep_vars: true` preserves dashboard variables across code
+deployments. `ALLOWED_HOSTS` is intentionally absent from Wrangler's `vars`.
+If you choose to manage it in Git, add `vars.ALLOWED_HOSTS` to `wrangler.jsonc`;
+that explicit value overrides the dashboard's value even with `keep_vars` enabled.
+See [Cloudflare's variable persistence behavior](https://developers.cloudflare.com/workers/wrangler/configuration/#source-of-truth).
+After changing source hosts, [verify an image](deployment.md#updates) from each
+intended host. A new installation denies all sources until the variable is set.
 
 ## Deployment settings
 
