@@ -76,7 +76,8 @@ See [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lif
 ## Capacity
 
 See [application defaults and fixed limits](configuration.md#application-defaults)
-for widths, qualities, shards, idle time, cache lifetimes and allocation.
+for default quality, encoding effort, shards, idle time, cache lifetimes and
+fixed resource limits.
 The smaller `basic` and `lite` resource profiles did not pass the large-image
 workload; see [performance decisions](performance.md).
 
@@ -129,7 +130,7 @@ restart.
 
 Your copy deploys your commits; upstream changes do not update it automatically.
 Until the first tagged release, review changes on upstream `main` and record the
-commit you apply. When [releases](https://github.com/relferreira/imgt/releases)
+commit you apply. When [releases](https://github.com/fashn-AI/imgt/releases)
 are available, use their tags and read the migration notes. Preserve your
 `ALLOWED_HOSTS`, resource names, rate-limit namespace, and custom domain
 configuration when applying changes.

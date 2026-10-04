@@ -9,10 +9,24 @@ test(
   "SIGTERM drains an accepted upload and exits without waiting for forced shutdown",
   { timeout: 7000 },
   async (t) => {
-    const child = spawn(process.execPath, ["container/server.ts"], {
-      env: { ...process.env, PORT: "0", TRANSFORM_TIMEOUT_MS: "2000" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // Inspect the actual server's Sharp setting before exercising shutdown.
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        "import sharp from 'sharp'; await import('./container/server.ts'); if (sharp.concurrency() !== 1) throw new Error('expected fixed Sharp concurrency of 1');",
+      ],
+      {
+        env: {
+          ...process.env,
+          PORT: "0",
+          TRANSFORM_TIMEOUT_MS: "2000",
+          VIPS_CONCURRENCY: "4",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     t.after(() => {
       if (child.exitCode === null) child.kill("SIGKILL");
     });

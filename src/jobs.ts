@@ -3,8 +3,8 @@ import { DERIVATIVE_PREFIX } from "./constants";
 import {
   derivativeKey,
   normalizeSourceUrl,
-  ALLOWED_QUALITIES,
-  ALLOWED_WIDTHS,
+  isValidQuality,
+  isValidWidth,
 } from "./options";
 
 export interface ResizeJob {
@@ -31,8 +31,8 @@ export async function parseResizeJob(
   if (
     typeof job.sourceUrl !== "string" ||
     normalizeSourceUrl(job.sourceUrl, allowedHosts) !== job.sourceUrl ||
-    !ALLOWED_WIDTHS.has(job.width) ||
-    !ALLOWED_QUALITIES.has(job.quality) ||
+    !isValidWidth(job.width) ||
+    !isValidQuality(job.quality) ||
     job.outputKey !== (await derivativeKey(DERIVATIVE_PREFIX, job))
   ) {
     throw new Error("invalid job");

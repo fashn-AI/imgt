@@ -23,7 +23,6 @@ COPY --from=dependencies /app/dist/*.js ./
 
 ENV NODE_ENV=production \
     PORT=8080 \
-    VIPS_CONCURRENCY=1 \
     UV_THREADPOOL_SIZE=2 \
     LD_PRELOAD=/usr/local/lib/libjemalloc.so.2
 

@@ -45,5 +45,5 @@ fresh allocation can also exceed the public 20-second deadline.
 Keep experiments and raw results on research branches or outside the normal
 checkout. Record region, allocation, inputs, sample count, failures and cold
 versus warm behavior; summarize useful findings here. The
-[archived research](https://github.com/relferreira/imgt/tree/b5761868f5a8f93a7a938a31c599e6f12d29d0fc/benchmark)
+[archived research](https://github.com/fashn-AI/imgt/tree/b5761868f5a8f93a7a938a31c599e6f12d29d0fc/benchmark)
 contains earlier methodology, reports and engine prototypes.

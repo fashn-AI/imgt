@@ -2,15 +2,21 @@ import { ImageError } from "./http";
 import { config } from "../imgt.config";
 import {
   DERIVATIVE_PREFIX,
+  MAX_OUTPUT_WIDTH,
   MAX_SOURCE_URL_LENGTH,
   OUTPUT_FORMAT,
 } from "./constants";
 
-export const ALLOWED_WIDTHS = new Set<number>(config.transforms.widths);
-export const ALLOWED_QUALITIES = new Set<number>(config.transforms.qualities);
+export function isValidWidth(width: number): boolean {
+  return Number.isInteger(width) && width >= 1 && width <= MAX_OUTPUT_WIDTH;
+}
 
-if (!ALLOWED_QUALITIES.has(config.transforms.defaultQuality)) {
-  throw new Error("defaultQuality must be included in transforms.qualities");
+export function isValidQuality(quality: number): boolean {
+  return Number.isInteger(quality) && quality >= 1 && quality <= 100;
+}
+
+if (!isValidQuality(config.transforms.defaultQuality)) {
+  throw new Error("defaultQuality must be an integer from 1 to 100");
 }
 if (
   !Number.isInteger(config.transforms.webpEffort) ||
@@ -71,9 +77,9 @@ export function parseImageOptions(
   const sourceUrl = normalizeSourceUrl(rawSource, allowedHosts);
 
   const width = Number(url.searchParams.get("w"));
-  if (!Number.isInteger(width) || !ALLOWED_WIDTHS.has(width)) {
+  if (!isValidWidth(width)) {
     throw new ImageError(
-      `w must be one of: ${[...ALLOWED_WIDTHS].join(", ")}`,
+      `w must be an integer from 1 to ${MAX_OUTPUT_WIDTH}`,
       400,
     );
   }
@@ -83,11 +89,8 @@ export function parseImageOptions(
     qualityValue === null
       ? config.transforms.defaultQuality
       : Number(qualityValue);
-  if (!Number.isInteger(quality) || !ALLOWED_QUALITIES.has(quality)) {
-    throw new ImageError(
-      `q must be one of: ${[...ALLOWED_QUALITIES].join(", ")}`,
-      400,
-    );
+  if (!isValidQuality(quality)) {
+    throw new ImageError("q must be an integer from 1 to 100", 400);
   }
 
   return { sourceUrl, width, quality };

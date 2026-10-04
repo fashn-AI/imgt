@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CONTAINER_RESOURCES,
-  inactivityTimeoutMs,
   isConfiguredShard,
   NativeContainerTransport,
 } from "../src/native-container";
@@ -11,6 +10,7 @@ import { deferred } from "./helpers";
 function harness(
   health: (request: Request) => Promise<Response>,
   readinessTimeoutMs = 1000,
+  idleTimeoutMs = 120000,
 ) {
   let running = false;
   let starts = 0;
@@ -57,8 +57,8 @@ function harness(
   };
   const stopped: unknown[] = [];
   const transport = new NativeContainerTransport(api, {
-    idleTimeoutMs: 120000,
-    env: { VIPS_CONCURRENCY: "1" },
+    idleTimeoutMs,
+    env: {},
     waitUntil: () => {},
     stopped: (error) => stopped.push(error),
     readinessTimeoutMs,
@@ -170,11 +170,20 @@ test("an already canceled job does not start a container", async () => {
   assert.equal(h.starts, 0);
 });
 
-test("idle timeout parser accepts the configured duration and rejects invalid bounds", () => {
-  assert.equal(inactivityTimeoutMs("2m"), 120000);
-  assert.equal(inactivityTimeoutMs("6h"), 21600000);
-  for (const value of ["0s", "7h", "forever", "-1m"])
-    assert.throws(() => inactivityTimeoutMs(value));
+test("idle timeout accepts positive integer milliseconds up to six hours", () => {
+  for (const value of [1, 120000, 21600000]) {
+    const h = harness(async () => new Response("healthy"), 1000, value);
+    assert.equal(h.starts, 0);
+  }
+  for (const value of [0, -1, 0.5, NaN, Infinity, 21600001]) {
+    assert.throws(
+      () => harness(async () => new Response("healthy"), 1000, value),
+      {
+        message:
+          "container idleTimeoutMs must be an integer from 1 to 21600000",
+      },
+    );
+  }
 });
 
 test("only configured shard identities can start native compute", () => {

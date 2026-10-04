@@ -15,12 +15,16 @@ const nextConfig: NextConfig = {
   images: {
     loader: "custom",
     loaderFile: "./image-loader.ts",
-    qualities: [60, 75, 77, 85],
+    qualities: [77],
   },
 };
 
 export default nextConfig;
 ```
+
+Set `images.qualities` to the values your Next.js components use; this example
+uses 77. imgt accepts any integer from 1 to 100, and the custom loader forwards
+the requested value.
 
 Create `image-loader.ts` at the project root:
 
@@ -79,11 +83,11 @@ Next.js domain needs to be listed only if it hosts the originals; see
 `remotePatterns` is not needed for this custom loader; imgt enforces its own
 allowlist before fetching sources.
 
-The default widths in `imgt.config.ts` match Next.js `deviceSizes` and
-`imageSizes`. Keep those lists aligned if you customize them. The quality list
-matches imgt's accepted values. `quality={77}` makes the chosen quality explicit,
-and the loader uses 77 when quality is omitted. Set `sizes` to the image's actual
-CSS layout so browsers choose an appropriate width. See the
+imgt accepts any integer width from 1 to 3840 pixels, including Next.js's default
+responsive sizes. `quality={77}` makes the chosen quality explicit, and the loader
+uses 77 when quality is omitted. Each width and quality combination creates its
+own cached derivative. Set `sizes` to the image's actual CSS layout so browsers
+choose an appropriate width. See the
 [Next.js Image reference](https://nextjs.org/docs/app/api-reference/components/image).
 
 ## Local assets
