@@ -3,103 +3,166 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0a0a" />
     <meta
       name="description"
-      content="Open source image optimization on your own Cloudflare account. Try the live demo and connect imgt to Next.js."
+      content="Self-hosted image optimization on Cloudflare. Try the live playground and connect imgt to Next.js."
     />
-    <title>imgt — Image optimization on your Cloudflare</title>
+    <title>imgt — Image optimization at the edge</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
     <script src="/main.js" defer></script>
   </head>
   <body>
-    <main>
-      <header>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <header class="site-header">
+      <div class="header-inner">
         <a class="brand" href="/" aria-label="imgt home">imgt<span>.</span></a>
         <nav aria-label="Main navigation">
-          <a href="#live-demo">Demo</a>
-          <a href="#nextjs">Use with Next.js</a>
-          <a href="https://github.com/relferreira/imgt">GitHub ↗</a>
+          <a href="#live-demo">Playground</a>
+          <a href="#nextjs">Next.js</a>
+          <a class="github-link" href="https://github.com/relferreira/imgt"
+            >GitHub <span aria-hidden="true">↗</span></a
+          >
         </nav>
-      </header>
+      </div>
+    </header>
+    <main id="content" tabindex="-1">
       <section class="hero" aria-labelledby="title">
-        <p class="eyebrow">OPEN SOURCE · SELF-HOSTED</p>
-        <h1 id="title">Image optimization on your own Cloudflare.</h1>
-        <p class="intro">
-          Give imgt a public image URL and a width. Get a WebP, cached at the
-          edge and in your R2 bucket. A small service you can deploy and own.
-        </p>
-        <div class="actions">
-          <a class="primary-link" href="#live-demo">Try the demo ↓</a>
-          <a href="#nextjs">Use with Next.js →</a>
+        <div class="hero-content">
+          <p class="hero-badge">
+            <span aria-hidden="true"></span>Open source. Your Cloudflare
+            account.
+          </p>
+          <h1 id="title">
+            Your images.<br /><span>Optimized at the edge.</span>
+          </h1>
+          <p class="hero-intro">
+            Resize to WebP. Cache globally. Keep control.<br />
+            A small image optimizer you can deploy and own.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="#live-demo"
+              >Try the playground <span aria-hidden="true">↓</span></a
+            >
+            <a class="button secondary" href="#nextjs"
+              >Use with Next.js <span aria-hidden="true">→</span></a
+            >
+          </div>
+          <p class="hero-stack">
+            Sharp <span aria-hidden="true">/</span> Workers
+            <span aria-hidden="true">/</span> R2
+          </p>
         </div>
       </section>
-      <section id="live-demo" aria-labelledby="demo-title">
-        <p class="eyebrow">LIVE DEMO</p>
-        <h2 id="demo-title">Try it on a real photo.</h2>
-        <p class="intro">Pick a width. Turn this Unsplash photo into a WebP.</p>
-        <figure>
-          <img
-            id="preview"
-            src="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&amp;fit=crop&amp;w=1920&amp;h=1200&amp;q=90"
-            alt="Landscape from Unsplash"
-            width="1920"
-            height="1200"
-            fetchpriority="high"
-          />
-          <figcaption>
-            <span id="image-label">Original photo</span>
-            <a href="https://unsplash.com/">Photo from Unsplash ↗</a>
-          </figcaption>
-        </figure>
-        <form id="demo">
-          <fieldset id="controls" disabled>
-            <label for="width">Output width</label>
-            <select id="width" name="width">
-              <option value="640">640 px</option>
-              <option value="1200">1200 px</option>
-              <option value="1920">1920 px</option>
-            </select>
-            <button id="optimize" type="submit">Optimize image</button>
-          </fieldset>
-          <a id="output" target="_blank" rel="noopener" hidden>Open WebP ↗</a>
-        </form>
-        <p id="status" role="status" aria-live="polite">
-          The original is above. Try a smaller version.
-        </p>
-        <noscript><p>Enable JavaScript to try the demo.</p></noscript>
-      </section>
-      <section id="nextjs" aria-labelledby="nextjs-title">
-        <p class="eyebrow">THREE SMALL STEPS</p>
-        <h2 id="nextjs-title">Use with Next.js</h2>
-        <p class="intro">
-          Keep using <code>next/image</code>. Next.js handles responsive image
-          sizes and lazy loading; imgt serves the WebP. Add these files to your
-          Next.js app, then restart its development server.
-        </p>
-        <p class="source-note">
-          Use an absolute, public HTTPS image URL. Its hostname must be in your
-          imgt deployment’s <code>ALLOWED_HOSTS</code>; this photo uses
-          <code>images.unsplash.com</code>.
-        </p>
-        <ol class="steps">
-          <li>
-            <h3>Configure the image loader</h3>
-            <div class="code-heading">
-              <span>next.config.ts</span>
-              <button
-                type="button"
-                class="copy"
-                data-copy="next-config"
-                aria-label="Copy next.config.ts"
-                disabled
+      <section
+        id="live-demo"
+        class="content-section"
+        aria-labelledby="demo-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">01 / PLAYGROUND</p>
+            <h2 id="demo-title">See the difference.</h2>
+          </div>
+          <p class="section-intro">
+            One photo. Pick a width. Get a WebP.<br />
+            Run it again to see the cache at work.
+          </p>
+        </div>
+        <div class="demo-panel">
+          <div class="panel-bar">
+            <span class="request-path"
+              ><span class="method">GET</span><code>/image</code></span
+            ><span class="panel-meta"
+              >JPEG <span aria-hidden="true">→</span> WebP</span
+            >
+          </div>
+          <figure>
+            <img
+              id="preview"
+              src="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?fm=jpg&amp;fit=crop&amp;w=1920&amp;h=1200&amp;q=90"
+              alt="A road winding between red sandstone cliffs"
+              width="1920"
+              height="1200"
+              fetchpriority="high"
+            />
+            <figcaption>
+              <span id="image-label">Original photo</span>
+              <a href="https://unsplash.com/"
+                >Photo from Unsplash <span aria-hidden="true">↗</span></a
               >
-                Copy
-              </button>
+            </figcaption>
+          </figure>
+          <div class="demo-controls">
+            <form id="demo">
+              <fieldset id="controls" disabled>
+                <label for="width">Output width</label>
+                <select id="width" name="width">
+                  <option value="640">640 px</option>
+                  <option value="1200">1200 px</option>
+                  <option value="1920">1920 px</option>
+                </select>
+                <button id="optimize" type="submit">Optimize image</button>
+              </fieldset>
+              <a id="output" target="_blank" rel="noopener" hidden
+                >Open WebP ↗</a
+              >
+            </form>
+            <p id="status" role="status" aria-live="polite">
+              Choose a width to generate a WebP. The original is above.
+            </p>
+            <noscript><p>Enable JavaScript to try the playground.</p></noscript>
+          </div>
+        </div>
+      </section>
+      <section
+        id="nextjs"
+        class="content-section"
+        aria-labelledby="nextjs-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">02 / INTEGRATION</p>
+            <h2 id="nextjs-title">Use with Next.js.</h2>
+          </div>
+          <p class="section-intro">
+            Your usual <code>next/image</code> component.<br />
+            Your own image infrastructure.
+          </p>
+        </div>
+        <p class="integration-intro">
+          Next.js handles responsive sizes and lazy loading. imgt serves the
+          WebP. Add these three files to your app, then restart its development
+          server.
+        </p>
+        <ol class="steps" role="list">
+          <li>
+            <div class="step-description">
+              <span class="step-number" aria-hidden="true">01</span>
+              <h3>Configure the loader.</h3>
+              <p>
+                Connect Next.js to your optimizer. Keep widths and qualities
+                aligned with imgt.
+              </p>
             </div>
-            <pre
-              tabindex="0"
-              aria-label="next.config.ts code"
-            ><code id="next-config">import type { NextConfig } from "next";
+            <div class="code-panel">
+              <div class="code-heading">
+                <span>next.config.ts</span
+                ><button
+                  type="button"
+                  class="copy"
+                  data-copy="next-config"
+                  aria-label="Copy next.config.ts"
+                  disabled
+                >
+                  Copy
+                </button>
+              </div>
+              <pre
+                tabindex="0"
+                aria-label="next.config.ts code"
+              ><code id="next-config">import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   images: {
@@ -110,29 +173,34 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;</code></pre>
+            </div>
           </li>
           <li>
-            <h3>Point it at imgt</h3>
-            <p>
-              This example uses the deployment you’re viewing. Replace the
-              origin with your own imgt URL when you self-host.
-            </p>
-            <div class="code-heading">
-              <span>image-loader.ts</span>
-              <button
-                type="button"
-                class="copy"
-                data-copy="image-loader"
-                aria-label="Copy image-loader.ts"
-                disabled
-              >
-                Copy
-              </button>
+            <div class="step-description">
+              <span class="step-number" aria-hidden="true">02</span>
+              <h3>Point it at imgt.</h3>
+              <p>
+                This example uses the deployment you’re viewing. Replace the
+                origin with your own imgt URL when you self-host.
+              </p>
             </div>
-            <pre
-              tabindex="0"
-              aria-label="image-loader.ts code"
-            ><code id="image-loader">"use client";
+            <div class="code-panel">
+              <div class="code-heading">
+                <span>image-loader.ts</span
+                ><button
+                  type="button"
+                  class="copy"
+                  data-copy="image-loader"
+                  aria-label="Copy image-loader.ts"
+                  disabled
+                >
+                  Copy
+                </button>
+              </div>
+              <pre
+                tabindex="0"
+                aria-label="image-loader.ts code"
+              ><code id="image-loader">"use client";
 
 import type { ImageLoaderProps } from "next/image";
 
@@ -149,25 +217,34 @@ export default function imageLoader({
   }).toString();
   return url.href;
 }</code></pre>
+            </div>
           </li>
           <li>
-            <h3>Use your usual Image component</h3>
-            <div class="code-heading">
-              <span>app/page.tsx</span>
-              <button
-                type="button"
-                class="copy"
-                data-copy="next-page"
-                aria-label="Copy app/page.tsx"
-                disabled
-              >
-                Copy
-              </button>
+            <div class="step-description">
+              <span class="step-number" aria-hidden="true">03</span>
+              <h3>Use your Image.</h3>
+              <p>
+                Set dimensions and sizes to match your layout. Next.js generates
+                the responsive URLs.
+              </p>
             </div>
-            <pre
-              tabindex="0"
-              aria-label="app/page.tsx code"
-            ><code id="next-page">import Image from "next/image";
+            <div class="code-panel">
+              <div class="code-heading">
+                <span>app/page.tsx</span
+                ><button
+                  type="button"
+                  class="copy"
+                  data-copy="next-page"
+                  aria-label="Copy app/page.tsx"
+                  disabled
+                >
+                  Copy
+                </button>
+              </div>
+              <pre
+                tabindex="0"
+                aria-label="app/page.tsx code"
+              ><code id="next-page">import Image from "next/image";
 
 export default function Page() {
   return (
@@ -184,24 +261,34 @@ export default function Page() {
     &lt;/main&gt;
   );
 }</code></pre>
+            </div>
           </li>
         </ol>
         <p id="copy-status" role="status" aria-live="polite"></p>
-        <p class="guide-links">
+        <aside class="source-note" aria-label="Image source requirements">
+          <span class="note-label">SOURCE HOSTS</span>
+          <p>
+            Use a public, absolute HTTPS image URL. Its hostname must be in your
+            deployment’s <code>ALLOWED_HOSTS</code>. This example uses
+            <code>images.unsplash.com</code>.
+          </p>
+        </aside>
+        <div class="guide-links">
           <a href="https://github.com/relferreira/imgt/blob/main/docs/nextjs.md"
-            >Read the imgt guide ↗</a
-          >
-          <a
+            >Read the integration guide <span aria-hidden="true">↗</span></a
+          ><a
             href="https://nextjs.org/docs/app/api-reference/config/next-config-js/images"
-            >Next.js image loader docs ↗</a
+            >Next.js loader docs <span aria-hidden="true">↗</span></a
           >
-        </p>
+        </div>
       </section>
       <footer>
-        Open source. Self-hosted on Cloudflare.
-        <a
+        <span
+          >imgt<span class="accent">.</span>
+          <span class="footer-note">Open source. Self-hosted.</span></span
+        ><a
           href="https://github.com/relferreira/imgt/blob/main/docs/deployment.md"
-          >Deploy your own ↗</a
+          >Deploy on Cloudflare <span aria-hidden="true">↗</span></a
         >
       </footer>
     </main>
