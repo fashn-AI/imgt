@@ -24,16 +24,6 @@ export function isConfiguredShard(
   );
 }
 
-export function inactivityTimeoutMs(value: string): number {
-  const match = /^(\d+)(ms|s|m|h)$/.exec(value);
-  if (!match) throw new Error("invalid container idle timeout");
-  const units = { ms: 1, s: 1000, m: 60000, h: 3600000 };
-  const duration = Number(match[1]) * units[match[2] as keyof typeof units];
-  if (duration <= 0 || duration > 21600000)
-    throw new Error("container idle timeout must be within six hours");
-  return duration;
-}
-
 type ContainerApi = Pick<
   Container,
   | "running"
@@ -86,7 +76,16 @@ export class NativeContainerTransport {
       stopped: (error?: unknown) => void;
       readinessTimeoutMs?: number;
     },
-  ) {}
+  ) {
+    if (
+      !Number.isInteger(options.idleTimeoutMs) ||
+      options.idleTimeoutMs <= 0 ||
+      options.idleTimeoutMs > 21_600_000
+    )
+      throw new Error(
+        "container idleTimeoutMs must be an integer from 1 to 21600000",
+      );
+  }
 
   async restore(): Promise<void> {
     if (this.container.running) {

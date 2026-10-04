@@ -56,9 +56,11 @@ source, parameters, and key before calling the coordinator directly. Every
 origin redirect is checked against the same `ALLOWED_HOSTS` allowlist.
 
 Sources must use HTTPS without credentials or a custom port. Inputs are JPEG,
-PNG, WebP, or AVIF, limited to 25 MiB and 50 megapixels. Allowed widths and
-qualities bound cache cardinality. Output preserves orientation and aspect ratio,
-never enlarges a small source, and uses WebP.
+PNG, WebP, or AVIF, limited to 25 MiB and 50 megapixels. Width accepts any integer
+from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to
+77. Each width and quality combination has a separate cache entry. Output
+preserves orientation and aspect ratio, never enlarges a small source, and uses
+WebP.
 
 The two deterministic shards each admit four distinct jobs. Within a container,
 inputs upload independently, then enter a queue with one active Sharp encoder.
@@ -74,10 +76,11 @@ scheduling. Only configured shard IDs may start compute. Concurrent callers
 share startup and private health polling; canceling one caller does not cancel
 another's startup. Transform uploads are never replayed automatically.
 
-The configured two-minute inactivity timeout is restored on reconnect. A
-durable alarm also stops compute after foreground requests and background
-refreshes finish, deferring while work is active and blocking events during
-shutdown. Exit monitoring clears readiness for the next request.
+The configured `containers.idleTimeoutMs` defaults to 120,000 milliseconds
+(two minutes) and is restored on reconnect. A durable alarm also stops compute
+after foreground requests and background refreshes finish, deferring while work
+is active and blocking events during shutdown. Exit monitoring clears readiness
+for the next request.
 
 The `durable_object_io_tasks_prevent_eviction` compatibility flag enables
 Cloudflare's [background I/O lifecycle behavior](https://developers.cloudflare.com/changelog/post/2026-10-01-pending-io-keep-alive/).

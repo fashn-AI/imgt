@@ -3,11 +3,12 @@
 Self-hosted image optimization on Cloudflare. Serve resized WebP images from
 your own account using Sharp, Workers Cache, and a private R2 bucket.
 
-[Try the live demo](https://imgt.relferreira.workers.dev/) ·
+Maintained by [FASHN AI](https://github.com/fashn-AI).
+
 [Use with Next.js](docs/nextjs.md) · [Configuration](docs/configuration.md) ·
 [Deployment guide](docs/deployment.md)
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/relferreira/imgt)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/fashn-AI/imgt)
 
 <!-- dash-content-start -->
 
@@ -65,8 +66,10 @@ image.search = new URLSearchParams({
 | Parameter | Meaning                                                                            |
 | --------- | ---------------------------------------------------------------------------------- |
 | `url`     | Absolute HTTPS source URL on an allowed host. `URLSearchParams` encodes it.        |
-| `w`       | Width: 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840. |
-| `q`       | Quality: 60, 75, 77, or 85. Defaults to 77.                                        |
+| `w`       | Width: any integer from 1 to 3840 pixels.                                          |
+| `q`       | Quality: any integer from 1 to 100. Defaults to 77.                                |
+
+Each width and quality combination has its own cached derivative.
 
 Output is WebP, with orientation corrected and aspect ratio preserved. Small
 sources are not enlarged. Supported inputs: JPEG, PNG, WebP, and AVIF, up to
@@ -81,8 +84,8 @@ and wildcard matching, redirects and URL requirements.
 
 Use a custom loader so `<Image>` generates responsive URLs for your imgt
 deployment. The [Next.js guide](docs/nextjs.md) includes copyable configuration,
-loader, and page examples, plus notes for local assets. The default imgt widths
-match Next.js image sizes; keep them aligned if you customize either application.
+loader, and page examples, plus notes for local assets. imgt accepts responsive
+widths up to 3840 pixels.
 
 ## Verify a deployment
 
@@ -148,6 +151,7 @@ version bump; see [native image updates](docs/deployment.md#native-image-updates
 - [Contributing](CONTRIBUTING.md)
 - [MIT license](LICENSE)
 
-For coding agents, [llms.txt](https://imgt.relferreira.workers.dev/llms.txt) links
-to the published Markdown guides and `/llms-full.txt`. Your own deployment serves
-the same documentation at `YOUR_ENDPOINT/llms.txt`.
+For coding agents, each deployment serves a guide index at `YOUR_ENDPOINT/llms.txt`
+and the combined documentation at `YOUR_ENDPOINT/llms-full.txt`. The
+[source manifest](https://github.com/fashn-AI/imgt/blob/main/public/llms.txt) is kept
+in this repository; its guide URLs are relative to your deployed endpoint.

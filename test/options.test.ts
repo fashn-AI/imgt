@@ -67,14 +67,73 @@ test("uses the configured default quality", () => {
   );
 });
 
-test("accepts the small widths emitted by the Next.js default srcset", () => {
-  assert.equal(
-    parseImageOptions(
-      imageUrl("https://cdn.example.com/icon.png", "&w=32&q=75"),
-      ALLOWED_HOSTS,
-    ).width,
-    32,
-  );
+test("accepts every integer quality from 1 to 100", () => {
+  for (let quality = 1; quality <= 100; quality++) {
+    assert.equal(
+      parseImageOptions(
+        imageUrl("https://cdn.example.com/photo.jpg", `&w=640&q=${quality}`),
+        ALLOWED_HOSTS,
+      ).quality,
+      quality,
+    );
+  }
+});
+
+test("rejects empty, nonnumeric, fractional, and out-of-range quality", () => {
+  for (const quality of [
+    "",
+    "abc",
+    "NaN",
+    "Infinity",
+    "-1",
+    "0",
+    "101",
+    "75.5",
+  ]) {
+    assert.throws(
+      () =>
+        parseImageOptions(
+          imageUrl("https://cdn.example.com/photo.jpg", `&w=640&q=${quality}`),
+          ALLOWED_HOSTS,
+        ),
+      { message: "q must be an integer from 1 to 100", status: 400 },
+    );
+  }
+});
+
+test("accepts every integer width from 1 to 3840", () => {
+  for (let width = 1; width <= 3840; width++) {
+    assert.equal(
+      parseImageOptions(
+        imageUrl("https://cdn.example.com/photo.jpg", `&w=${width}`),
+        ALLOWED_HOSTS,
+      ).width,
+      width,
+    );
+  }
+});
+
+test("rejects missing, empty, invalid, and out-of-range widths", () => {
+  for (const suffix of [
+    "",
+    "&w=",
+    "&w=abc",
+    "&w=NaN",
+    "&w=Infinity",
+    "&w=-1",
+    "&w=0",
+    "&w=3841",
+    "&w=640.5",
+  ]) {
+    assert.throws(
+      () =>
+        parseImageOptions(
+          imageUrl("https://cdn.example.com/photo.jpg", suffix),
+          ALLOWED_HOSTS,
+        ),
+      { message: "w must be an integer from 1 to 3840", status: 400 },
+    );
+  }
 });
 
 test("rejects unsafe sources and unbounded variants", () => {
@@ -96,18 +155,6 @@ test("rejects unsafe sources and unbounded variants", () => {
       ALLOWED_HOSTS,
     ),
   );
-  assert.throws(() =>
-    parseImageOptions(
-      imageUrl("https://cdn.example.com/x.jpg", "&w=641"),
-      ALLOWED_HOSTS,
-    ),
-  );
-  assert.throws(() =>
-    parseImageOptions(
-      imageUrl("https://cdn.example.com/x.jpg", "&w=640&q=76"),
-      ALLOWED_HOSTS,
-    ),
-  );
 });
 
 test("derivative identity changes with source URL and options", async () => {
@@ -123,6 +170,42 @@ test("derivative identity changes with source URL and options", async () => {
   const second = await derivativeKey("derived/v1", secondOptions);
   assert.match(first, /^derived\/v1\/[a-f0-9]{64}\.webp$/);
   assert.notEqual(first, second);
+});
+
+test("each quality has its own R2 and canonical cache key", async () => {
+  const request = new Request(imageUrl("https://cdn.example.com/photo.jpg"));
+  const first = {
+    sourceUrl: "https://cdn.example.com/photo.jpg",
+    width: 640,
+    quality: 76,
+  };
+  const second = { ...first, quality: 77 };
+  assert.notEqual(
+    await derivativeKey("derivatives/v3", first),
+    await derivativeKey("derivatives/v3", second),
+  );
+  assert.notEqual(
+    canonicalCacheRequest(request, first).url,
+    canonicalCacheRequest(request, second).url,
+  );
+});
+
+test("arbitrary widths have separate R2 and canonical cache keys", async () => {
+  const request = new Request(imageUrl("https://cdn.example.com/photo.jpg"));
+  const first = {
+    sourceUrl: "https://cdn.example.com/photo.jpg",
+    width: 641,
+    quality: 77,
+  };
+  const second = { ...first, width: 642 };
+  assert.notEqual(
+    await derivativeKey("derivatives/v3", first),
+    await derivativeKey("derivatives/v3", second),
+  );
+  assert.notEqual(
+    canonicalCacheRequest(request, first).url,
+    canonicalCacheRequest(request, second).url,
+  );
 });
 
 test("normalizes R2 prefixes", () => {

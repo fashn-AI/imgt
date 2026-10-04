@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0a0a0a" />
+    <meta name="author" content="FASHN AI" />
     <meta
       name="description"
       content="Self-hosted image optimization on Cloudflare. Try the live playground and connect imgt to Next.js."
@@ -24,7 +25,7 @@
           <a href="#live-demo">Playground</a>
           <a href="#nextjs">Next.js</a>
           <a href="#configuration">Setup</a>
-          <a class="github-link" href="https://github.com/relferreira/imgt"
+          <a class="github-link" href="https://github.com/fashn-AI/imgt"
             >GitHub <span aria-hidden="true">↗</span></a
           >
         </nav>
@@ -144,10 +145,7 @@
             <div class="step-description">
               <span class="step-number" aria-hidden="true">01</span>
               <h3>Configure the loader.</h3>
-              <p>
-                Connect Next.js to your optimizer. Keep widths and qualities
-                aligned with imgt.
-              </p>
+              <p>List the quality values your Next.js components use.</p>
             </div>
             <div class="code-panel">
               <div class="code-heading">
@@ -171,7 +169,7 @@ const nextConfig: NextConfig = {
   images: {
     loader: "custom",
     loaderFile: "./image-loader.ts",
-    qualities: [60, 75, 77, 85],
+    qualities: [77],
   },
 };
 
@@ -227,8 +225,9 @@ export default function imageLoader({
               <span class="step-number" aria-hidden="true">03</span>
               <h3>Use your Image.</h3>
               <p>
-                Set dimensions and sizes to match your layout. Next.js generates
-                the responsive URLs.
+                Set dimensions and sizes to match your layout. imgt accepts
+                integer widths from 1 to 3840 and qualities from 1 to 100; this
+                example uses 77.
               </p>
             </div>
             <div class="code-panel">
@@ -283,7 +282,7 @@ export default function Page() {
           </p>
         </aside>
         <div class="guide-links">
-          <a href="https://github.com/relferreira/imgt/blob/main/docs/nextjs.md"
+          <a href="https://github.com/fashn-AI/imgt/blob/main/docs/nextjs.md"
             >Read the integration guide <span aria-hidden="true">↗</span></a
           ><a
             href="https://nextjs.org/docs/app/api-reference/config/next-config-js/images"
@@ -397,12 +396,12 @@ export default function Page() {
       <footer>
         <span
           >imgt<span class="accent">.</span>
-          <span class="footer-note">Open source. Self-hosted.</span></span
+          <span class="footer-note">Open source by FASHN AI.</span></span
         >
         <div class="footer-links">
           <a href="/llms.txt">llms.txt</a
           ><a
-            href="https://github.com/relferreira/imgt/blob/main/docs/deployment.md"
+            href="https://github.com/fashn-AI/imgt/blob/main/docs/deployment.md"
             >Deploy on Cloudflare <span aria-hidden="true">↗</span></a
           >
         </div>

@@ -25,6 +25,11 @@
     "wrangler": "4.145.0"
   },
   "description": "Self-hosted image optimization on Cloudflare: Sharp, Workers Cache, and R2.",
+  "author": "FASHN AI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fashn-AI/imgt.git"
+  },
   "license": "MIT",
   "cloudflare": {
     "label": "imgt",

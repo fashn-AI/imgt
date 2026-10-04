@@ -3,13 +3,13 @@
 Configure production source hosts in Cloudflare and keep application and resource
 settings in your repository.
 
-| Location                | What belongs here                                                                            |
-| ----------------------- | -------------------------------------------------------------------------------------------- |
-| Cloudflare dashboard    | Production `ALLOWED_HOSTS` text variable.                                                    |
-| `.env`                  | Local source hosts; copy `.env.example` to get started.                                      |
-| `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`.            |
-| `imgt.config.ts`        | Allowed widths and qualities, encoding defaults, shard count, idle time and cache lifetimes. |
-| `src/` and `container/` | Fixed resource and safety limits; these are implementation constraints.                      |
+| Location                | What belongs here                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------- |
+| Cloudflare dashboard    | Production `ALLOWED_HOSTS` text variable.                                         |
+| `.env`                  | Local source hosts; copy `.env.example` to get started.                           |
+| `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`. |
+| `imgt.config.ts`        | Encoding defaults, shard count, idle time and cache lifetimes.                   |
+| `src/` and `container/` | Fixed resource and safety limits; these are implementation constraints.           |
 
 ## Allowed source hosts
 
@@ -74,21 +74,20 @@ Edit `imgt.config.ts` to change these settings:
 
 | Setting                     | Default                                                                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `transforms.widths`         | 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840 pixels.                            |
-| `transforms.qualities`      | 60, 75, 77, 85.                                                                                               |
-| `transforms.defaultQuality` | 77; must be one of the allowed qualities.                                                                     |
+| `transforms.defaultQuality` | 77; must be an integer from 1 to 100.                                                                         |
 | `transforms.webpEffort`     | 2; accepted range 0–6.                                                                                        |
 | `containers.shards`         | 2; supported range 1–4.                                                                                       |
-| `containers.sleepAfter`     | `"2m"`; compute stops after foreground requests and background refreshes finish and the idle interval passes. |
+| `containers.idleTimeoutMs`  | 120,000 milliseconds (2 minutes); compute stops after foreground requests and background refreshes finish and the idle interval passes. |
 | `cache.minFreshSeconds`     | 14,400 seconds (4 hours).                                                                                     |
 | `cache.maxStaleSeconds`     | 86,400 seconds (24 hours).                                                                                    |
 
 Freshness follows source `s-maxage` or `max-age`, with the configured minimum;
 upstream `Age` is subtracted. The stale interval starts after freshness expires.
 R2 object expiration uses separate [storage cleanup](deployment.md#storage-cleanup).
-Idle time accepts a positive integer with an `ms`, `s`, `m` or `h` suffix, up to
-six hours. Keep widths and qualities aligned with your [Next.js configuration](nextjs.md)
-if you customize them.
+Idle time must be a positive integer number of milliseconds, up to 21,600,000
+(6 hours). Requests accept integer widths from 1 to 3840 pixels and integer
+qualities from 1 to 100. Each width and quality combination creates a separate
+cached derivative.
 
 Review `RENDERER_VERSION` in `container/renderer.ts` whenever output pixels or
 encoding defaults change. Changing WebP effort requires a version bump so
@@ -100,9 +99,12 @@ shards alters routing during rollout; see [capacity and rollout](deployment.md#c
 These limits keep the service bounded; they are not additional deployment knobs:
 
 - JPEG, PNG, WebP and AVIF inputs; WebP output; 25 MiB and 50 megapixels per input.
+- Output width up to 3840 pixels; smaller sources are not enlarged.
 - Three source redirects and a 1,024-character source URL.
 - A 20-second deadline for fetch, startup, upload, queueing and encoding.
 - Four distinct admitted jobs per shard, with one active encoder per container.
+
+Sharp/libvips concurrency is fixed at one.
 
 `CONTAINER_RESOURCES` in `src/native-container.ts` allocates 1 vCPU, 3 GiB RAM
 and 2,000 MB disk per shard. The smaller `basic` and `lite` profiles did not pass

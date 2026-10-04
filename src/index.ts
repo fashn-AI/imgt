@@ -14,7 +14,6 @@ import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
 import { NativeIdleAlarm } from "./native-idle";
 import {
-  inactivityTimeoutMs,
   isConfiguredShard,
   NativeContainerTransport,
 } from "./native-container";
@@ -38,19 +37,18 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.#idle = new NativeIdleAlarm({
-      timeoutMs: inactivityTimeoutMs(config.containers.sleepAfter),
+      timeoutMs: config.containers.idleTimeoutMs,
       running: () => ctx.container!.running,
       destroy: () => ctx.container!.destroy(),
       setAlarm: (timestamp) => ctx.storage.setAlarm(timestamp),
       serialize: (work) => ctx.blockConcurrencyWhile(work),
     });
     this.#transport = new NativeContainerTransport(ctx.container!, {
-      idleTimeoutMs: inactivityTimeoutMs(config.containers.sleepAfter),
+      idleTimeoutMs: config.containers.idleTimeoutMs,
       env: {
         MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
         MAX_IN_FLIGHT: String(MAX_DISTINCT_JOBS_PER_SHARD),
         TRANSFORM_TIMEOUT_MS: String(TRANSFORM_TIMEOUT_MS),
-        VIPS_CONCURRENCY: "1",
         WEBP_EFFORT: String(config.transforms.webpEffort),
       },
       waitUntil: (promise) => ctx.waitUntil(promise),
