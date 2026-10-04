@@ -94,8 +94,7 @@ export function createHarness(
       return new Response(`webp-${transforms}`);
     },
   });
-  const resize = (job: Parameters<Transform>[1]) =>
-    coordinator.fetch(jobRequest(job));
+  const resize = (job: Parameters<Transform>[1]) => coordinator.resize(job);
   const imageJob = (request: Request) =>
     handleImageJob(request, { allowedHosts, store, resize, waitUntil });
   const imageCache = {
@@ -114,7 +113,6 @@ export function createHarness(
   return {
     bucket,
     store,
-    coordinator,
     imageCache,
     imageJob,
     gateway,

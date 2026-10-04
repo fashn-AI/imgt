@@ -3,9 +3,8 @@
 **/.wrangler/
 **/.next/
 **/dist/
-**/target/
 **/coverage/
 
-# Preserve local benchmark results and dependency lockfiles.
+# Preserve existing local benchmark results and dependency lockfiles.
 .benchmark-results/
 **/package-lock.json

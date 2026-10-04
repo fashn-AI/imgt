@@ -153,8 +153,6 @@ export class NativeContainerTransport {
     );
     let lastError: unknown;
     let polls = 0;
-    let inactivityMs = 0;
-    let pollDelayMs = 0;
     while (!signal.aborted) {
       if (!this.container.running) {
         try {
@@ -176,12 +174,10 @@ export class NativeContainerTransport {
             env: this.options.env,
             labels: { boot_id: this.#bootId },
           });
-          const inactivityStarted = performance.now();
           await waitFor(
             this.container.setInactivityTimeout(this.options.idleTimeoutMs),
             signal,
           );
-          inactivityMs += performance.now() - inactivityStarted;
         } catch (error) {
           console.error("native container start failed", error);
           throw new ImageError("image container is unavailable", 503, "1");
@@ -203,8 +199,6 @@ export class NativeContainerTransport {
             JSON.stringify({
               event: "native_container_ready",
               durationMs: Date.now() - started,
-              inactivityMs: Math.round(inactivityMs),
-              pollDelayMs: Math.round(pollDelayMs),
               polls,
               bootId: this.#bootId,
             }),
@@ -217,17 +211,13 @@ export class NativeContainerTransport {
         if (polls === 1) console.log("native container awaiting health", error);
       }
       try {
-        const pauseStarted = performance.now();
         await pause(100, signal);
-        pollDelayMs += performance.now() - pauseStarted;
       } catch {
         break;
       }
     }
     console.error("container readiness failed", {
       durationMs: Date.now() - started,
-      inactivityMs: Math.round(inactivityMs),
-      pollDelayMs: Math.round(pollDelayMs),
       polls,
       running: this.container.running,
       error: String(lastError),

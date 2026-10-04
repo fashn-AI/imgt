@@ -112,8 +112,7 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
       handleImageJob(request, {
         allowedHosts: this.#allowedHosts,
         store: this.#store,
-        resize: (job) =>
-          this.#idle.run(() => this.#coordinator.fetch(jobRequest(job))),
+        resize: (job) => this.#idle.run(() => this.#coordinator.resize(job)),
         waitUntil: (promise) => this.ctx.waitUntil(promise),
       }),
     );
@@ -132,14 +131,10 @@ export class ImgtImageTransformer extends DurableObject<Env> {
   }
 }
 
-async function requestResize(job: ResizeJob, env: Env): Promise<Response> {
+function requestResize(job: ResizeJob, env: Env): Promise<Response> {
   const name = containerNameForKey(job.outputKey, config.containers.shards);
   const container = env.IMGT_NATIVE_TRANSFORMER.getByName(name);
-  const started = Date.now();
-  const response = await container.fetch(jobRequest(job));
-  const measured = new Response(response.body, response);
-  measured.headers.append("server-timing", `route;dur=${Date.now() - started}`);
-  return measured;
+  return container.fetch(jobRequest(job));
 }
 
 export class ImgtImageCache extends WorkerEntrypoint<Env> {

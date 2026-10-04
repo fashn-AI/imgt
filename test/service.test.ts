@@ -16,16 +16,39 @@ test("miss persists once, fresh R2 skips transformation, and content validators 
   const first = await h.gateway(imageRequest());
   assert.equal(first.status, 200);
   assert.equal(first.headers.get("x-imgt-cache"), "MISS");
-  assert.match(
-    first.headers.get("server-timing")!,
-    /r2;dur=\d+, resize;dur=\d+/,
-  );
-  assert.match(first.headers.get("server-timing")!, /cache_fetch;dur=\d+/);
   await h.drain();
   const stored = await h.gateway(imageRequest());
   assert.equal(stored.headers.get("x-imgt-cache"), "R2");
   assert.equal(stored.headers.get("etag"), first.headers.get("etag"));
   assert.equal(await stored.text(), await first.text());
+  assert.equal(h.transforms, 1);
+});
+
+test("a miss delayed past another request's persistence rechecks R2 instead of transforming again", async () => {
+  const h = createHarness();
+  const readStarted = deferred();
+  const releaseRead = deferred();
+  const getObject = h.bucket.get.bind(h.bucket);
+  let delayFirstRead = true;
+  h.bucket.get = async (key) => {
+    const object = await getObject(key);
+    if (delayFirstRead) {
+      delayFirstRead = false;
+      readStarted.resolve();
+      await releaseRead.promise;
+    }
+    return object;
+  };
+  const delayed = h.gateway(imageRequest());
+  await readStarted.promise;
+  const first = await h.gateway(imageRequest());
+  await h.drain();
+  releaseRead.resolve();
+  const resumed = await delayed;
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.headers.get("x-imgt-cache"), "R2");
+  assert.equal(await resumed.text(), await first.text());
+  assert.equal(h.downloads, 1);
   assert.equal(h.transforms, 1);
 });
 
@@ -569,7 +592,7 @@ test("transformation timeout aborts work and permits a later retry", async () =>
   await h.drain();
 });
 
-test("coordinator rejects mismatched output keys before storage or origin access", async () => {
+test("the routed image service rejects mismatched output keys before storage or origin access", async () => {
   const h = createHarness();
   const options = parseImageOptions(new URL(imageRequest().url), [
     "images.unsplash.com",
@@ -578,8 +601,8 @@ test("coordinator rejects mismatched output keys before storage or origin access
     ...options,
     width: 1920,
   });
-  const response = await h.coordinator.fetch(
-    new Request("http://coordinator/job", {
+  const response = await h.imageJob(
+    new Request("http://container/job", {
       method: "POST",
       body: JSON.stringify({ ...options, outputKey }),
     }),
@@ -587,22 +610,6 @@ test("coordinator rejects mismatched output keys before storage or origin access
   assert.equal(response.status, 400);
   assert.equal(h.downloads, 0);
   assert.equal(h.bucket.reads, 0);
-});
-
-test("the routed image service validates jobs before its R2 lookup", async () => {
-  const h = createHarness();
-  const options = parseImageOptions(new URL(imageRequest().url), [
-    "images.unsplash.com",
-  ]);
-  const response = await h.imageJob(
-    new Request("http://container/job", {
-      method: "POST",
-      body: JSON.stringify({ ...options, outputKey: "wrong" }),
-    }),
-  );
-  assert.equal(response.status, 400);
-  assert.equal(h.bucket.reads, 0);
-  assert.equal(h.downloads, 0);
 });
 
 test("rollout rejects old renderer bytes without caching and recovers on the new renderer", async () => {

@@ -19,17 +19,17 @@ changing cache policy, validation, coordination, cancellation, or concurrency.
 
 `src/index.ts` adapts Cloudflare bindings; service modules should remain testable
 without a running Worker. The gateway checks source access before entering the
-shared cache. The coordinator validates jobs and every source redirect. Keep
-the deployment's allowlist consistent across those boundaries.
+shared cache. The Durable Object validates incoming jobs before passing typed
+jobs to the coordinator; every source redirect is checked against the same
+allowlist. Keep the deployment's allowlist consistent across those boundaries.
 
 Run `npm run check` and `npx wrangler deploy --dry-run` before merging.
 Cloudflare's Git integration runs the checks and deploys the project.
 
-For performance changes, run `npm run benchmark -- YOUR_ENDPOINT`; see
-[performance notes](docs/performance.md). Report region, resource limits,
-inputs, sample count, failures, and startup versus warm behavior. Keep raw
-results and source images out of Git. Put exploratory engines and deployment
-labs on research branches; bring back only qualified changes and concise findings.
+Keep performance experiments, raw results and source images on research
+branches or outside the normal checkout. Report region, resource limits,
+inputs, sample count, failures and cold versus warm behavior. Bring back only
+qualified changes and concise findings in [performance notes](docs/performance.md).
 
 Never commit `.env`, `.dev.vars`, credentials, or account tokens. Dependency
 updates must include both the root and container lockfiles when applicable.

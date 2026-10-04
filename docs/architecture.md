@@ -1,185 +1,114 @@
 # Architecture
 
-Lean, self-hosted image optimization on Cloudflare. There is no Cloudflare
-Images path or fallback.
-
-The demo in `public/` is served by Cloudflare Workers Static Assets, alongside
-the Worker. Matching static files bypass the Worker; `/image` and `/health`
-continue through the gateway. The demo's HTML, CSS, and browser JavaScript are
-separate files with no frontend framework or build step. `public/_headers`
-sets the static responses' content security policy.
+imgt runs Sharp in a Cloudflare Container and caches generated WebP images in
+Workers Cache and a private R2 bucket. Originals are streamed to the container
+and never stored. The static demo uses plain HTML, CSS, and JavaScript.
 
 ```text
-GET /image?url=https://cdn.example.com/photo.jpg&w=1920&q=77
-             │
-             ├─ normalized, tiered Workers Cache
-             └─ deterministic Durable Object shard
-                    ├─ persistent R2 derivative
-                    └─ fetch remote original → container transform
+GET /image?url=…&w=640&q=77
+  → gateway: validate source and parameters, rate limit
+  → image entrypoint: canonical, tiered Workers Cache
+  → Durable Object shard: R2 lookup
+      → fresh: return derivative
+      → stale: return derivative, refresh in background
+      → missing: fetch source → Sharp → return and persist derivative
 ```
 
-Only generated derivatives and their cache lifetime are stored in the private
-R2 bucket:
+The gateway is uncached so equivalent public URLs share one canonical image
+cache key. It applies client ETag conditions after the shared fetch; a `304`
+never replaces the full image in Workers Cache. Static assets bypass the Worker.
+`/health` reports availability and configured hosts without starting compute.
 
-```text
-derivatives/v3/ab…ef.webp
-```
+## Cache policy
 
-Sources must be absolute HTTPS URLs on a host configured by the `ALLOWED_HOSTS` Worker variable. Redirect destinations are checked against
-the same allowlist. Originals are streamed to the transformer and are never
-written to R2.
+Only derivatives are stored, under `derivatives/v3/<hash>.webp`. The key includes
+source URL, width, quality, output format, and encoder effort. ETags hash the
+output bytes. Absolute freshness and stale deadlines are stored in R2 metadata.
 
-The output is always WebP, widths are restricted to common Next.js sizes, and
-quality is restricted to `60`, `75`, `77`, or `85`. These limits bound cache
-cardinality and keep the public API small.
+| State | Response | Container work |
+| --- | --- | --- |
+| Workers Cache hit | `EDGE` | None |
+| Fresh R2 derivative | `R2` | None |
+| R2 within its stale window | `STALE`, cached for up to 60 seconds | Background refresh |
+| Missing or beyond the stale window | `MISS` | Caller waits for a transform |
 
-## Caching
+Source `s-maxage` or `max-age` controls freshness, with a configurable four-hour
+minimum and upstream `Age` subtracted. Durations are bounded to 2,147,483,647
+seconds so millisecond deadlines remain safe. The stale window defaults to
+24 hours; stale response lifetimes cannot extend beyond its deadline.
 
-The public entrypoint validates and normalizes the transform parameters, then
-calls a cache-enabled image entrypoint. Cloudflare's Workers Cache sits in
-front of that entrypoint, so a CDN hit skips the R2 and transformation path.
-The gateway remains uncached because it canonicalizes equivalent public URLs
-to one cache key.
+`private` and `no-store` sources return `403`. `no-cache` images are transformed
+with `Cache-Control: no-store` and are not retained. Those policy transitions,
+and source `403`, `404`, or `410`, delete existing derivatives even if encoding
+fails. Temporary failures preserve old data only within its stale window.
+Already delivered or edge-cached stale images can remain visible for the rest
+of their short lifetime. R2 lifecycle cleanup is independent of these deadlines.
 
-The source image's `s-maxage` or `max-age` controls the derivative lifetime,
-with a configurable four-hour minimum; an upstream `Age` is subtracted. Cache
-durations are bounded to 2,147,483,647 seconds to keep stored deadlines safe. Sources
-marked `private` or `no-store` are rejected with `403`: this is a public image
-service. Sources marked `no-cache` are transformed for the request with
-`Cache-Control: no-store` and are not retained in R2. Fresh derivatives are
-served from Workers Cache or R2 without starting a container.
+Requests for one derivative share a single-flight job. Its entry remains until
+R2 persistence or invalidation settles, preventing duplicate work during cleanup.
+The coordinator rechecks R2 within that job to cover races with earlier writes.
 
-When an R2 derivative expires, imgt can serve it for at most another 24 hours
-(`cache.maxStaleSeconds`). Each stale response has a cache lifetime of up to
-60 seconds, capped by the remaining stale deadline, and starts a background
-refresh. Requests for the same derivative share one refresh. Temporary failures
-preserve the old derivative only until its stale deadline. Beyond that deadline,
-requests wait for a new transform and return its error if it fails.
+## Validation and resource limits
 
-Origin `403`, `404`, or `410` responses, and a transition to `private` or
-`no-store`, delete the R2 derivative. A transition to `no-cache` also removes
-retained data. A stale response already sent or cached at an edge may remain
-visible for the rest of its short lifetime; deletion is not an instant global
-purge. R2 lifecycle cleanup does not determine the application's stale limit.
+The gateway validates access before consulting the shared cache. The image
+entrypoint creates the derivative job, and the Durable Object validates its
+source, parameters, and key before calling the coordinator directly. Every
+origin redirect is checked against the same `ALLOWED_HOSTS` allowlist.
 
-ETags are SHA-256 hashes of the generated bytes and are persisted alongside
-absolute freshness and stale deadlines. The public gateway returns `304` for
-matching `If-None-Match` conditions after fetching the shared representation,
-so client-specific responses never populate the inner image cache.
+Sources must use HTTPS without credentials or a custom port. Inputs are JPEG,
+PNG, WebP, or AVIF, limited to 25 MiB and 50 megapixels. Allowed widths and
+qualities bound cache cardinality. Output preserves orientation and aspect ratio,
+never enlarges a small source, and uses WebP.
 
-R2 remains private and acts as the persistent global backing store. A CDN miss
-routes to the derivative's Durable Object, which reads R2 and repopulates Workers
-Cache. Keeping this lookup beside the coordinator avoids a separate edge-to-R2
-round trip before routing a transform. Fresh R2 responses invoke the Durable
-Object but do not start its Linux container. Expired derivatives follow the
-refresh policy above. Workers Cache uses tiered caching and can return hits
-without invoking the image entrypoint. Cache entries are shared across Worker
-versions because the canonical key includes the derivative version and encoder
-effort.
+The two deterministic shards each admit four distinct jobs. Within a container,
+inputs upload independently, then enter a queue with one active Sharp encoder.
+A stalled upload does not block ready images. Excess jobs return retryable `429`.
+The 20-second deadline covers origin fetch, startup, upload, queueing, and
+encoding. Canceled queued jobs are removed; active native processing retains
+its slot until it settles so canceled work cannot overlap new work.
 
-Use the response headers to see which layer served a request:
-`Cf-Cache-Status: HIT` is a Workers Cache/CDN hit, while `x-imgt-cache`
-reports `EDGE`, `R2`, `MISS`, or `STALE` for the imgt path.
+## Container lifecycle and updates
 
-## Resize coordination
+`ImgtNativeImageTransformer` uses `ctx.container` with `durable_object`
+scheduling. Only configured shard IDs may start compute. Concurrent callers
+share startup and private health polling; canceling one caller does not cancel
+another's startup. Transform uploads are never replayed automatically.
 
-The derivative key is hashed to one of two stable Container Durable Objects.
-Each object keeps an in-memory single-flight map, so concurrent misses for the
-same derivative share one resize. The transformed response starts immediately;
-its single-flight entry remains registered until the one background R2 write
-finishes. Unrelated derivatives remain parallel across shards.
-
-Within each Linux container, up to four admitted inputs upload independently,
-with a 25 MiB limit each. Complete inputs enter a queue with one active Sharp
-resize. A stalled upload therefore does not block ready images. The admission
-limit includes uploading, queued, and processing jobs; excess misses receive
-`429` with `Retry-After: 1`. Cache hits never enter a container.
-
-The coordinator passes a 20-second deadline covering source fetch, container
-startup, upload, queueing, and encoding. The container caps incoming deadlines
-at its own limit and returns `504` when the deadline expires. Expired or
-disconnected queued jobs are removed before encoding. Sharp also receives a
-native processing timeout rounded up to whole seconds. Active native work
-retains its slot until it settles, even if the HTTP caller disconnects or times
-out, preventing canceled jobs from overlapping new work.
-
-The fixed shard count is configured in `imgt.config.ts`. Native scheduling
-admits only the configured shard IDs and caps the count at four in application
-code. Keep the shard count stable between deployments to preserve deterministic
-routing. The queue limit and other safety limits are internal defaults rather
-than deployment configuration. See
-[performance notes](performance.md) for the allocation and engine decisions.
-
-`IMGT_NATIVE_TRANSFORMER` routes requests to the active Container namespace.
-The transformer extends `DurableObject` and uses `ctx.container` with
-`scheduling_policy: "durable_object"`. `CONTAINER_RESOURCES` in
-`src/native-container.ts` allocates 1 vCPU, 3 GiB RAM and 2,000 MB disk. Startup is
-shared between callers and polls the private health endpoint before uploading
-a job; canceling one caller does not cancel another caller's startup. Transform
-uploads are never automatically replayed.
-The native inactivity timeout is two minutes and is restored when an object
-reconnects to a running container. A durable alarm also stops the container two
-minutes after foreground requests and background image refreshes finish,
-because native exit monitoring can delay Durable Object inactivity. The alarm
-defers shutdown during active work and blocks new events while stopping compute.
-Exit monitoring clears readiness for the next request. Native starts receive a
-random boot label, reported in the MISS response's `Server-Timing` for restart
-verification.
+The configured two-minute inactivity timeout is restored on reconnect. A
+durable alarm also stops compute after foreground requests and background
+refreshes finish, deferring while work is active and blocking events during
+shutdown. Exit monitoring clears readiness for the next request.
 
 The `durable_object_io_tasks_prevent_eviction` compatibility flag enables
-Cloudflare's [October 1 background I/O lifecycle update](https://developers.cloudflare.com/changelog/post/2026-10-01-pending-io-keep-alive/)
-while retaining the configured compatibility date. Pending `waitUntil()` work
-and container monitoring prevent eviction for up to 15 minutes per operation.
-Duration charges continue during that time, so the durable alarm stops idle
-compute independently of object eviction.
+Cloudflare's [background I/O lifecycle behavior](https://developers.cloudflare.com/changelog/post/2026-10-01-pending-io-keep-alive/).
+Pending I/O, `waitUntil()` work, and monitoring can prevent eviction for up to
+15 minutes per operation while duration charges continue. The alarm enforces
+our shorter container idle timeout independently of object eviction.
 
-The historical `ImgtImageTransformer` class remains as a retired export returning
-`410`, preserving its namespace data without a production binding or Container
-configuration. Public gateway responses include `x-imgt-worker-version` and
-`x-imgt-container-backend: native`, attached outside the shared image cache.
-A cache hit does not run a container.
+Renderer versions isolate R2 keys, edge keys, and shard IDs. The Worker checks
+the container's renderer header before persisting bytes during rollout. Review
+`RENDERER_VERSION` whenever pixels or encoding defaults change, including WebP
+effort: running containers retain their previous environment until restart.
+The retired `ImgtImageTransformer` export and migration history preserve the
+existing installation's old namespace.
 
-## Code organization
+## Code and checks
 
-`src/index.ts` contains the Cloudflare adapters. Application responsibilities
-are split into small modules:
+- `src/index.ts`: Cloudflare bindings, entrypoints, and container wiring.
+- `src/gateway.ts`, `service.ts`: public routing, shared cache, R2 state decisions.
+- `src/coordinator.ts`, `jobs.ts`: typed resize jobs, admission, deduplication.
+- `src/source.ts`, `options.ts`, `settings.ts`: source and configuration validation.
+- `src/cache.ts`, `store.ts`, `http.ts`: cache policy, storage, response helpers.
+- `src/native-container.ts`, `native-idle.ts`: startup and compute lifecycle.
+- `container/`: HTTP uploads, ready queue, Sharp, and build-time type stripping.
 
-- `src/gateway.ts`: public routing, rate limiting, canonical fetches, conditions.
-- `src/service.ts`: fresh/stale/missing derivative decisions and refresh scheduling.
-- `src/store.ts` and `src/cache.ts`: R2 metadata, content validators, cache policy.
-- `src/source.ts`: origin requests, redirects, source validation.
-- `src/coordinator.ts`: admission, deduplication, transformation, persistence.
-- `src/native-container.ts`: native startup, readiness, inactivity and restart handling.
-- `container/app.ts`, `body.ts`, `scheduler.ts`, and `transform.ts`: HTTP job
-  lifecycle, bounded uploads, the ready queue, and Sharp processing.
-- `container/build.mjs`: build-time type stripping; the runtime loads JavaScript.
+Worker logs cover transform failures, persistence, and container starts/stops.
+MISS timing reports total job, origin headers, startup, upload, queue, and Sharp
+work; spans overlap. Container boot labels identify real restarts. Its private
+health endpoint reports active, queued, uploading, and in-flight jobs.
 
-Tests exercise the gateway, service, coordinator, and store together with an
-in-memory bucket and controlled upstreams, plus real local HTTP uploads and
-Sharp encoding. Cancellation and overload tests inject slow encoders so failure
-paths are deterministic. These tests do not emulate Cloudflare's tiered CDN or
-container provisioning; use a deployment smoke test to verify those surfaces.
-`npx wrangler deploy --dry-run` validates the Worker bundle without publishing
-it and builds the Docker image locally.
-
-Structured Worker logs record shard, deduplication, failures, persistence
-latency, and source/queue/encoding timings. The container `/health` additionally
-reports uploading, queued, active and in-flight counts, plus completed,
-rejected, timed-out and disconnected requests. Counters reset on restart.
-Server-Timing reports initial DO-side `r2`, local coordinator `resize`, remote
-DO `route`, and `cache_fetch` durations. These spans are nested, not additive.
-The coordinator separately reports `startup`, `origin_headers`, `do_r2`, and
-container work; startup and origin-header fetching overlap. Structured
-`container_stopped` events record the platform's exit reason and code.
-The benchmark decision is documented in
-[performance notes](performance.md).
-
-The current `derivatives/v3` namespace isolates the late-ICC renderer from older
-outputs. Shard names also include the renderer version, and the Worker checks
-the container's renderer header before storing generated bytes. Old objects
-remain for lifecycle cleanup. Bump the namespace again when changing persisted
-cache semantics or encoder behavior that must not share responses across
-deployments. Changing `transforms.webpEffort` requires a renderer version bump
-even though effort appears in cache keys: a running native container retains
-the previous effort environment until restart. Versioned shard IDs and the
-renderer handshake prevent its old output from populating the new keys.
+`npm run check` exercises the request flow with controlled origins and storage,
+plus real HTTP uploads and Sharp encoding. `npx wrangler deploy --dry-run`
+checks the bundle and Docker image. Cloudflare's tiered cache and provisioning
+require a live [deployment smoke test](deployment.md#updates).
+See [performance decisions](performance.md) for the current defaults.

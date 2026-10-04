@@ -69,9 +69,7 @@ async function serveImage(
   deps: ImageServiceDependencies,
 ): Promise<Response> {
   try {
-    const r2Started = Date.now();
     const stored = await deps.store.get(job.outputKey);
-    const r2Ms = Date.now() - r2Started;
     if (stored) {
       const maxAge = remainingSeconds(stored.freshUntil);
       if (maxAge > 0)
@@ -90,15 +88,7 @@ async function serveImage(
       }
       await stored.body.cancel();
     }
-    const resizeStarted = Date.now();
-    const response = await deps.resize(job);
-    const measured = new Response(response.body, response);
-    // resize includes the local coordinator's job span. Remote routing is timed by the caller.
-    measured.headers.append(
-      "server-timing",
-      `r2;dur=${r2Ms}, resize;dur=${Date.now() - resizeStarted}`,
-    );
-    return measured;
+    return await deps.resize(job);
   } catch (cause) {
     return failureResponse(cause);
   }

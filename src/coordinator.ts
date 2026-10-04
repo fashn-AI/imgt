@@ -6,12 +6,7 @@ import {
   ImageError,
   imageResponse,
 } from "./http";
-import {
-  containerNameForKey,
-  parseResizeJob,
-  type ResizeJob,
-  SingleFlight,
-} from "./jobs";
+import { containerNameForKey, type ResizeJob, SingleFlight } from "./jobs";
 import { fetchSource, type SourceFetch } from "./source";
 import { contentEtag, DerivativeStore } from "./store";
 import { config } from "../imgt.config";
@@ -50,15 +45,8 @@ export class TransformCoordinator {
   readonly #singleFlight = new SingleFlight<ResizeResult>();
   constructor(private readonly deps: CoordinatorDependencies) {}
 
-  async fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST" || new URL(request.url).pathname !== "/job")
-      return errorResponse("not found", 404);
-    let job: ResizeJob;
-    try {
-      job = await parseResizeJob(await request.json(), this.deps.allowedHosts);
-    } catch {
-      return errorResponse("invalid resize job");
-    }
+  // The Durable Object's HTTP boundary validates jobs before they reach here.
+  async resize(job: ResizeJob): Promise<Response> {
     const coalesced = this.#singleFlight.has(job.outputKey);
     const shard = containerNameForKey(job.outputKey, config.containers.shards);
     if (!coalesced && this.#singleFlight.size >= MAX_DISTINCT_JOBS_PER_SHARD) {
@@ -75,7 +63,7 @@ export class TransformCoordinator {
     try {
       const result = await this.#singleFlight.run(
         job.outputKey,
-        () => this.resize(job),
+        () => this.generate(job),
         (value) => value.persistence,
       );
       if ("error" in result) throw result.error;
@@ -109,10 +97,9 @@ export class TransformCoordinator {
     }
   }
 
-  private async resize(job: ResizeJob): Promise<ResizeResult> {
+  private async generate(job: ResizeJob): Promise<ResizeResult> {
     const started = performance.now();
     const stored = await this.deps.store.get(job.outputKey);
-    const r2Ms = performance.now() - started;
     if (stored && remainingSeconds(stored.freshUntil) > 0) {
       return {
         body: await new Response(stored.body).arrayBuffer(),
@@ -166,7 +153,6 @@ export class TransformCoordinator {
             startupMs = performance.now() - originStarted;
           }),
       ]);
-      const containerStarted = performance.now();
       const response = await this.deps.transform(
         source.body,
         job,
@@ -191,7 +177,6 @@ export class TransformCoordinator {
       const body = await response.arrayBuffer();
       if (controller.signal.aborted)
         throw new ImageError("image transformation timed out", 504);
-      const containerMs = performance.now() - containerStarted;
       const etag = await contentEtag(body);
       const persistenceStarted = performance.now();
       const persistence = (
@@ -213,11 +198,9 @@ export class TransformCoordinator {
         });
       this.deps.waitUntil(persistence);
       const serverTiming = [
-        `do_r2;dur=${r2Ms.toFixed(1)}`,
         `origin_headers;dur=${originMs.toFixed(1)}`,
         this.deps.prepare ? `startup;dur=${startupMs.toFixed(1)}` : undefined,
         response.headers.get("server-timing"),
-        `container;dur=${containerMs.toFixed(1)}`,
         `job;dur=${(performance.now() - started).toFixed(1)}`,
       ]
         .filter(Boolean)

@@ -46,26 +46,12 @@ Use the current [Workers pricing](https://developers.cloudflare.com/workers/plat
 [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/),
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
-The default routes work to two 1-vCPU/3-GiB containers and sleeps each after
-two idle minutes. Two running shards allocate 6 GiB. Native scheduling bounds
-shard IDs in application code; it has no platform `max_instances` setting.
-The idle timeout is 80% shorter. These are configuration changes, not guaranteed
-bill reductions. More frequent cold starts are
-the tradeoff; image requests served from Workers Cache or R2 do not start a
-container. An idle, awake container can still incur memory charges.
-
-At September 5, 2026 overage rates, a 3-GiB/2-GB instance costs about $0.00092
-for a two-minute idle tail in memory and disk alone. Two such instances awake
-continuously for 30 days would cost about $39.61 for memory/disk before included
-allowances, CPU and other services. This is a cost model, not a measured bill.
-Bursts amortize the idle tail; isolated transformations do not.
-
-For context, [Cloudflare Images transformations](https://developers.cloudflare.com/images/pricing/)
-cost $0.50 per 1,000 monthly unique transformations after the first 5,000:
-100,000 would be $47.50 and one million $497.50 for transformation charges.
-The hosted Images storage/delivery prices are separate. imgt avoids this
-dependency, but self-hosting is not automatically cheaper at low volume. Compare
-unique variants, cache reuse, active CPU time and awake hours for your workload.
+Two running shards allocate 6 GiB. Containers stop after two idle minutes once
+foreground requests and background image refreshes finish. Shorter idle time
+reduces awake time but can cause more cold starts. Images served from Workers
+Cache or R2 do not start a container. An idle, awake container can still incur
+memory charges; compare active CPU time, awake hours and cache reuse for your
+workload.
 
 The 120-request/minute IP limiter is approximate and local to a Cloudflare
 location. It includes cache hits and is not a spending cap. Set account billing
@@ -119,9 +105,7 @@ container keeps its image until it stops; its next start selects the named
 foreground requests and background image refreshes to finish before
 stopping. Readiness checks wait for the private container health endpoint before
 uploading an image. Fresh allocation can still exceed the public 20-second
-deadline; deploy success is not a promise that every image
-request succeeds. The former migration preflight/fallback gate is no longer
-part of routine deployment.
+deadline; deploy success is not a promise that every image request succeeds.
 
 When changing `transforms.webpEffort`, bump `RENDERER_VERSION` in
 `container/renderer.ts` in the same change. Running native containers keep their

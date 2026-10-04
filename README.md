@@ -151,6 +151,6 @@ version bump; see [native image updates](docs/deployment.md#native-image-updates
 
 - [Configuration, costs, updates, and troubleshooting](docs/deployment.md)
 - [Architecture and cache semantics](docs/architecture.md)
-- [Performance decisions and benchmarking](docs/performance.md)
+- [Performance decisions](docs/performance.md)
 - [Contributing](CONTRIBUTING.md)
 - [MIT license](LICENSE)

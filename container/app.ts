@@ -59,7 +59,6 @@ export function createTransformServer(
   const scheduler = new TransformScheduler();
   let inFlight = 0;
   let uploading = 0;
-  const counters = { completed: 0, rejected: 0, timedOut: 0, disconnected: 0 };
 
   async function handle(
     request: IncomingMessage,
@@ -74,7 +73,6 @@ export function createTransformServer(
           queued: scheduler.queued,
           uploading,
           inFlight,
-          ...counters,
         }),
       );
       return;
@@ -88,7 +86,6 @@ export function createTransformServer(
     }
     const { options, deadline } = parseOptions(request, settings);
     if (inFlight >= settings.maxInFlight) {
-      counters.rejected += 1;
       sendError(response, 429, "transform queue is full");
       return;
     }
@@ -96,7 +93,6 @@ export function createTransformServer(
     const controller = new AbortController();
     const disconnect = () => {
       if (!response.writableEnded && !controller.signal.aborted) {
-        counters.disconnected += 1;
         clearTimeout(timeout);
         controller.abort(new InputError("client disconnected", 400));
       }
@@ -104,7 +100,6 @@ export function createTransformServer(
     response.once("close", disconnect);
     const timeout = setTimeout(
       () => {
-        counters.timedOut += 1;
         controller.abort(new InputError("image transformation timed out", 504));
         sendError(response, 504, "image transformation timed out");
       },
@@ -140,7 +135,6 @@ export function createTransformServer(
         "server-timing": `source_body;dur=${inputMs.toFixed(1)}, queue;dur=${result.queueMs.toFixed(1)}, sharp;dur=${result.sharpMs.toFixed(1)}`,
       });
       response.end(result.data);
-      counters.completed += 1;
     } catch (cause) {
       const error = controller.signal.aborted
         ? controller.signal.reason

@@ -264,14 +264,24 @@ test("disconnecting during upload releases admission without an unhandled stream
   assert.equal((await app.post("new image")).status, 200);
 });
 
-test("an active disconnect is not later counted as a timeout", async (t) => {
+test("an active disconnect retains native work through its original deadline", async (t) => {
   const started = deferred();
   const release = deferred();
-  const app = await serve(t, async () => {
-    started.resolve();
-    await release.promise;
-    return Buffer.from("webp");
-  });
+  const disconnected = deferred();
+  let signal: AbortSignal | undefined;
+  const app = await serve(
+    t,
+    async (_input, _options, _deadline, processingSignal) => {
+      signal = processingSignal;
+      started.resolve();
+      signal.addEventListener("abort", () => disconnected.resolve(), {
+        once: true,
+      });
+      await release.promise;
+      signal.throwIfAborted();
+      return Buffer.from("webp");
+    },
+  );
   const controller = new AbortController();
   const response = fetch(`${app.url}/transform?w=32&q=77`, {
     method: "POST",
@@ -283,11 +293,12 @@ test("an active disconnect is not later counted as a timeout", async (t) => {
   await started.promise;
   controller.abort();
   await canceled;
-  await until(async () => (await app.health()).disconnected === 1);
+  await disconnected.promise;
   await new Promise((resolve) => setTimeout(resolve, 120));
   const health = await app.health();
-  assert.equal(health.timedOut, 0);
   assert.equal(health.active, true);
+  assert.equal(health.inFlight, 1);
+  assert.equal(signal!.reason.message, "client disconnected");
   release.resolve();
   await until(async () => (await app.health()).inFlight === 0);
 });
