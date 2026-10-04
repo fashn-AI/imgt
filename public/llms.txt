@@ -24,7 +24,7 @@ public HTTPS origin. `GET /health` checks Worker configuration; use the smoke
 command in the deployment guide to verify the image pipeline.
 
 These Markdown resources are served from this deployment without GitHub access.
-For local development, copy `.dev.vars.example` to `.dev.vars`.
+For local development, copy `.env.example` to `.env`.
 
 ## Guides
 

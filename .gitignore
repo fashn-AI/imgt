@@ -14,5 +14,4 @@ public/llms-full.txt
 
 .dev.vars*
 .env*
-!.dev.vars.example
 !.env.example

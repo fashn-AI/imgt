@@ -110,12 +110,12 @@ Use Node.js 24 and a running Docker-compatible engine:
 
 ```bash
 npm ci
-cp .dev.vars.example .dev.vars
+cp .env.example .env
 npm run check
 npm run dev
 ```
 
-Edit `.dev.vars` for local source hosts; it is not uploaded to production.
+Edit `.env` for local source hosts; it is not uploaded to production.
 Local R2 is emulated; no separate development bucket is required. For a manual
 deploy, run `npx wrangler login`, select the intended account, then
 `npm run deploy`. Configure production [source hosts](docs/configuration.md#allowed-source-hosts)

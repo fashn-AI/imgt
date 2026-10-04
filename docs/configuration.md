@@ -6,7 +6,7 @@ settings in your repository.
 | Location                | What belongs here                                                                            |
 | ----------------------- | -------------------------------------------------------------------------------------------- |
 | Cloudflare dashboard    | Production `ALLOWED_HOSTS` text variable.                                                    |
-| `.dev.vars`             | Local source hosts; copy `.dev.vars.example` to get started.                                 |
+| `.env`                  | Local source hosts; copy `.env.example` to get started.                                      |
 | `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`.            |
 | `imgt.config.ts`        | Allowed widths and qualities, encoding defaults, shard count, idle time and cache lifetimes. |
 | `src/` and `container/` | Fixed resource and safety limits; these are implementation constraints.                      |
@@ -26,13 +26,13 @@ to comma-separated domains such as
 `images.unsplash.com,cdn.example.com,*.images.example.com`, then select **Deploy**.
 See [Cloudflare's dashboard instructions](https://developers.cloudflare.com/workers/configuration/environment-variables/#add-environment-variables-via-the-dashboard).
 
-For local development, run `cp .dev.vars.example .dev.vars` and edit `.dev.vars`:
+For local development, run `cp .env.example .env` and edit `.env`:
 
 ```bash
 ALLOWED_HOSTS="images.unsplash.com,cdn.example.com,*.images.example.com"
 ```
 
-`.dev.vars` is local-only and is not uploaded to production.
+`.env` is local-only and is not uploaded to production.
 Keep `images.unsplash.com` to use the demo and default smoke image. Replace the
 other examples with your own source domains, separated by commas.
 

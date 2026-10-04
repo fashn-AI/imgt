@@ -4,7 +4,7 @@ Use Node.js 24. Docker is needed for container builds and local Worker testing.
 
 ```bash
 npm ci
-cp .dev.vars.example .dev.vars
+cp .env.example .env
 npm run check
 npm run dev
 ```
@@ -13,7 +13,7 @@ Run `npm run format` before committing code or static asset changes. Use
 the pinned Prettier version with its default settings. `npm run check` includes
 formatting validation, typechecking, and tests.
 
-Edit `.dev.vars` for local source hosts; the example permits `images.unsplash.com`.
+Edit `.env` for local source hosts; the example permits `images.unsplash.com`.
 Production source hosts are managed in Cloudflare's dashboard and preserved by
 `keep_vars: true`; see [configuration](docs/configuration.md#allowed-source-hosts).
 
@@ -36,7 +36,7 @@ branches or outside the normal checkout. Report region, resource limits,
 inputs, sample count, failures and cold versus warm behavior. Bring back only
 qualified changes and concise findings in [performance notes](docs/performance.md).
 
-Never commit `.env`, `.dev.vars`, credentials, or account tokens. Dependency
+Never commit `.env`, credentials, or account tokens. Dependency
 updates must include both the root and container lockfiles when applicable.
 
 ## Releases
