@@ -521,12 +521,14 @@
           <p>
             Every request is conservatively modeled as reaching the Durable
             Object and R2, with one extra R2 read per transform and one write
-            per fresh derivative. Workers use an assumed 7 ms CPU per request.
-            R2 holds a rolling 30 days of unique outputs in Standard storage,
-            with the required lifecycle rule. Container output transfer uses
-            North American rates. Durable Objects are assumed active for the
-            entire container awake period at 128 MB each. Rounded R2 and Durable
-            Object billing units and available account allowances are applied.
+            per fresh derivative. Workers bill both the gateway and the cached
+            loopback invocation. The assumed 7 ms CPU per external request is
+            combined across both entrypoints. R2 holds a rolling 30 days of
+            unique outputs in Standard storage, with the required lifecycle
+            rule. Container output transfer uses North American rates. Durable
+            Objects are assumed active for the entire container awake period at
+            128 MB each. Rounded R2 and Durable Object billing units and
+            available account allowances are applied.
           </p>
           <p>
             Awake time cannot fall below the CPU time needed to process the
@@ -573,7 +575,10 @@
           >
         </div>
         <p class="chart-note">
-          Rates checked October 5, 2026. Provider prices can change.
+          Workers Cache also bills internal fetch invocations. See
+          <a href="https://developers.cloudflare.com/workers/cache/#pricing"
+            >cache invocation pricing</a
+          >. Rates checked October 5, 2026. Provider prices can change.
         </p>
         <noscript
           ><p>

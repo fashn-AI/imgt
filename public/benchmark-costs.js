@@ -57,8 +57,10 @@ export function estimateCosts(allocation, scenario = defaultScenario) {
       units(transforms, allowance(1_000_000), 1_000_000) * 4.5 +
       units(r2Reads, allowance(10_000_000), 1_000_000) * 0.36 +
       units(retainedGB, allowance(10), 1) * 0.015,
+    // The gateway and cached ctx.exports entrypoint are both billed invocations.
+    // The assumed 7 ms CPU is their combined CPU per external image request.
     worker:
-      (excess(requests, allowance(10_000_000)) / 1_000_000) * 0.3 +
+      (excess(requests * 2, allowance(10_000_000)) / 1_000_000) * 0.3 +
       (excess(requests * 7, allowance(30_000_000)) / 1_000_000) * 0.02,
     // Assume North American containers and output transfer only.
     transfer: excess(retainedGB, allowance(1_000)) * 0.025,

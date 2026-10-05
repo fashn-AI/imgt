@@ -68,7 +68,8 @@ consumed CPU, modeled Durable Object duration/requests, R2 Standard storage and
 operations, Worker requests/CPU, and North American container output transfer.
 The model conservatively sends every request through the Durable Object and R2,
 adds an extra R2 read per transform, and retains 30 days of unique derivatives.
-Workers use an assumed 7 ms CPU per request; Durable Objects stay active for the
+Workers bill both the gateway and cached loopback invocation, with an assumed
+combined 7 ms CPU per external request; Durable Objects stay active for the
 container's entire awake period at 128 MB each. R2 and Durable Object excess
 billing units are rounded up. These assumptions can differ from actual usage.
 
@@ -95,6 +96,7 @@ Price sources:
 - [Cloudflare Containers](https://developers.cloudflare.com/containers/platform/pricing/)
 - [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 - [Cloudflare Workers](https://developers.cloudflare.com/workers/platform/pricing/)
+- [Workers Cache invocation billing](https://developers.cloudflare.com/workers/cache/#pricing)
 - [Cloudflare R2](https://developers.cloudflare.com/r2/pricing/)
 - [Vercel image billing units](https://vercel.com/docs/image-optimization/limits-and-pricing)
 - [Vercel iad1 rates](https://vercel.com/docs/pricing/regional-pricing/iad1)

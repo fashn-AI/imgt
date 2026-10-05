@@ -72,3 +72,12 @@ test("awake-time estimates cannot hide required CPU capacity", () => {
   assert.equal(overloaded.feasible, false);
   assert.equal(overloaded.effectiveAwakePercent, 100);
 });
+
+test("Worker request pricing includes the cached loopback invocation", () => {
+  const cost = estimateCosts(allocations[0], {
+    ...defaultScenario,
+    requests: 8_000_000,
+  });
+  // 16M billed invocations minus 10M included, plus 56M CPU ms minus 30M included.
+  assert.equal(cost.cloudflare.worker.toFixed(2), "2.32");
+});
