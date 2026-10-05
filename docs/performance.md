@@ -95,3 +95,21 @@ See [container pricing](https://developers.cloudflare.com/containers/platform/pr
 Raw inputs, harnesses, per-request observations, and allocation experiments
 remain outside the normal checkout. Cloudflare provisioning, origin latency,
 R2, edge cache, geography, and production traffic peaks require live measurement.
+
+### Live verification
+
+After the GitHub deployment, a warm-container check sent 50 then 100 concurrent
+requests using the same 50 public PNG sources and previously unused widths
+391, 393, and 394 at quality 79. All 150 responses were cache misses and
+returned valid WebP images with the requested widths, with no admission errors.
+
+| Concurrent requests | Successful misses | Complete-response p95 | Repeated-request p95 |
+| --- | --- | --- | --- |
+| 50 | 50/50 | 2.836 s | 274 ms |
+| 100 | 100/100 | 4.776 s | 109 ms |
+
+Every repeated request returned an edge cache hit. The deployed smoke test
+also verified image decoding, cache reuse, and conditional `304` responses.
+These are individual burst observations, not a production latency SLO or a
+sustained load test. The warmup requests reported zero container startup time,
+so this run does not establish cold-start capacity.
