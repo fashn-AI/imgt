@@ -164,6 +164,30 @@ deadline and memory bounds while increasing capacity. Keep source validation
 and deduplication across applications. Treat cached delivery throughput as a
 separate Worker/cache measurement because it does not start Sharp.
 
+### Live four-shard verification
+
+After the automatic GitHub deployment, the same 50 public PNG sources were
+requested at quality 98 using fresh widths. The deployment health check
+reported Cloudflare's GRU location. Four warmup requests confirmed four
+distinct container boots. All succeeded; the slowest complete response took
+12.524 seconds, including startup.
+
+| Workload | Successful responses | Complete-response p95 |
+| --- | --- | --- |
+| 200 simultaneous new derivatives, widths 643–646 | 200/200 | 6.409 s |
+| Repeat the 200-image burst | 200/200 edge hits | 362 ms |
+| 20 new derivatives/s for 60 seconds, widths 650–673 | 1,200/1,200 | 1.038 s |
+
+Every fresh request was a cache miss, and every successful output was decoded
+and checked for the requested width. Repeated outputs preserved their bytes and
+ETags, and a conditional request returned `304`. The deployed smoke test also
+passed. The sustained test used open-loop arrivals and all four shards.
+
+This is one live observation with this PNG sample and nearby widths, not a
+production latency guarantee. It does not establish sustained cold-start
+capacity, multi-region performance, or behavior for every application input.
+Keep measuring representative production traffic during application rollout.
+
 [Container pricing](https://developers.cloudflare.com/containers/platform/pricing/)
 bills memory by provisioned awake capacity and CPU by active usage. Doubling
 shards doubles awake memory capacity; it does not automatically double CPU
