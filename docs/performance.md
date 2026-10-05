@@ -1,6 +1,6 @@
 # Performance
 
-imgt uses Sharp/libvips with four container shards, each allocated 2 vCPUs,
+imgt is testing Sharp/libvips with two container shards, each allocated 2 vCPUs,
 6 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
 cache hits do not start a container.
 
@@ -20,7 +20,7 @@ cache hits do not start a container.
   evaluated Vercel outputs at the same client quality. This replaces the earlier
   effort-2 throughput tradeoff. Renderer v4 isolates the new output from older
   cached images and running containers. Client quality values stay unchanged.
-- **Four shards, two idle minutes:** stable routing deduplicates work for each
+- **Two shards under evaluation, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
 - **Build-time type stripping:** the container loads JavaScript to reduce
@@ -42,7 +42,7 @@ The previous comparisons used small samples, limited images and sequential
 runs. They do not establish multi-region p95 latency, load capacity, cost savings
 or broad parity with other image services. Host placement and encoder settings
 affect results; local Docker timings are not Cloudflare delivery timings. A
-fresh allocation can also exceed the public 20-second deadline.
+fresh allocation can exceed the transform deadline, now 60 seconds.
 
 Keep experiments and raw results on research branches or outside the normal
 checkout. Record region, allocation, inputs, sample count, failures and cold
@@ -155,7 +155,7 @@ For a rollout that targets 20 new derivatives/s with compute margin, four
 existing shards are a simple capacity choice: set `containers.shards` to 4.
 There is no need to add a scheduler service, a per-application pool, or automatic
 scaling based on these observations. A smaller pilot can retain two shards.
-The default is now four shards. The comparison above used local replay;
+That trial selected four shards. The comparison above used local replay;
 verify live delivery latency and failures on your deployment.
 
 Use production admission waits, encoder utilization, cache misses, failures,
@@ -460,3 +460,128 @@ that remains a finite observation, not a guarantee of future delivery reliabilit
 The smaller profile is retained in the benchmark page as an experiment, rather
 than a verified production recommendation. Raw request data stays outside the
 normal checkout.
+
+
+### Two-container reliability repeat
+
+A second two-2-CPU-container deployment retained renderer v4, quality 98, width
+640, two encoders per container, the 20-second transform deadline and the same
+50 public PNG sources. The client waited up to 60 seconds and recorded response
+header time separately from complete-body time. Logs were attached before the
+GitHub deployment. Cloudflare confirmed two 2-vCPU, 6-GiB instances in ENAM.
+
+| Workload | Success | Complete-response p95 | Maximum successful response |
+| --- | --- | --- | --- |
+| First provisioning, 50 fresh images | 50/50 | 8.862 s | 9.201 s |
+| 3/s for five minutes | 900/900 | 1.105 s | 1.453 s |
+| 10/s for five minutes | 2,999/3,000 | 1.099 s | 3.766 s |
+| 50 fresh images together | 50/50 | 2.988 s | 3.173 s |
+| 200 fresh images together | 200/200 | 9.208 s | 10.292 s |
+| Repeat 200 images | 200/200 edge hits | 223 ms | 408 ms |
+| 50 fresh images after 150 seconds idle | 50/50 | 4.131 s | 4.298 s |
+
+No client or transformation timeouts occurred; every successful response arrived
+within the earlier 30-second client limit. The one failure at 10/s was a source
+HTTP 500, surfaced as HTTP 502 after 440 ms. Its transform failed after 182 ms,
+not at the deadline. Repeating that same public request later generated an image
+successfully in 799 ms. All 4,252 successful fresh responses, including that
+retry and idle restart, matched the existing Vercel bytes. New boot identities
+confirmed both containers restarted for the final burst.
+
+This establishes an upstream failure for this specific request, not a cause for
+the earlier client timeouts or first provisioning failures. Longer client waiting
+did not recover an over-30-second response in this repeat. Those earlier failures
+remain part of the evidence. More containers cannot prevent an origin HTTP 500.
+
+The Worker now retries a source GET once on a network failure or HTTP 500, 502,
+503 or 504, after 100 ms, before uploading an image. The retry budget is shared
+across validated redirects and bounded by the original job deadline. It does not
+retry rate limits, permanent source errors, responses carrying Retry-After,
+container uploads, or the entire image request. Regression checks cover response
+body cleanup, retry exhaustion, cancellation, redirects and source privacy.
+
+
+The source-retry deployment's follow-up was interrupted by rollout resets. Its
+10/s phase stopped after 414 of 3,000 planned requests: 408 succeeded, six
+returned HTTP 500. The subsequent 50-image burst completed 50/50, but the
+200-image burst returned 199 HTTP 500 responses and one image. The live tail
+recorded `Durable Object reset because its code was updated` in the image-cache
+entrypoint. Repeating that burst returned 200/200: 193 R2 images, one edge hit
+and six fresh transforms. Many derivatives had completed even though delivery
+failed. The load test was stopped; this is not a five-minute success result.
+
+This identifies a reset cause for these specific HTTP 500 responses. It does not
+identify the cause of the first earlier provisioning burst or two client
+timeouts. The Worker now retries only Cloudflare exceptions marked retryable,
+unless also marked overloaded, once after 100 ms with a newly acquired Durable
+Object stub. The job rechecks R2 before doing new work. Native transform upload
+streams and HTTP error responses are not replayed. Each job attempt retains
+its transform deadline; reset recovery can wait beyond a single attempt's
+20-second processing limit.
+
+
+An immediate post-deployment burst after adding one reset retry completed 38/50:
+34 fresh transforms and four retained R2 images. Eleven responses were HTTP 503
+container-readiness failures and one remained HTTP 500. Successful p95 was
+17.007 s and maximum 17.827 s. The strict runner stopped instead of continuing
+into a sustained test. Seven reset-retry events were logged. This recovered
+some work but did not establish reliable rollout delivery.
+
+The first startup-recovery change included container start and inactivity configuration,
+instead of failing all waiters at the first setup error. A healthy running
+container still skips mandatory inactivity restoration, so failed background
+reconnection cannot block cached delivery or warm uploads. Overload errors are
+not retried. The transform and shared startup limits increase from 20 to 60
+seconds, matching a preference for bounded waiting over prematurely broken
+images. Admission remains 128 distinct jobs and eight active jobs per shard,
+with two native encoders. Cloudflare retryable reset recovery allows up to two
+retries with 100/200 ms backoff and a fresh stub; each attempt has its own bounded
+transform deadline. Other HTTP failures and streamed uploads are not replayed.
+Runtime v10 starts containers with the new deadline, retaining renderer-v4
+output and cache keys. The smoke client waits up to 90 seconds.
+
+
+The first runtime-v10 rollout burst returned no responses accepted by the
+runner's exact-version guard: 39 HTTP 504 responses, four HTTP 503 responses
+(three invalid-shard responses and one readiness failure), and seven responses
+rejected for an unexpected Worker version. Those seven are version-check
+failures, not established client timeouts. The phase lasted 76.941 seconds.
+An instance inspection initially found no v10 instances, then two running ones.
+Readiness logs showed one 60-second wait with `polls: 0` and `running: true`,
+blocked on inactivity configuration before health checking. A later fresh smoke
+request succeeded in 1.298 s, repeated at 50 ms from edge cache, with 304 passing.
+
+Cold readiness now polls health independently of inactivity settings. Once
+healthy, the existing restoration method applies those settings in the
+background. The durable idle alarm still enforces the two-minute compute
+shutdown. A regression check stalls the native inactivity call indefinitely
+and verifies that cold readiness and a real transport upload still complete.
+This keeps startup control-plane I/O out of the image-delivery dependency chain.
+Mixed Worker versions and earlier invalid-shard responses remain rollout
+observations; a larger allocation does not resolve them.
+
+The next post-deployment 50-image burst returned 49 HTTP 504 responses and one
+HTTP 503. Both shards stalled on their first health GET until the 60-second
+readiness limit (`polls: 1`). No successful transforms were observed in that
+phase, and the strict runner stopped. A later single fresh request succeeded
+in 4.270 s, with startup measured at 828 ms. The live Worker already had
+`durable_object_io_tasks_prevent_eviction` enabled; these failures do not
+establish eviction or CPU exhaustion. Health GETs now use separate two-second
+probe deadlines, allowing another connection within the shared startup limit.
+A regression check covers a hung first probe, cancellation, shared startup and
+a single subsequent image upload.
+
+With bounded probes, the next immediate rollout burst completed 33/50, at
+44.515 s p95 and 44.908 s maximum. Sixteen requests returned HTTP 504 and one
+failed the exact-Worker-version guard. All 33 decoded outputs matched Vercel.
+One shard became healthy after 40.204 s and 28 health probes; the other exhausted
+60 seconds after 29 probes. A separate warm-up completed 1/2 and stopped before
+sending sustained load. This is not an accepted two-container capacity result.
+
+Cloudflare reported a [Durable Objects and Containers incident in Eastern North America](https://www.cloudflarestatus.com/incidents/z28czd65h29l)
+from October 5, 17:14 to 22:35 UTC. Earlier trials overlapped it, while these
+latest failures happened after the reported resolution. The affected geography
+matches the containers, but the incident does not prove the cause of each failure.
+Runtime v11 gives the next trial fresh shard identities while retaining the same
+allocation, renderer and cached derivatives; it avoids reusing the objects that
+continued failing health across rollout attempts.

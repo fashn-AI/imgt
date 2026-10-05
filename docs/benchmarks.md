@@ -33,7 +33,7 @@ at least 3 GiB per CPU, so a 2-CPU container reserves at least 6 GiB. See
 [resource limits](https://developers.cloudflare.com/containers/platform/limits/).
 
 Reducing shard count or CPU capacity reduces provisioned memory charges. It also
-reduces uncached burst capacity. The current production allocation remains four
+reduces uncached burst capacity. Four 2-CPU containers completed the 20/s comparison. The current trial uses two
 2-CPU containers, with two encoders per container. Smaller configurations are
 experiments, not general production recommendations. A live two-1-CPU-container repeat
 completed 300/300 fresh transforms at 5/s with a 1.222 s p95. Its 50-image burst
@@ -59,9 +59,57 @@ completed 2,998/3,000, with two 30-second client timeouts. Successful responses
 had a 1.094 s p95 and 28.885 s maximum. Admission p95 was zero and encoder
 queue p95 was 45.9 ms; the timeouts do not establish a CPU capacity limit.
 All 4,282 successful fresh outputs across the warm trial, restart cycles and
-longer confirmation matched Vercel. The four-container allocation is restored
-because the smaller trial failed its reliability check. See the complete
+longer confirmation matched Vercel. That trial restored the four-container allocation
+because the smaller configuration failed its reliability check. See the complete
 [performance notes](performance.md) for failures and response maxima.
+
+### Reliability repeat
+
+A repeat used a 60-second client limit with the unchanged 20-second transform
+deadline. First provisioning returned 50/50 fresh images at 8.862 s p95.
+A five-minute 3/s phase completed 900/900 at 1.105 s; the five-minute 10/s
+phase completed 2,999/3,000 at 1.099 s. There were no timeouts. The one failure
+was a source HTTP 500, surfaced as HTTP 502 in 440 ms; repeating it later
+succeeded in 799 ms. Fresh 50- and 200-image bursts returned every image at
+2.988 s and 9.208 s p95, cached repeats at 223 ms. An idle restart returned
+50/50 at 4.131 s. All 4,252 successful fresh outputs matched Vercel.
+
+Every successful response arrived within the earlier 30-second limit; the
+longer client timeout did not recover a slower response in this repeat.
+Earlier failures remain unexplained. A subsequent source-retry rollout caught
+explicit Durable Object reset errors: the 10/s test stopped at 414 requests,
+with 408 successes and six HTTP 500 responses. A later 200-image burst
+returned 199 errors; repeating it returned all 200, including 193 retained in
+R2. Those failures were rollout interruptions, rather than encoder deadline
+failures. imgt now retries the source GET once on temporary failures and
+reacquires a Durable Object stub up to twice on exceptions marked retryable, excluding
+overloaded objects. Container uploads and HTTP errors are not replayed.
+See [request recovery behavior](architecture.md#slow-requests-and-errors).
+
+### Rollout and health checks
+
+Later startup checks retained two 2-CPU containers but increased each transform
+attempt to 60 seconds and the client limit to 90 seconds. They did not pass:
+
+| Check | Successful images | Other results |
+| --- | --- | --- |
+| One reset retry, earlier 20 s deadline | 38/50 | Eleven HTTP 503, one HTTP 500 |
+| 60 s deadline, settings before health | 0/50 accepted | 39 HTTP 504, four HTTP 503, seven version-check failures |
+| Settings moved to background restoration | 0/50 | 49 HTTP 504, one HTTP 503 |
+| Two-second health probes | 33/50 | Sixteen HTTP 504, one version-check failure |
+
+The last check's successful p95 was 44.515 s and maximum 44.908 s. One shard
+became healthy in 40.204 s; the other exhausted its 60-second readiness limit.
+A subsequent two-shard warm-up completed 1/2 and stopped before sustained load.
+These results do not establish two-container reliability or a CPU capacity limit.
+The current trial uses fresh runtime-v11 shard IDs with the same allocation and
+renderer; stored derivatives remain compatible.
+
+Cloudflare reported a [regional Durable Objects and Containers incident](https://www.cloudflarestatus.com/incidents/z28czd65h29l)
+from October 5, 17:14 to 22:35 UTC in Eastern North America, matching the container
+region. Earlier trials overlapped it; the latest checks followed its reported
+resolution. This is relevant context, not an established cause of every failure.
+The new pending-I/O compatibility flag was already enabled in the live Worker.
 
 ## Cost model
 

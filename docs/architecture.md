@@ -116,7 +116,9 @@ scheduling. Only configured shard IDs may start compute. Concurrent callers
 share startup and private health polling. Reconnect restoration runs in the
 background so an unavailable container connection cannot block cached delivery.
 Uploads still require a healthy container. Startup and health checks share
-bounded readiness polling; transient start failures wait within that deadline
+bounded readiness polling. Each health GET has a two-second limit and can be
+retried within the shared deadline; streamed transform uploads are not replayed.
+Transient start failures wait within that deadline
 instead of failing immediately. Overload errors fail without a readiness retry.
 Inactivity settings are restored in the background after a cold start is healthy;
 a stalled control-plane setting cannot delay uploads. The durable idle alarm

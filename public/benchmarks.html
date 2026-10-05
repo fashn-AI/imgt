@@ -295,10 +295,122 @@
             checks passed. Warm delivery maxima were 17.486 s at 10/s and 28.644
             s in the 200-image burst. The second restart's maximum was 19.157 s.
             The five-minute run's maximum successful response was 28.885 s. P95
-            does not describe these slower responses. The deployment retains
-            four 2-CPU containers because the smaller trial failed its
+            does not describe these slower responses. That trial restored four
+            2-CPU containers because the smaller configuration failed its
             reliability check. The measured encoder queue was short, so these
             timeouts do not establish a CPU capacity limit.
+          </p>
+        </div>
+        <div class="benchmark-panel" id="reliability">
+          <div class="chart-heading">
+            <h3>Two-container reliability repeat</h3>
+            <span>60 s client limit, 20 s transform deadline</span>
+          </div>
+          <div class="table-scroll">
+            <table class="benchmark-table">
+              <caption>
+                Complete responses in the repeat trial, including cold starts
+              </caption>
+              <thead>
+                <tr>
+                  <th>Workload</th>
+                  <th>Success</th>
+                  <th>p95</th>
+                  <th>Maximum</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th>First provisioning, 50 fresh images</th>
+                  <td>50/50</td>
+                  <td>8.862 s</td>
+                  <td>9.201 s</td>
+                </tr>
+                <tr>
+                  <th>3/s, five minutes</th>
+                  <td>900/900</td>
+                  <td>1.105 s</td>
+                  <td>1.453 s</td>
+                </tr>
+                <tr>
+                  <th>10/s, five minutes</th>
+                  <td>2,999/3,000</td>
+                  <td>1.099 s</td>
+                  <td>3.766 s</td>
+                </tr>
+                <tr>
+                  <th>50 fresh images together</th>
+                  <td>50/50</td>
+                  <td>2.988 s</td>
+                  <td>3.173 s</td>
+                </tr>
+                <tr>
+                  <th>200 fresh images together</th>
+                  <td>200/200</td>
+                  <td>9.208 s</td>
+                  <td>10.292 s</td>
+                </tr>
+                <tr>
+                  <th>200 cached images together</th>
+                  <td>200/200</td>
+                  <td>223 ms</td>
+                  <td>408 ms</td>
+                </tr>
+                <tr>
+                  <th>50 images after idle stop</th>
+                  <td>50/50</td>
+                  <td>4.131 s</td>
+                  <td>4.298 s</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="chart-note">
+            No timeouts occurred. The single failure was a source HTTP 500,
+            returned to the client as HTTP 502 in 440 ms. A later retry
+            succeeded in 799 ms. All 4,252 successful fresh responses matched
+            Vercel. Every successful response arrived within the earlier 30 s
+            client limit; increasing the client limit did not recover a slower
+            image in this repeat. Earlier timeouts remain unexplained.
+          </p>
+          <p class="chart-note">
+            A follow-up after adding a source retry caught deployment resets:
+            the 10/s test stopped at 414 requests with six HTTP 500 responses,
+            and a later 200-image burst returned 199 errors. Cloudflare reported
+            Durable Object resets because its code was updated. Repeating the
+            burst returned 200 images, including 193 from R2. This identifies a
+            rollout interruption for those failures, not an encoder limit. imgt
+            now retries temporary source GET failures once and reacquires a
+            Durable Object stub up to twice for exceptions marked retryable. It
+            does not retry overloaded objects or replay container uploads.
+            Startup now waits through setup failures within a 60 s deadline, and
+            each fresh transform attempt gets 60 s. This repeat's timings above
+            used the earlier 20 s deadline.
+            <a href="/docs/architecture.md#slow-requests-and-errors"
+              >Read the request recovery behavior</a
+            >.
+          </p>
+          <p class="chart-note">
+            Later rollout checks with a 60 s transform deadline and 90 s client
+            limit still failed. Moving native inactivity settings off the
+            request path returned 0/50: 49 HTTP 504 and one HTTP 503. Bounding
+            individual health probes to two seconds returned 33/50, with a
+            successful p95 of 44.515 s and maximum of 44.908 s. Sixteen requests
+            returned HTTP 504 and one failed the exact-version check. The next
+            two-shard warm-up returned 1/2, so sustained load was stopped. The
+            current trial uses fresh shard IDs with the same allocation. Two
+            containers have not passed the reliability acceptance check.
+          </p>
+          <p class="chart-note">
+            Cloudflare reported a
+            <a href="https://www.cloudflarestatus.com/incidents/z28czd65h29l"
+              >Durable Objects and Containers incident in Eastern North
+              America</a
+            >
+            on October 5, from 17:14 to 22:35 UTC, matching the container
+            region. Earlier trials overlapped it; the latest checks followed its
+            reported resolution. This does not prove the cause of every failure.
+            The new pending-I/O compatibility behavior was already enabled.
           </p>
         </div>
         <div class="benchmark-panel">
@@ -439,10 +551,11 @@
             A monthly total gives average throughput, not burst capacity. Two
             million new derivatives over 30 days average 0.77/s. Test your
             busiest minute and gallery bursts before choosing an allocation. The
-            current deployment retains four 2-CPU containers for its verified
-            20/s workload. The smaller live trial had slower bursts and client
-            timeouts. It is an option to evaluate for modest traffic, rather
-            than a verified replacement for the 20/s allocation.
+            four-container profile completed the tested 20/s workload. The
+            current two-container reliability trial is still under evaluation.
+            Earlier smaller trials had slower bursts and client timeouts. It is
+            an option to evaluate for modest traffic, rather than a verified
+            replacement for the 20/s allocation.
             <a
               href="https://developers.cloudflare.com/containers/platform/limits/"
               >Cloudflare resource limits ↗</a
