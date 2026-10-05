@@ -5,6 +5,10 @@
 Maintained by [FASHN AI](https://github.com/fashn-AI).
 Source repository: [fashn-AI/imgt](https://github.com/fashn-AI/imgt).
 
+This website is the project's documentation and playground. Deploy your own
+instance and use your own endpoint for application image requests. The FASHN AI
+demo is not a shared optimization service.
+
 `GET /image?url=<encoded-HTTPS-source>&w=<width>&q=<quality>` returns WebP.
 Use `URLSearchParams` to encode the source. Width is required and accepts any
 integer from 1 to 3840 pixels. Quality accepts any integer from 1 to 100 and

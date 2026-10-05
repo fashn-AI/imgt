@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" prefix="og: https://ogp.me/ns#">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,14 +7,80 @@
     <meta name="author" content="FASHN AI" />
     <meta
       name="description"
-      content="Self-hosted image optimization on Cloudflare. Try the live playground and connect imgt to Next.js."
+      content="Self-host image optimization on Cloudflare with imgt. Resize images to WebP, cache with Workers and R2, and integrate with Next.js. Open source by FASHN AI."
     />
-    <title>imgt — Image optimization at the edge</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="describedby" href="/llms.txt" />
-    <link rel="alternate" type="text/plain" href="/index.md" />
+    <meta name="robots" content="max-image-preview:large" />
+    <title>imgt — Self-hosted image optimization on Cloudflare</title>
+    <link rel="canonical" href="https://imgt.fashn.ai/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="imgt" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:url" content="https://imgt.fashn.ai/" />
+    <meta
+      property="og:title"
+      content="imgt — Self-hosted image optimization on Cloudflare"
+    />
+    <meta
+      property="og:description"
+      content="Self-host image optimization on Cloudflare with imgt. Resize images to WebP, cache with Workers and R2, and integrate with Next.js. Open source by FASHN AI."
+    />
+    <meta property="og:image" content="https://imgt.fashn.ai/og.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="imgt: Your images. Optimized at the edge. Self-hosted image optimization on Cloudflare, by FASHN AI."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="imgt — Self-hosted image optimization on Cloudflare"
+    />
+    <meta
+      name="twitter:description"
+      content="Self-host image optimization on Cloudflare with imgt. Resize images to WebP, cache with Workers and R2, and integrate with Next.js. Open source by FASHN AI."
+    />
+    <meta name="twitter:image" content="https://imgt.fashn.ai/og.png" />
+    <meta
+      name="twitter:image:alt"
+      content="imgt: Your images. Optimized at the edge. Self-hosted image optimization on Cloudflare, by FASHN AI."
+    />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+    <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="describedby" type="text/plain" href="/llms.txt" />
+    <link
+      rel="alternate"
+      type="text/markdown"
+      title="imgt documentation"
+      href="/index.md"
+    />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/syntax.css" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "imgt",
+        "url": "https://imgt.fashn.ai/",
+        "description": "Self-hosted image optimization on Cloudflare with Sharp, Workers Cache and R2. Integrates with Next.js.",
+        "inLanguage": "en",
+        "publisher": {
+          "@type": "Organization",
+          "name": "FASHN AI",
+          "url": "https://fashn.ai/"
+        },
+        "about": {
+          "@type": "SoftwareSourceCode",
+          "name": "imgt",
+          "codeRepository": "https://github.com/fashn-AI/imgt",
+          "license": "https://opensource.org/license/mit",
+          "programmingLanguage": "TypeScript",
+          "runtimePlatform": "Cloudflare Workers"
+        }
+      }
+    </script>
     <script src="/main.js" defer></script>
   </head>
   <body>
@@ -44,7 +110,7 @@
           </h1>
           <p class="hero-intro">
             Resize to WebP. Cache globally. Keep control.<br />
-            A small image optimizer you can deploy and own.
+            A small, self-hosted image optimizer for Cloudflare and Next.js.
           </p>
           <div class="actions">
             <a class="button primary" href="#live-demo"

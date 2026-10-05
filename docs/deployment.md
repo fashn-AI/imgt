@@ -202,3 +202,28 @@ It requires
 Unsplash; each click on Optimize image or Run again makes one image request
 against this deployment and counts toward the IP allowance. Use the smoke
 command above for full image, cache, and ETag verification.
+
+## Website metadata
+
+The included landing page documents the upstream imgt project. Its canonical
+URL, social previews and sitemap point to `https://imgt.fashn.ai/`, so copies of
+the same project page identify the original website. This is a documentation
+URL, not an image endpoint for your application. Integration examples use a
+placeholder that you must replace with your own deployment URL.
+
+If you repurpose the landing page as your own website, update the site URLs and
+branding in `public/index.html`, `public/sitemap.xml`, `public/robots.txt` and
+`public/_headers`. The build computes the CSP hash for the structured data;
+inline scripts remain restricted. The share preview is a static 1200 × 630 PNG,
+with editable artwork in `public/og.svg`. Regenerate it after artwork changes:
+
+```sh
+node --input-type=module -e 'import sharp from "sharp"; await sharp("public/og.svg").png().toFile("public/og.png")'
+```
+
+`/llms.txt` links to the locally served Markdown guides and `/llms-full.txt`.
+The homepage advertises its Markdown version through HTML and HTTP alternate
+links. Search and agent crawlers can read these public resources; `robots.txt`
+asks crawlers to skip the image API and health endpoint. Cloudflare bot controls
+can enforce additional policies independently; review those settings on your
+own domain if an intended crawler receives a challenge or denial.

@@ -1,4 +1,5 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { createHighlighter } from "shiki";
 
 const root = new URL("../", import.meta.url);
@@ -38,6 +39,16 @@ for (const match of html.matchAll(
   html = html.replace(match[0], match[1] + highlighted + match[4]);
 }
 highlighter.dispose();
+// Allow only this static structured-data block without enabling inline scripts.
+const structuredData = html.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)[1];
+const hash = createHash("sha256").update(structuredData).digest("base64");
+const headers = await readFile(new URL("_headers", assets), "utf8");
+await writeFile(
+  new URL("_headers", assets),
+  headers.replace("script-src 'self'", `script-src 'self' 'sha256-${hash}'`),
+);
 await writeFile(new URL("index.html", assets), html);
 await writeFile(
   new URL("syntax.css", assets),
@@ -59,7 +70,8 @@ const sections = [];
 for (const [source, target] of files) {
   let body = await readFile(new URL(source, root), "utf8");
   // README asset links use repository paths on GitHub and site paths here.
-  if (source === "README.md") body = body.replace(/\]\(public\//g, "](/");
+  if (source === "README.md")
+    body = "# imgt\n\n" + body.replace(/\]\(public\//g, "](/");
   await writeFile(new URL(target, assets), body);
   // Keep links usable from the combined document at the site root.
   const linked = body.replace(/\]\(([^\s)]+)\)/g, (match, href) => {

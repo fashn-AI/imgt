@@ -1,8 +1,9 @@
 Help me self-host imgt on my Cloudflare account and integrate it into my project.
 
-Read https://github.com/fashn-AI/imgt and its deployment, configuration and
-Next.js guides before making changes. Inspect my project and preserve its
-existing configuration. Ask for missing information: my target Cloudflare
+Read https://imgt.fashn.ai/llms.txt and follow its deployment, configuration and
+Next.js guides before making changes. The source is
+https://github.com/fashn-AI/imgt. Inspect my project and preserve its existing
+configuration. Ask for missing information: my target Cloudflare
 account, my own imgt deployment URL and the public HTTPS image sources I use.
 
 1. Set up my own imgt deployment through Cloudflare's GitHub integration.
