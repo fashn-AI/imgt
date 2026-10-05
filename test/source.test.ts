@@ -89,3 +89,119 @@ test("rejects oversized and unsupported responses before invoking the encoder", 
     );
   }
 });
+
+for (const status of [500, 502, 503, 504, "network"] as const) {
+  test(`retries a temporary source ${status} once before returning the body`, async () => {
+    let calls = 0;
+    let canceled = false;
+    const result = await fetchSource(
+      source,
+      new AbortController().signal,
+      ["images.unsplash.com"],
+      async () => {
+        if (++calls === 1) {
+          if (status === "network") throw new Error("connection reset");
+          return new Response(
+            new ReadableStream({
+              cancel() {
+                canceled = true;
+              },
+            }),
+            { status },
+          );
+        }
+        return new Response("image", {
+          headers: { "content-type": "image/jpeg" },
+        });
+      },
+    );
+    assert.equal(calls, 2);
+    assert.equal(canceled, status !== "network");
+    assert.equal(await new Response(result.body).text(), "image");
+  });
+}
+
+test("one source retry budget is shared across validated redirects", async () => {
+  let calls = 0;
+  await assert.rejects(
+    fetchSource(
+      source,
+      new AbortController().signal,
+      ["images.unsplash.com"],
+      async () => {
+        calls++;
+        if (calls === 2)
+          return new Response(null, {
+            status: 302,
+            headers: { location: "/other.jpg" },
+          });
+        return new Response("temporary failure", { status: 500 });
+      },
+    ),
+    /source image returned HTTP 500/,
+  );
+  assert.equal(calls, 3);
+});
+
+test("aborting a source retry delay prevents a second fetch", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  await assert.rejects(
+    fetchSource(
+      source,
+      controller.signal,
+      ["images.unsplash.com"],
+      async () => {
+        calls++;
+        setTimeout(() => controller.abort(), 10);
+        return new Response("temporary failure", { status: 500 });
+      },
+    ),
+    (cause) => cause instanceof ImageError && cause.status === 504,
+  );
+  assert.equal(calls, 1);
+});
+
+test("permanent errors, rate limits, and Retry-After do not trigger a source retry", async () => {
+  for (const status of [403, 404, 410, 429, 500, 503]) {
+    let calls = 0;
+    await assert.rejects(
+      fetchSource(
+        source,
+        new AbortController().signal,
+        ["images.unsplash.com"],
+        async () => {
+          calls++;
+          return new Response("error", {
+            status,
+            headers: status >= 500 ? { "retry-after": "60" } : {},
+          });
+        },
+      ),
+      ImageError,
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test("a successful retry still enforces private-source policy", async () => {
+  let calls = 0;
+  await assert.rejects(
+    fetchSource(
+      source,
+      new AbortController().signal,
+      ["images.unsplash.com"],
+      async () =>
+        ++calls === 1
+          ? new Response("error", { status: 500 })
+          : new Response("private", {
+              headers: {
+                "content-type": "image/jpeg",
+                "cache-control": "private",
+              },
+            }),
+    ),
+    (cause) => cause instanceof ImageError && cause.status === 403,
+  );
+  assert.equal(calls, 2);
+});

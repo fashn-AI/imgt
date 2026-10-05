@@ -187,6 +187,22 @@ namespace bump. Release notes should identify these changes; older R2 objects
 remain until lifecycle cleanup. Rollbacks must keep the matching container
 image available. Consult [container rollout behavior](https://developers.cloudflare.com/containers/configuration/rollouts/).
 
+## Image request failures
+
+The transform deadline is 20 seconds, including admission waiting, origin fetch
+and container startup. This is not a complete-response deadline; cache lookups
+and network delivery can add time. The benchmark client timeout is separate.
+See [slow requests and errors](architecture.md#slow-requests-and-errors).
+
+Temporary source GET network failures and HTTP `500`, `502`, `503` or `504`
+responses are retried once after 100 ms within the original deadline, before
+uploading to the container. Responses with `Retry-After` are not retried.
+Errors that remain after that attempt are not cached. imgt returns them to the
+caller without retrying the entire image job or falling back to the original. `Retry-After` describes when an
+application may try again; a browser image element does not use it to retry a
+failed image. Existing derivatives within the stale window remain available
+during temporary background refresh failures.
+
 ## Troubleshooting
 
 | Symptom                                      | Check                                                                                                                                                           |

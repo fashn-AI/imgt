@@ -11,6 +11,54 @@ const ALLOWED_SOURCE_TYPES = new Set([
 ]);
 export type SourceFetch = (url: string, init: RequestInit) => Promise<Response>;
 
+// Retry only the origin GET, before its body is uploaded. Share the job's
+// deadline and retry budget across redirects; never replay container work.
+async function requestSource(
+  url: string,
+  signal: AbortSignal,
+  fetcher: SourceFetch,
+  retry: { available: boolean },
+): Promise<Response> {
+  for (;;) {
+    signal.throwIfAborted();
+    let response: Response | undefined;
+    try {
+      response = await fetcher(url, {
+        redirect: "manual",
+        signal,
+        headers: { accept: "image/avif,image/webp,image/png,image/jpeg" },
+      });
+    } catch (cause) {
+      if (!retry.available || signal.aborted) throw cause;
+    }
+    if (
+      response &&
+      (!retry.available ||
+        ![500, 502, 503, 504].includes(response.status) ||
+        response.headers.has("retry-after"))
+    ) {
+      return response;
+    }
+    retry.available = false;
+    await response?.body?.cancel();
+    console.warn(
+      JSON.stringify({ event: "source_retry", status: response?.status }),
+    );
+    await new Promise<void>((resolve, reject) => {
+      signal.throwIfAborted();
+      const canceled = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", canceled);
+        resolve();
+      }, 100);
+      signal.addEventListener("abort", canceled, { once: true });
+    });
+  }
+}
+
 export async function fetchSource(
   sourceUrl: string,
   signal: AbortSignal,
@@ -18,14 +66,11 @@ export async function fetchSource(
   fetcher: SourceFetch = fetch,
 ): Promise<{ body: ReadableStream<Uint8Array>; maxAge: number }> {
   let currentUrl = normalizeSourceUrl(sourceUrl, allowedHosts);
+  const retry = { available: true };
   for (let redirects = 0; redirects <= MAX_SOURCE_REDIRECTS; redirects += 1) {
     let response: Response;
     try {
-      response = await fetcher(currentUrl, {
-        redirect: "manual",
-        signal,
-        headers: { accept: "image/avif,image/webp,image/png,image/jpeg" },
-      });
+      response = await requestSource(currentUrl, signal, fetcher, retry);
     } catch {
       throw new ImageError(
         signal.aborted

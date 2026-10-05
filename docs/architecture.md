@@ -76,6 +76,32 @@ The 20-second deadline covers admission waiting, origin fetch, startup, upload, 
 encoding. Canceled queued jobs are removed; active native processing retains
 its slot until it settles so canceled work cannot overlap new work.
 
+## Slow requests and errors
+
+The 20-second transformation deadline starts when a distinct cache-miss job
+enters the coordinator, before admission waiting. It covers that wait, source
+fetch, container readiness, upload and encoding. It is not a total HTTP response
+time limit: the edge cache, initial R2 lookup and network delivery can add time
+outside the transform clock. Benchmarks measure the complete response separately.
+
+An expired transform returns `504`; a full shard queue returns `429` with
+`Retry-After: 1`. Container readiness failures return `503`, and the IP rate
+limiter returns `429` with `Retry-After: 60`. Error responses use `no-store`.
+Temporary source GET network failures and HTTP `500`, `502`, `503` or `504`
+responses get one retry after 100 ms, before any container upload. That single
+retry budget is shared across redirects and uses the original job deadline.
+Responses with `Retry-After`, permanent errors and source rate limits are not
+retried. There is no automatic retry of the entire image job or original-image
+fallback.
+A normal HTML image element, including the element rendered by Next.js Image,
+does not implement imgt's `Retry-After` handling; an error can leave a broken image.
+
+Within the stale window, an existing derivative is served while refreshing in
+the background. A temporary refresh failure preserves that derivative until
+its stale deadline. Missing derivatives and images beyond that window still
+need a successful transform. Duplicate callers share the same job; retries do
+not replay an in-progress container upload automatically.
+
 ## Container lifecycle and updates
 
 `ImgtNativeImageTransformer` uses `ctx.container` with `durable_object`
