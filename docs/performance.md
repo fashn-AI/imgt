@@ -193,3 +193,37 @@ bills memory by provisioned awake capacity and CPU by active usage. Doubling
 shards doubles awake memory capacity; it does not automatically double CPU
 charges for the same total transform work. Storage, Worker and Durable Object
 usage, logs, and transfer are separate from the container memory estimate.
+
+## Vercel quality comparison
+
+A comparison of the viewer's local imgt integration and its Vercel staging
+deployment found both requested the same original sources at width 384 and
+quality 75, with WebP output. Downloaded files had identical dimensions.
+The browser reported different density-adjusted natural widths because the
+integrations use different `sizes` and `srcset` descriptors; those values
+were not the files' pixel widths.
+
+Six matched PNG sources, 1.1 to 4.3 megapixels, were encoded locally with the
+current renderer. Effort 2 reproduced all six deployed imgt files byte for
+byte. Effort 4 reproduced all six Vercel files byte for byte at the same width
+and quality. This isolates encoder effort as the difference for these samples.
+None of the sampled sources had an embedded ICC profile or transparency.
+
+Mean file size was 9,417 bytes for imgt and 8,998 bytes for Vercel. Compared
+with losslessly stored resized originals, mean RGB PSNR was 38.515 dB and
+38.739 dB respectively. This is a small fidelity difference, not a general
+perceptual quality score. Fabric crops showed compression loss in both
+outputs. Increasing quality to 85 improved detail but raised imgt's mean
+size to 14,132 bytes, so it is not required just to match these Vercel outputs.
+
+A local sequential comparison used one libvips thread, disabled Sharp caching,
+and three rounds per source. At width 640 and quality 75, effort 2 averaged
+58 ms CPU per transform versus 74 ms for effort 4. At quality 98, the averages
+were 68 ms and 89 ms. These are local full-transform measurements, not deployed
+CPU or latency estimates.
+
+The simple candidate for matching Vercel is effort 4 with client quality
+unchanged. It requires a renderer version bump, cache isolation, and another
+live capacity check before rollout. Production still uses effort 2; this
+comparison did not change encoding settings. Results cover six sources and
+one width for byte parity, not all formats, profiles, or delivery sizes.
