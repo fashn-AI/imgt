@@ -34,11 +34,15 @@ The deploy button requires a public source repository. See
    `images.unsplash.com` for the sample image. New installations deny image
    requests until this is set; see the [configuration guide](docs/configuration.md#allowed-source-hosts).
 
-3. Open the deployed Worker URL to try the Unsplash demo. Choose a width and
+3. Run another production GitHub build after saving the variable. Dashboard
+   variable deployments can drop native Container image references; Workers
+   Builds restores them while preserving your hosts. See the
+   [deployment guide](docs/deployment.md#github-integration).
+4. Open the deployed Worker URL to try the Unsplash demo. Choose a width and
    optimize the photo; run it again to see a cache hit. The demo requires
    `images.unsplash.com` in your allowlist. Allow several minutes for first-time
    container provisioning.
-4. Add an R2 lifecycle rule to expire derivatives after 30 days; see
+5. Add an R2 lifecycle rule to expire derivatives after 30 days; see
    [storage cleanup](docs/deployment.md#storage-cleanup).
 
 Future pushes to your production branch deploy automatically through the
