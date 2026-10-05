@@ -1,5 +1,5 @@
 import { RENDERER_VERSION } from "../container/renderer";
-import { DERIVATIVE_PREFIX } from "./constants";
+import { CONTAINER_RUNTIME_VERSION, DERIVATIVE_PREFIX } from "./constants";
 import {
   derivativeKey,
   normalizeSourceUrl,
@@ -76,6 +76,11 @@ export class SingleFlight<T> {
   }
 }
 
+// Rotate containers when renderer or runtime settings change; reuse compatible R2 images.
+export function containerNameForShard(shard: number): string {
+  return `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}-${shard}`;
+}
+
 export function containerNameForKey(key: string, shardCount: number): string {
   if (!Number.isInteger(shardCount) || shardCount < 1) {
     throw new Error("container shard count must be a positive integer");
@@ -86,6 +91,5 @@ export function containerNameForKey(key: string, shardCount: number): string {
     hash ^= key.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
   }
-  // A fresh renderer gets fresh instances; old instances can finish and sleep.
-  return `instance-${RENDERER_VERSION}-${(hash >>> 0) % shardCount}`;
+  return containerNameForShard((hash >>> 0) % shardCount);
 }

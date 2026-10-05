@@ -112,7 +112,8 @@ These limits keep the service bounded; they are not additional deployment knobs:
 - Output width up to 3840 pixels; smaller sources are not enlarged.
 - Three source redirects and a 1,024-character source URL.
 - A 20-second deadline for fetch, startup, upload, queueing and encoding.
-- Four distinct admitted jobs per shard, with one active encoder per container.
+- Up to 128 distinct jobs per shard, with eight active downloads/uploads/transforms.
+- One active Sharp encoder per container; waiting jobs share the 20-second deadline.
 
 Sharp/libvips concurrency is fixed at one.
 

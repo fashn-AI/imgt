@@ -6,7 +6,7 @@ import test, { type TestContext } from "node:test";
 import sharp from "sharp";
 import { createTransformServer, type ServerOptions } from "../container/app";
 import { encodeImage } from "../container/transform";
-import { deferred } from "./helpers";
+import { createHarness, deferred, imageRequest } from "./helpers";
 
 async function serve(
   t: TestContext,
@@ -51,6 +51,42 @@ async function until(predicate: () => Promise<boolean>) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+test("a 100-image gallery passes through the Worker, HTTP uploads, Sharp and R2", async (t) => {
+  const app = await serve(t, undefined, { maxInFlight: 8 });
+  const input = await sharp({
+    create: { width: 64, height: 32, channels: 3, background: "red" },
+  })
+    .png()
+    .toBuffer();
+  const h = createHarness({
+    sourceFetch: async () =>
+      new Response(input, { headers: { "content-type": "image/png" } }),
+    transform: (body, job, signal, deadline) =>
+      fetch(`${app.url}/transform?w=${job.width}&q=${job.quality}`, {
+        method: "POST",
+        body,
+        signal,
+        headers: { "x-imgt-deadline": String(deadline) },
+        duplex: "half",
+      } as RequestInit),
+  });
+  const responses = await Promise.all(
+    Array.from({ length: 100 }, (_, id) => h.gateway(imageRequest(`?v=${id}`))),
+  );
+  assert.ok(responses.every((response) => response.status === 200));
+  const output = Buffer.from(await responses[0].arrayBuffer());
+  const metadata = await sharp(output).metadata();
+  assert.equal(metadata.format, "webp");
+  assert.equal(metadata.width, 64);
+  assert.equal(metadata.height, 32);
+  await h.drain();
+  assert.equal(h.bucket.objects.size, 100);
+  const cached = await h.gateway(imageRequest("?v=0"));
+  assert.equal(cached.headers.get("x-imgt-cache"), "R2");
+  assert.deepEqual(Buffer.from(await cached.arrayBuffer()), output);
+  assert.equal(h.transforms, 100);
+});
 
 test("a complete image encodes while an earlier upload is stalled", async (t) => {
   const app = await serve(t);

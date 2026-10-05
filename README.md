@@ -141,10 +141,12 @@ The starter configuration uses two container shards, each with 1 vCPU and
 3 GiB RAM. Shards start on demand and stop after two idle minutes once foreground
 requests and background image refreshes finish. Native scheduling permits only
 the configured shard IDs, with an application limit of four shards. Each container
-admits four jobs and processes one image at a time. See
+uploads at most eight images at once and processes one at a time. Each shard
+accepts up to 128 distinct jobs, waiting for upload capacity within the existing
+deadline. See
 [performance decisions](docs/performance.md).
 
-The public endpoint limits each client IP to approximately 120 image requests
+The public endpoint limits each client IP to approximately 10,000 image requests
 per minute. Source `private`/`no-store` responses are rejected; `no-cache` images
 are transformed without storage. Freshness follows the source cache headers
 with a four-hour minimum and a bounded 24-hour stale window.

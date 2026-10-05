@@ -3,13 +3,21 @@ interface QueuedJob {
   cancel(): void;
 }
 
-// Only ready inputs enter this queue. Upload admission is managed separately.
+// Active tasks keep their slot until processing settles, including after aborts.
 export class TransformScheduler {
-  #active = false;
+  #active = 0;
   readonly #queue: QueuedJob[] = [];
 
+  readonly #concurrency: number;
+
+  constructor(concurrency = 1) {
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1)
+      throw new Error("invalid transform concurrency");
+    this.#concurrency = concurrency;
+  }
+
   get active(): boolean {
-    return this.#active;
+    return this.#active > 0;
   }
   get queued(): number {
     return this.#queue.length;
@@ -26,20 +34,20 @@ export class TransformScheduler {
         },
         start: () => {
           signal.removeEventListener("abort", job.cancel);
-          this.#active = true;
+          this.#active += 1;
           // Keep the slot until native processing actually settles, even if its
           // HTTP caller has gone away. Otherwise canceled work overlaps new work.
           void Promise.resolve()
             .then(task)
             .then(resolve, reject)
             .finally(() => {
-              this.#active = false;
+              this.#active -= 1;
               this.#queue.shift()?.start();
             });
         },
       };
       signal.addEventListener("abort", job.cancel, { once: true });
-      if (this.#active) this.#queue.push(job);
+      if (this.#active >= this.#concurrency) this.#queue.push(job);
       else job.start();
     });
   }

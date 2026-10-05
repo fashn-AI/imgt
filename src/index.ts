@@ -3,13 +3,18 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { parseAllowedHosts } from "./settings";
 import { config } from "../imgt.config";
 import {
-  MAX_DISTINCT_JOBS_PER_SHARD,
+  MAX_ACTIVE_JOBS_PER_SHARD,
   MAX_SOURCE_BYTES,
   TRANSFORM_TIMEOUT_MS,
 } from "./constants";
 import { TransformCoordinator } from "./coordinator";
 import { handleGateway } from "./gateway";
-import { containerNameForKey, jobRequest, type ResizeJob } from "./jobs";
+import {
+  containerNameForKey,
+  containerNameForShard,
+  jobRequest,
+  type ResizeJob,
+} from "./jobs";
 import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
 import { NativeIdleAlarm } from "./native-idle";
@@ -47,7 +52,7 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
       idleTimeoutMs: config.containers.idleTimeoutMs,
       env: {
         MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
-        MAX_IN_FLIGHT: String(MAX_DISTINCT_JOBS_PER_SHARD),
+        MAX_IN_FLIGHT: String(MAX_ACTIVE_JOBS_PER_SHARD),
         TRANSFORM_TIMEOUT_MS: String(TRANSFORM_TIMEOUT_MS),
         WEBP_EFFORT: String(config.transforms.webpEffort),
       },
@@ -98,7 +103,7 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
         config.containers.shards,
         (shard) =>
           this.env.IMGT_NATIVE_TRANSFORMER.idFromName(
-            `instance-${RENDERER_VERSION}-${shard}`,
+            containerNameForShard(shard),
           ).toString(),
       )
     ) {

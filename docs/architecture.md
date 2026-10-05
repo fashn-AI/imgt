@@ -65,10 +65,14 @@ from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to
 preserves orientation and aspect ratio, never enlarges a small source, and uses
 WebP.
 
-The two deterministic shards each admit four distinct jobs. Within a container,
-inputs upload independently, then enter a queue with one active Sharp encoder.
-A stalled upload does not block ready images. Excess jobs return retryable `429`.
-The 20-second deadline covers origin fetch, startup, upload, queueing, and
+The two deterministic shards each accept up to 128 distinct jobs. At most eight
+jobs per shard download sources, start the container, upload, or encode at once;
+the others wait without downloading originals. Within a container, uploads run
+independently and ready inputs enter a queue with one active Sharp encoder. A
+stalled upload does not block ready images. Completed results keep their
+single-flight entry during R2 writes but release active capacity immediately.
+Requests beyond the bounded admission limit return retryable `429`.
+The 20-second deadline covers admission waiting, origin fetch, startup, upload, queueing, and
 encoding. Canceled queued jobs are removed; active native processing retains
 its slot until it settles so canceled work cannot overlap new work.
 
@@ -91,7 +95,9 @@ Pending I/O, `waitUntil()` work, and monitoring can prevent eviction for up to
 15 minutes per operation while duration charges continue. The alarm enforces
 our shorter container idle timeout independently of object eviction.
 
-Renderer versions isolate R2 keys, edge keys, and shard IDs. The Worker checks
+Renderer versions isolate R2 keys, edge keys, and shard IDs. A separate runtime
+version rotates shard IDs when container settings change, keeping compatible
+derivatives in R2. The Worker checks
 the container's renderer header before persisting bytes during rollout. Review
 `RENDERER_VERSION` whenever pixels or encoding defaults change, including WebP
 effort: running containers retain their previous environment until restart.
@@ -109,7 +115,7 @@ existing installation's old namespace.
 - `container/`: HTTP uploads, ready queue, Sharp, and build-time type stripping.
 
 Worker logs cover transform failures, persistence, and container starts/stops.
-MISS timing reports total job, origin headers, startup, upload, queue, and Sharp
+MISS timing reports admission waiting, job, origin headers, startup, upload, queue, and Sharp
 work; spans overlap. Container boot labels identify real restarts. Its private
 health endpoint reports active, queued, uploading, and in-flight jobs.
 

@@ -70,7 +70,7 @@ Cache or R2 do not start a container. An idle, awake container can still incur
 memory charges; compare active CPU time, awake hours and cache reuse for your
 workload.
 
-The 120-request/minute IP limiter is approximate and local to a Cloudflare
+The 10,000-request/minute IP limiter is approximate and local to a Cloudflare
 location. It includes cache hits and is not a spending cap. Set account billing
 alerts and keep `ALLOWED_HOSTS` limited to the public assets you intend to serve.
 

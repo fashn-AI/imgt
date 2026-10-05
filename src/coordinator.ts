@@ -1,5 +1,10 @@
 import { remainingSeconds } from "./cache";
-import { MAX_DISTINCT_JOBS_PER_SHARD, TRANSFORM_TIMEOUT_MS } from "./constants";
+import {
+  MAX_ACTIVE_JOBS_PER_SHARD,
+  MAX_DISTINCT_JOBS_PER_SHARD,
+  TRANSFORM_TIMEOUT_MS,
+} from "./constants";
+import { TransformScheduler } from "../container/scheduler";
 import {
   errorResponse,
   failureResponse,
@@ -43,6 +48,7 @@ interface CoordinatorDependencies {
 
 export class TransformCoordinator {
   readonly #singleFlight = new SingleFlight<ResizeResult>();
+  readonly #scheduler = new TransformScheduler(MAX_ACTIVE_JOBS_PER_SHARD);
   constructor(private readonly deps: CoordinatorDependencies) {}
 
   // The Durable Object's HTTP boundary validates jobs before they reach here.
@@ -63,7 +69,7 @@ export class TransformCoordinator {
     try {
       const result = await this.#singleFlight.run(
         job.outputKey,
-        () => this.generate(job),
+        () => this.schedule(job),
         (value) => value.persistence,
       );
       if ("error" in result) throw result.error;
@@ -97,7 +103,44 @@ export class TransformCoordinator {
     }
   }
 
-  private async generate(job: ResizeJob): Promise<ResizeResult> {
+  private async schedule(job: ResizeJob): Promise<ResizeResult> {
+    const queuedAt = performance.now();
+    const controller = new AbortController();
+    const deadline = Date.now() + (this.deps.timeoutMs ?? TRANSFORM_TIMEOUT_MS);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      Math.max(0, deadline - Date.now()),
+    );
+    try {
+      return await this.#scheduler.run(
+        () =>
+          this.generate(
+            job,
+            controller,
+            deadline,
+            performance.now() - queuedAt,
+          ),
+        controller.signal,
+      );
+    } catch (cause) {
+      return {
+        error: controller.signal.aborted
+          ? new ImageError("image transformation timed out", 504)
+          : cause,
+      };
+    } finally {
+      clearTimeout(timeout);
+      controller.abort();
+    }
+  }
+
+  private async generate(
+    job: ResizeJob,
+    controller: AbortController,
+    deadline: number,
+    admissionMs: number,
+  ): Promise<ResizeResult> {
+    controller.signal.throwIfAborted();
     const started = performance.now();
     const stored = await this.deps.store.get(job.outputKey);
     if (stored && remainingSeconds(stored.freshUntil) > 0) {
@@ -110,12 +153,6 @@ export class TransformCoordinator {
     }
     await stored?.body.cancel();
 
-    const controller = new AbortController();
-    const deadline = Date.now() + (this.deps.timeoutMs ?? TRANSFORM_TIMEOUT_MS);
-    const timeout = setTimeout(
-      () => controller.abort(),
-      Math.max(0, deadline - Date.now()),
-    );
     let sourceBody: ReadableStream<Uint8Array> | undefined;
     let invalidation: Promise<void> | undefined;
     try {
@@ -198,6 +235,7 @@ export class TransformCoordinator {
         });
       this.deps.waitUntil(persistence);
       const serverTiming = [
+        `admission;dur=${admissionMs.toFixed(1)}`,
         `origin_headers;dur=${originMs.toFixed(1)}`,
         this.deps.prepare ? `startup;dur=${startupMs.toFixed(1)}` : undefined,
         response.headers.get("server-timing"),
@@ -230,7 +268,6 @@ export class TransformCoordinator {
       // Return the error promptly while single-flight retains pending cleanup.
       return { error, persistence: invalidation };
     } finally {
-      clearTimeout(timeout);
       controller.abort();
       if (sourceBody && !sourceBody.locked)
         await sourceBody.cancel().catch(() => {});

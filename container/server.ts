@@ -14,7 +14,7 @@ sharp.simd(true);
 
 const server = createTransformServer({
   maxInputBytes: Number(process.env.MAX_INPUT_BYTES ?? 25 * 1024 * 1024),
-  maxInFlight: Number(process.env.MAX_IN_FLIGHT ?? "4"),
+  maxInFlight: Number(process.env.MAX_IN_FLIGHT ?? "8"),
   timeoutMs: Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000"),
   effort: effort as TransformOptions["effort"],
 });

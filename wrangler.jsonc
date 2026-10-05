@@ -34,7 +34,7 @@
     {
       "name": "IMAGE_RATE_LIMITER",
       "namespace_id": "2026090401",
-      "simple": { "limit": 120, "period": 60 }
+      "simple": { "limit": 10000, "period": 60 }
     }
   ],
   "containers": [
