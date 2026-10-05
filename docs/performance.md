@@ -1,6 +1,6 @@
 # Performance
 
-imgt uses Sharp/libvips with two container shards, each allocated 1 vCPU,
+imgt uses Sharp/libvips with four container shards, each allocated 1 vCPU,
 3 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
 cache hits do not start a container.
 
@@ -20,7 +20,7 @@ cache hits do not start a container.
 - **Quality 77, WebP effort 2:** higher effort produced smaller files at the
   cost of substantially longer encoding. Changing effort requires a renderer
   version bump so running containers cannot populate incompatible cache keys.
-- **Two shards, two idle minutes:** stable routing deduplicates work for each
+- **Four shards, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
 - **Build-time type stripping:** the container loads JavaScript to reduce
@@ -155,7 +155,8 @@ For a rollout that targets 20 new derivatives/s with compute margin, four
 existing shards are a simple capacity choice: set `containers.shards` to 4.
 There is no need to add a scheduler service, a per-application pool, or automatic
 scaling based on these observations. A smaller pilot can retain two shards.
-The current default remains two; the four-shard comparison was local only.
+The default is now four shards. The comparison above used local replay;
+verify live delivery latency and failures on your deployment.
 
 Use production admission waits, encoder utilization, cache misses, failures,
 and sub-minute traffic peaks to validate the target. Apply the same 20-second

@@ -63,7 +63,7 @@ Use the current [Workers pricing](https://developers.cloudflare.com/workers/plat
 [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/),
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
-Two running shards allocate 6 GiB. Containers stop after two idle minutes once
+Four running shards allocate 12 GiB. Containers stop after two idle minutes once
 foreground requests and background image refreshes finish. Shorter idle time
 reduces awake time but can cause more cold starts. Images served from Workers
 Cache or R2 do not start a container. An idle, awake container can still incur

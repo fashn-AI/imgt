@@ -26,7 +26,7 @@ export const config = {
   },
   containers: {
     // Routing count. Native scheduling permits up to four configured shards.
-    shards: 2,
+    shards: 4,
     idleTimeoutMs: 120_000,
   },
   cache: {

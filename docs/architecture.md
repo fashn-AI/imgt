@@ -65,7 +65,7 @@ from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to
 preserves orientation and aspect ratio, never enlarges a small source, and uses
 WebP.
 
-The two deterministic shards each accept up to 128 distinct jobs. At most eight
+The four deterministic shards each accept up to 128 distinct jobs. At most eight
 jobs per shard download sources, start the container, upload, or encode at once;
 the others wait without downloading originals. Within a container, uploads run
 independently and ready inputs enter a queue with one active Sharp encoder. A
