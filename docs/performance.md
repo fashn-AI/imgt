@@ -27,6 +27,80 @@ cache hits do not start a container.
   runtime module initialization. Local startup measurements do not establish
   a Cloudflare cold-start improvement.
 
+## Rust with libvips investigation, October 2026
+
+A local Rust prototype linked directly to the exact native library bundled with
+Sharp 0.35.4: libvips 8.18.6 and WebP 1.6.0. This differs from the earlier Rust
+experiment, which used independent decoding and resizing libraries. Sharp
+already processes images in native code; switching the wrapper language does
+not replace libvips or its codecs. See [Sharp's concurrency documentation](https://sharp.pixelplumbing.com/performance/).
+
+The control used the current renderer with build-time TypeScript stripping,
+matching production. Both processes used jemalloc, one libvips thread per image,
+and disabled operation caching. Native ARM64 Docker containers had two CPUs,
+1 GiB memory and no swap. Each engine processed the same 50 gallery PNGs three
+times at width 640, quality 77 and 98, and WebP effort 4. Engine order alternated
+between runs; input order was shuffled. This is 300 transforms per engine,
+including file reads and excluding output writes, HTTP, origin, R2 and network.
+It measures sequential rendering, rather than the production two-encoder burst
+or sustained-load workload.
+
+| Measurement | Current Sharp control | Rust/libvips prototype |
+| --- | ---: | ---: |
+| Runtime filesystem, sum of regular-file sizes | 248.4 MB | 124.1 MB |
+| Idle process RSS, median of three starts | 97.3 MiB | 15.4 MiB |
+| Maximum sampled process RSS after a transform | 267.9 MiB | 89.3 MiB |
+| Maximum cgroup memory, including filesystem cache | 400.5 MiB | 257.0 MiB |
+| Quality 77, median / pooled p95 | 109.4 / 126.6 ms | 107.5 / 125.5 ms |
+| Quality 98, median / pooled p95 | 127.4 / 150.2 ms | 125.3 / 150.9 ms |
+| Quality 98, mean process CPU time | 115.0 ms | 113.4 ms |
+
+The Rust image contains a stripped executable, the same bundled native codecs
+and the same Debian runtime dependencies, without Node or the Sharp addon. It
+is a rendering harness, not a complete HTTP service. Docker reported stored
+image sizes of 86.6 MB for the production Sharp image and 40.5 MB for the native
+prototype; filesystem sizes above are separately measured from container
+exports and should not be confused with transfer sizes. HTTP runtime dependencies
+would add to the Rust prototype's footprint.
+
+All 300 corresponding gallery outputs matched byte for byte. A separate small
+fixture screen covered JPEG, PNG, WebP and AVIF, all eight EXIF orientations,
+P3, CMYK, grayscale, 16-bit pixels, alpha and no enlargement. Both engines
+rendered all 34 valid cases and rejected four invalid/truncated cases. Of those
+34 valid outputs, 32 matched exactly. Resized CMYK and 16-bit fixtures differed,
+with decoded channel differences up to 8 and 30 respectively. Full-size versions
+matched. These differences need investigation before adoption; gallery parity
+does not establish compatibility for all supported inputs.
+
+The initial native pipeline always requested an output ICC profile and was
+slower, despite matching gallery bytes. Skipping unnecessary profile conversion
+for unprofiled sRGB inputs brought it close to Sharp. Operation choices can
+outweigh wrapper overhead. Three local Docker starts reached the protocol-ready
+marker in median 186 ms for Sharp and 125 ms for Rust, including Docker launch
+and attachment. These tiny samples do not establish Cloudflare cold-start gains,
+and the marker does not mean an HTTP listener is ready.
+
+**Decision:** retain Sharp. Rust offers a substantial footprint reduction in
+this screen, but only about a 2% median rendering improvement, with no quality-98
+p95 improvement. This does not establish a meaningful capacity or delivery-time
+advantage. The prototype uses a minimal C FFI harness; it does not yet implement
+the production HTTP admission, concurrent encoder scheduling, deadlines,
+cancellation or graceful draining. Available [Rust libvips bindings](https://github.com/olxgroup-oss/libvips-rust-bindings)
+can wrap the native API, but selecting and qualifying a production binding is
+separate from measuring the engine.
+
+Lower RSS alone would not reduce the current Cloudflare bill: memory is
+[billed by provisioned capacity](https://developers.cloudflare.com/containers/platform/pricing/),
+and custom instances require [at least 3 GiB per vCPU](https://developers.cloudflare.com/containers/platform/limits/).
+A two-vCPU container still needs 6 GiB. Smaller predefined instances also reduce
+CPU allocation. A migration would need a native AMD64 comparison, output
+qualification, the complete two-encoder HTTP workload, and measured Cloudflare
+startup or CPU savings sufficient to justify owning another service runtime.
+
+The research branch is `renan/rust-libvips-research`; prototypes and raw results
+remain outside the normal checkout. No production implementation, allocation or
+deployment changed for this investigation.
+
 ## Measure your deployment
 
 Use `npm run smoke -- YOUR_ENDPOINT YOUR_SOURCE_URL --fresh` for a fresh
