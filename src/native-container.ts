@@ -183,13 +183,36 @@ export class NativeContainerTransport {
         }
         this.observe();
         polls += 1;
-        const response = await waitFor(
-          this.container
-            .getTcpPort(8080)
-            .fetch(new Request("http://container/health", { signal })),
-          signal,
+        // One stalled health connection must not consume the whole startup
+        // deadline. Only these bodyless GET probes are retried.
+        const probe = new AbortController();
+        const abort = () => probe.abort(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        const timer = setTimeout(
+          () =>
+            probe.abort(
+              new DOMException("Health probe timed out", "TimeoutError"),
+            ),
+          2000,
         );
-        await waitFor(response.body?.cancel() ?? Promise.resolve(), signal);
+        let response: Response;
+        try {
+          response = await waitFor(
+            this.container.getTcpPort(8080).fetch(
+              new Request("http://container/health", {
+                signal: probe.signal,
+              }),
+            ),
+            probe.signal,
+          );
+          await waitFor(
+            response.body?.cancel() ?? Promise.resolve(),
+            probe.signal,
+          );
+        } finally {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", abort);
+        }
         if (response.ok && this.container.running) {
           this.#ready = true;
           // Native control-plane settings can stall during provisioning. The

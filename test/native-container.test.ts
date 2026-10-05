@@ -136,6 +136,39 @@ test("port readiness retries; a warm request does not restart or poll health", a
   );
 });
 
+test("a stalled health probe is canceled and retried within the shared startup deadline", async () => {
+  let polls = 0;
+  let firstSignal: AbortSignal | undefined;
+  const h = harness(async (request) => {
+    if (++polls === 1) {
+      firstSignal = request.signal;
+      return new Promise(() => {});
+    }
+    return new Response("healthy");
+  }, 4000);
+  const keepAlive = setTimeout(() => {}, 5000);
+  try {
+    await Promise.all([
+      h.transport.prepare(new AbortController().signal),
+      h.transport.prepare(new AbortController().signal),
+    ]);
+    assert.equal(firstSignal?.aborted, true);
+    assert.equal(polls, 2);
+    assert.equal(h.starts, 1);
+    assert.equal(h.posts, 0);
+    const response = await h.transport.fetch(
+      new Request("http://container/transform", {
+        method: "POST",
+        body: "image",
+      }),
+    );
+    assert.equal(await response.text(), "image");
+    assert.equal(h.posts, 1);
+  } finally {
+    clearTimeout(keepAlive);
+  }
+});
+
 test("container exit clears readiness and the next request restores its idle timeout", async () => {
   let polls = 0;
   const h = harness(async () => {
