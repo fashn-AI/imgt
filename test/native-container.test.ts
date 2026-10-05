@@ -192,7 +192,9 @@ test("only configured shard identities can start native compute", () => {
   assert.equal(isConfiguredShard("id-1", 2, name), true);
   assert.equal(isConfiguredShard("id-2", 2, name), false);
   assert.equal(isConfiguredShard("arbitrary", 2, name), false);
-  assert.equal(isConfiguredShard("id-4", 5, name), false);
+  assert.equal(isConfiguredShard("id-7", 8, name), true);
+  assert.equal(isConfiguredShard("id-8", 8, name), false);
+  assert.equal(isConfiguredShard("id-8", 9, name), false);
   assert.equal(isConfiguredShard("id-0", 0, name), false);
 });
 

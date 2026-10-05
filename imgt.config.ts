@@ -24,8 +24,8 @@ export const config = {
     webpEffort: 4,
   },
   containers: {
-    // Routing count. Native scheduling permits up to four configured shards.
-    shards: 4,
+    // Routing count. Up to eight configured shards; see docs/performance.md.
+    shards: 8,
     idleTimeoutMs: 120_000,
   },
   cache: {

@@ -1,6 +1,6 @@
 # Performance
 
-imgt uses Sharp/libvips with four container shards, each allocated 1 vCPU,
+imgt uses Sharp/libvips with eight container shards, each allocated 1 vCPU,
 3 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
 cache hits do not start a container.
 
@@ -21,7 +21,7 @@ cache hits do not start a container.
   evaluated Vercel outputs at the same client quality. This replaces the earlier
   effort-2 throughput tradeoff. Renderer v4 isolates the new output from older
   cached images and running containers. Client quality values stay unchanged.
-- **Four shards, two idle minutes:** stable routing deduplicates work for each
+- **Eight shards, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
 - **Build-time type stripping:** the container loads JavaScript to reduce
@@ -228,3 +228,29 @@ isolates R2, edge cache, and container shards from the previous encoder.
 The earlier capacity measurements above used effort 2; they must not be
 treated as measurements of effort 4. Results cover six sources and one
 width for byte parity, not all formats, profiles, or delivery sizes.
+
+## Effort-4 capacity comparison
+
+The earlier four-shard live capacity result used effort 2. After switching to
+effort 4, a 200-image fresh quality-98 burst succeeded with an 11.401-second
+p95. A sustained 20 fresh images/s run then returned admission and deadline
+failures and was stopped. A separate 10/s run completed all 600 requests with
+a 1.114-second p95. One container encoded this sample roughly twice as slowly
+as the others. Local capacity must therefore be verified on Cloudflare.
+
+An equal-resource local comparison used eight 1-CPU, 3-GiB shards with one
+encoder each, versus four 2-CPU, 6-GiB shards with two encoders each. Both
+allocate eight CPUs and 24 GiB in total. Each completed 1,800 fresh 640-pixel,
+quality-98 images at 10/s and 20/s, followed by 100- and 200-image bursts.
+Outputs were decoded and dimensions checked. Each scenario ran once.
+
+| Allocation | 20/s p95 | 100-image burst p95 | 200-image burst p95 | Peak memory per shard |
+| --- | --- | --- | --- | --- |
+| Eight 1-CPU shards | 575 ms | 3.454 s | 6.654 s | 287 MiB |
+| Four 2-CPU shards, two encoders each | 435 ms | 3.096 s | 6.782 s | 322 MiB |
+
+The sustained run slightly favored vertical scaling; burst results were close.
+These warm Docker observations exclude Cloudflare provisioning, origin
+downloads and real R2 writes. Eight shards are being verified live before
+comparing the larger allocation. No scheduler service or automatic scaling is
+needed for this comparison.

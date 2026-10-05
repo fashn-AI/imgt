@@ -7,7 +7,7 @@ export const CONTAINER_RESOURCES = {
   memoryMib: 3072,
   diskMb: 2000,
 };
-export const MAX_CONTAINER_SHARDS = 4;
+export const MAX_CONTAINER_SHARDS = 8;
 
 export function isConfiguredShard(
   id: string,
