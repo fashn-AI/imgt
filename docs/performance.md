@@ -253,7 +253,7 @@ These warm Docker observations exclude Cloudflare provisioning, origin
 downloads and real R2 writes. No scheduler service or automatic scaling is
 needed for this comparison.
 
-### Live horizontal scaling and backend comparison
+### Live scaling and backend comparison
 
 A live comparison requested the same 50 PNG sources at width 640, quality 98
 and WebP format from imgt and the viewer's Vercel backend. Extra source query
@@ -262,13 +262,6 @@ Both requests entered through the providers' GRU edge locations; Cloudflare
 placed containers in North America. The 60-second sustained workload used
 open-loop arrivals. All fresh responses were cache misses and decoded to valid
 640-pixel WebP images. These are sequential individual runs from one client.
-
-| Workload, complete-response p95 | Eight 1-CPU imgt shards | Vercel |
-| --- | --- | --- |
-| 20 fresh images/s, 1,200 requests | 1.462 s | 1.341 s |
-| 50 fresh images together | 2.637 s | 1.377 s |
-| 200 fresh images together | 5.636 s | 1.508 s |
-| Repeat the 200-image burst | 222 ms | 193 ms |
 
 Every request succeeded. All 1,400 comparable fresh imgt outputs matched Vercel
 byte for byte, covering the 50 sources at the main application's loader
@@ -290,6 +283,40 @@ Four 2-CPU shards use the same total eight CPUs and 24 GiB as eight smaller
 shards, with fewer Durable Objects and two encoder slots each. A separate
 large-input check on two such containers completed a 100-image burst including
 one 50-megapixel RGBA source and other inputs padded to 25 MiB. Peak memory was
-628 MiB per container with swap disabled and no memory kills. Four larger
-shards are the next live comparison; runtime versioning restarts the containers
-while retaining compatible renderer-v4 derivatives.
+628 MiB per container with swap disabled and no memory kills. Runtime versioning restarts the containers while retaining compatible
+renderer-v4 derivatives.
+
+The live vertical comparison completed the same workload with four distinct
+container boots, verified through the container API as 2 vCPUs and 6 GiB each.
+All four fresh warmups succeeded; the slowest response took 7.376 seconds.
+
+| Workload, complete-response p95 | Eight 1-CPU shards | Four 2-CPU shards | Vercel |
+| --- | --- | --- | --- |
+| 20 fresh images/s, 1,200 requests | 1.462 s | 1.148 s | 1.341 s |
+| 50 fresh images together | 2.637 s | 1.755 s | 1.377 s |
+| 200 fresh images together | 5.636 s | 6.525 s | 1.508 s |
+| Repeat the 200-image burst | 222 ms | 230 ms | 193 ms |
+
+All vertical requests succeeded, including 1,400 fresh outputs that matched
+Vercel byte for byte. The repeated burst preserved every output hash and ETag,
+and conditional validation returned `304`. Four larger shards are retained:
+sustained traffic and the 50-image gallery burst favored that allocation,
+while eight smaller shards handled the 200-image burst somewhat faster. Both
+use eight total CPUs and 24 GiB; four larger shards require fewer Durable
+Objects. Placement variability and the single-run method limit the comparison.
+
+A longer confirmation run sent 3,600 additional fresh images over three
+minutes at 20/s. All succeeded and matched the corresponding Vercel outputs.
+Its complete-response p95 was 1.110 seconds, with the same four container boots
+throughout. The deployment smoke test also passed on a separate public origin.
+
+The result supports the tested 20-new-images/s target for this input mix. It
+does not reproduce Vercel's latency for large simultaneous cache misses. Do
+not increase queue limits to disguise that difference. Cached delivery is
+measured separately and remains close in these observations.
+
+At the published container memory rate, 24 GiB provisioned continuously for
+a 30-day month is approximately $155 in memory charges alone, before shared
+included usage. Actual awake time can reduce this estimate. CPU, disk, Worker,
+Durable Object, R2, logs and network usage are separate charges. See
+[Cloudflare container pricing](https://developers.cloudflare.com/containers/platform/pricing/).
