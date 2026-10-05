@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { containerNameForKey, parseResizeJob, SingleFlight } from "../src/jobs";
-import { DERIVATIVE_PREFIX } from "../src/constants";
+import { CONTAINER_RUNTIME_VERSION, DERIVATIVE_PREFIX } from "../src/constants";
+import { RENDERER_VERSION } from "../container/renderer";
 import { derivativeKey } from "../src/options";
 
 test("internal jobs accept the quality range and reject invalid JSON qualities", async () => {
@@ -82,7 +83,8 @@ test("internal jobs accept arbitrary bounded widths and reject invalid JSON widt
 test("routes a derivative key to a stable container shard", () => {
   const key = "derivatives/v1/abcdef.webp";
   assert.equal(containerNameForKey(key, 4), containerNameForKey(key, 4));
-  assert.match(containerNameForKey(key, 4), /^instance-v4-v4-[0-3]$/);
+  const prefix = `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}`;
+  assert.match(containerNameForKey(key, 4), new RegExp(`^${prefix}-[0-3]$`));
 
   const shards = new Set(
     Array.from({ length: 64 }, (_, index) =>
@@ -91,12 +93,7 @@ test("routes a derivative key to a stable container shard", () => {
   );
   assert.deepEqual(
     shards,
-    new Set([
-      "instance-v4-v4-0",
-      "instance-v4-v4-1",
-      "instance-v4-v4-2",
-      "instance-v4-v4-3",
-    ]),
+    new Set([`${prefix}-0`, `${prefix}-1`, `${prefix}-2`, `${prefix}-3`]),
   );
 });
 
