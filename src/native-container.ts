@@ -157,11 +157,10 @@ export class NativeContainerTransport {
     );
     let lastError: unknown;
     let polls = 0;
-    let inactivityConfigured = this.container.running;
+    let startedContainer = false;
     while (!signal.aborted) {
       try {
         if (!this.container.running) {
-          inactivityConfigured = false;
           this.#monitor = undefined;
           this.#bootId = crypto.randomUUID();
           console.log(
@@ -180,13 +179,7 @@ export class NativeContainerTransport {
             env: this.options.env,
             labels: { boot_id: this.#bootId },
           });
-        }
-        if (!inactivityConfigured) {
-          await waitFor(
-            this.container.setInactivityTimeout(this.options.idleTimeoutMs),
-            signal,
-          );
-          inactivityConfigured = true;
+          startedContainer = true;
         }
         this.observe();
         polls += 1;
@@ -199,6 +192,9 @@ export class NativeContainerTransport {
         await waitFor(response.body?.cancel() ?? Promise.resolve(), signal);
         if (response.ok && this.container.running) {
           this.#ready = true;
+          // Native control-plane settings can stall during provisioning. The
+          // durable idle alarm already bounds compute lifetime independently.
+          if (startedContainer) this.options.waitUntil(this.restore());
           console.log(
             JSON.stringify({
               event: "native_container_ready",

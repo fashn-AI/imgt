@@ -115,10 +115,12 @@ not replay an in-progress container upload automatically.
 scheduling. Only configured shard IDs may start compute. Concurrent callers
 share startup and private health polling. Reconnect restoration runs in the
 background so an unavailable container connection cannot block cached delivery.
-Uploads still require a healthy container. Startup, inactivity configuration and
-health checks share bounded readiness polling; transient setup failures wait
-within that deadline instead of failing immediately. Overload errors fail
-without a readiness retry. Canceling one caller does not cancel
+Uploads still require a healthy container. Startup and health checks share
+bounded readiness polling; transient start failures wait within that deadline
+instead of failing immediately. Overload errors fail without a readiness retry.
+Inactivity settings are restored in the background after a cold start is healthy;
+a stalled control-plane setting cannot delay uploads. The durable idle alarm
+enforces compute shutdown independently. Canceling one caller does not cancel
 another's startup. Transform uploads are never replayed automatically.
 
 The configured `containers.idleTimeoutMs` defaults to 120,000 milliseconds

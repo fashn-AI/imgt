@@ -250,18 +250,23 @@ test("a transient start failure waits for readiness without failing all callers"
   assert.equal(h.posts, 0);
 });
 
-test("inactivity setup is retried before health without restarting a running container", async () => {
+test("a stalled inactivity setting cannot block cold health or image upload", async () => {
   const h = harness(async () => new Response("healthy"));
-  const setTimeout = h.api.setInactivityTimeout;
-  let attempts = 0;
-  h.api.setInactivityTimeout = async (ms) => {
-    if (++attempts === 1) throw Error("setup connection reset");
-    await setTimeout(ms);
+  let configured = 0;
+  h.api.setInactivityTimeout = async () => {
+    configured++;
+    return new Promise(() => {});
   };
-  await h.transport.prepare(new AbortController().signal);
-  assert.equal(attempts, 2);
+  const response = await h.transport.fetch(
+    new Request("http://container/transform", {
+      method: "POST",
+      body: "image",
+    }),
+  );
+  assert.equal(await response.text(), "image");
   assert.equal(h.starts, 1);
-  assert.deepEqual(h.timeouts, [120000]);
+  assert.equal(h.posts, 1);
+  assert.equal(configured, 1);
 });
 
 test("startup failures remain bounded by readiness deadline and skip overload retries", async () => {
