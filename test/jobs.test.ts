@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { containerNameForKey, parseResizeJob, SingleFlight } from "../src/jobs";
+import {
+  containerNameForKey,
+  parseResizeJob,
+  SingleFlight,
+  fetchResizeJob,
+} from "../src/jobs";
 import { CONTAINER_RUNTIME_VERSION, DERIVATIVE_PREFIX } from "../src/constants";
 import { RENDERER_VERSION } from "../container/renderer";
 import { derivativeKey } from "../src/options";
@@ -181,4 +186,81 @@ test("keeps completed work coalesced until background persistence finishes", asy
   await persistence;
   await Promise.resolve();
   assert.equal(singleFlight.size, 0);
+});
+
+const resizeJob = {
+  outputKey: "derivatives/test.webp",
+  sourceUrl: "https://cdn.example.com/image.png",
+  width: 640,
+  quality: 98,
+};
+
+test("a retryable reset uses a new stub and an independent identical job request", async () => {
+  let stubs = 0;
+  const seen: unknown[] = [];
+  const response = await fetchResizeJob(resizeJob, () => {
+    const attempt = ++stubs;
+    return {
+      async fetch(request) {
+        seen.push(await request.json());
+        if (attempt === 1)
+          throw Object.assign(new Error("reset"), { retryable: true });
+        return new Response("retained image");
+      },
+    };
+  });
+  assert.equal(stubs, 2);
+  assert.deepEqual(seen, [resizeJob, resizeJob]);
+  assert.equal(await response.text(), "retained image");
+});
+
+for (const flags of [
+  {},
+  { retryable: false },
+  { retryable: true, overloaded: true },
+]) {
+  test(`non-retryable or overloaded job errors are returned promptly: ${JSON.stringify(flags)}`, async () => {
+    let calls = 0;
+    const cause = Object.assign(new Error("failure"), flags);
+    await assert.rejects(
+      fetchResizeJob(resizeJob, () => ({
+        async fetch() {
+          calls++;
+          throw cause;
+        },
+      })),
+      (e) => e === cause,
+    );
+    assert.equal(calls, 1);
+  });
+}
+
+test("resize reset retries stop after a second failed attempt", async () => {
+  let calls = 0;
+  const cause = Object.assign(new Error("reset"), { retryable: true });
+  await assert.rejects(
+    fetchResizeJob(resizeJob, () => ({
+      async fetch() {
+        calls++;
+        throw cause;
+      },
+    })),
+    (e) => e === cause,
+  );
+  assert.equal(calls, 2);
+});
+
+test("HTTP job failures are not automatically retried", async () => {
+  let calls = 0;
+  const response = await fetchResizeJob(resizeJob, () => ({
+    async fetch() {
+      calls++;
+      return new Response("full", {
+        status: 429,
+        headers: { "retry-after": "1" },
+      });
+    },
+  }));
+  assert.equal(calls, 1);
+  assert.equal(response.status, 429);
 });

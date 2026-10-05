@@ -8,7 +8,8 @@ import { createTransformServer } from "../container/app";
 import { RENDERER_VERSION } from "../container/renderer";
 import { createHarness, imageRequest } from "./helpers";
 
-async function serve(t: TestContext) {
+async function serve(t: TestContext, failFirstSource = false) {
+  let sourceCalls = 0;
   const pixels = Buffer.from(
     Array.from({ length: 64 * 40 * 3 }, (_, i) => (i * 73 + (i >> 5)) % 256),
   );
@@ -33,12 +34,14 @@ async function serve(t: TestContext) {
   const h = createHarness({
     rendererVersion: RENDERER_VERSION,
     sourceFetch: async () =>
-      new Response(input, {
-        headers: {
-          "content-type": "image/png",
-          "cache-control": "max-age=14400",
-        },
-      }),
+      failFirstSource && ++sourceCalls === 1
+        ? new Response("temporary origin failure", { status: 500 })
+        : new Response(input, {
+            headers: {
+              "content-type": "image/png",
+              "cache-control": "max-age=14400",
+            },
+          }),
     transform: async (body, job, signal, deadline) =>
       fetch(`${endpoint}/transform?w=${job.width}&q=${job.quality}`, {
         method: "POST",
@@ -179,4 +182,32 @@ test("current encoding matches standard Sharp WebP output at client quality 75",
   );
   assert.deepEqual(bytes, standard);
   await h.drain();
+});
+
+test("concurrent images recover one origin failure with one HTTP transform and reusable output", async (t) => {
+  const { h, request } = await serve(t, true);
+  const responses = await Promise.all(
+    Array.from({ length: 8 }, () => h.gateway(request())),
+  );
+  const bodies = [];
+  for (const response of responses) {
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-imgt-cache"), "MISS");
+    const body = Buffer.from(await response.arrayBuffer());
+    const { info } = await sharp(body)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    assert.equal(info.width, 32);
+    assert.equal(info.height, 20);
+    bodies.push(body);
+  }
+  for (const body of bodies) assert.deepEqual(body, bodies[0]);
+  assert.equal(h.downloads, 2);
+  assert.equal(h.transforms, 1);
+  await h.drain();
+  const cached = await h.gateway(request());
+  assert.equal(cached.headers.get("x-imgt-cache"), "R2");
+  assert.deepEqual(Buffer.from(await cached.arrayBuffer()), bodies[0]);
+  assert.equal(h.downloads, 2);
+  assert.equal(h.transforms, 1);
 });

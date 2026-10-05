@@ -91,8 +91,15 @@ Temporary source GET network failures and HTTP `500`, `502`, `503` or `504`
 responses get one retry after 100 ms, before any container upload. That single
 retry budget is shared across redirects and uses the original job deadline.
 Responses with `Retry-After`, permanent errors and source rate limits are not
-retried. There is no automatic retry of the entire image job or original-image
-fallback.
+retried.
+
+Cloudflare exceptions explicitly marked `retryable` get one image-job retry
+after 100 ms with a fresh Durable Object stub. Exceptions marked `overloaded`
+and HTTP error responses are not retried. The retried job rechecks R2 before
+starting new work; each attempt retains its 20-second transform deadline.
+Recovery from a reset can therefore wait longer than one transform deadline.
+Container upload requests themselves are never replayed. There is no
+original-image fallback.
 A normal HTML image element, including the element rendered by Next.js Image,
 does not implement imgt's `Retry-After` handling; an error can leave a broken image.
 

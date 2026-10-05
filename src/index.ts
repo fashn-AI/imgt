@@ -12,7 +12,7 @@ import { handleGateway } from "./gateway";
 import {
   containerNameForKey,
   containerNameForShard,
-  jobRequest,
+  fetchResizeJob,
   type ResizeJob,
 } from "./jobs";
 import { routeImage, handleImageJob } from "./service";
@@ -139,8 +139,7 @@ export class ImgtImageTransformer extends DurableObject<Env> {
 
 function requestResize(job: ResizeJob, env: Env): Promise<Response> {
   const name = containerNameForKey(job.outputKey, config.containers.shards);
-  const container = env.IMGT_NATIVE_TRANSFORMER.getByName(name);
-  return container.fetch(jobRequest(job));
+  return fetchResizeJob(job, () => env.IMGT_NATIVE_TRANSFORMER.getByName(name));
 }
 
 export class ImgtImageCache extends WorkerEntrypoint<Env> {

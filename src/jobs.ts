@@ -22,6 +22,33 @@ export function jobRequest(job: ResizeJob): Request {
   });
 }
 
+// Resize jobs are idempotent. A deployment can reset a Durable Object after
+// doing work, so retry its job with a fresh stub and let its R2 check deduplicate.
+// This does not replay the container's streamed transform upload.
+export async function fetchResizeJob(
+  job: ResizeJob,
+  getStub: () => { fetch(request: Request): Promise<Response> },
+): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await getStub().fetch(jobRequest(job));
+    } catch (cause) {
+      if (
+        attempt > 0 ||
+        !cause ||
+        typeof cause !== "object" ||
+        !("retryable" in cause) ||
+        cause.retryable !== true ||
+        ("overloaded" in cause && cause.overloaded === true)
+      ) {
+        throw cause;
+      }
+      console.warn(JSON.stringify({ event: "resize_retry" }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
+
 export async function parseResizeJob(
   value: unknown,
   allowedHosts: readonly string[],

@@ -197,8 +197,12 @@ See [slow requests and errors](architecture.md#slow-requests-and-errors).
 Temporary source GET network failures and HTTP `500`, `502`, `503` or `504`
 responses are retried once after 100 ms within the original deadline, before
 uploading to the container. Responses with `Retry-After` are not retried.
-Errors that remain after that attempt are not cached. imgt returns them to the
-caller without retrying the entire image job or falling back to the original. `Retry-After` describes when an
+Cloudflare exceptions marked `retryable` also get one image-job retry with a
+fresh Durable Object stub, unless marked `overloaded`. It waits 100 ms and
+rechecks R2; both attempts retain a 20-second transform deadline. Container
+uploads and HTTP error responses are not replayed.
+Errors that remain are not cached and are returned to the caller. There is no
+original-image fallback. `Retry-After` describes when an
 application may try again; a browser image element does not use it to retry a
 failed image. Existing derivatives within the stale window remain available
 during temporary background refresh failures.
