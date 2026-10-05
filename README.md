@@ -137,11 +137,11 @@ Wrangler provisions the configured R2 bucket when needed.
 
 ## Defaults and operations
 
-The starter configuration uses four container shards, each with 1 vCPU and
-3 GiB RAM. Shards start on demand and stop after two idle minutes once foreground
+The starter configuration uses four container shards, each with 2 vCPUs and
+6 GiB RAM. Shards start on demand and stop after two idle minutes once foreground
 requests and background image refreshes finish. Native scheduling permits only
-the configured shard IDs, with an application limit of four shards. Each container
-uploads at most eight images at once and processes one at a time. Each shard
+the configured shard IDs, with an application limit of eight shards. Each container
+uploads at most eight images at once and processes up to two at a time. Each shard
 accepts up to 128 distinct jobs, waiting for upload capacity within the existing
 deadline. See
 [performance decisions](docs/performance.md).

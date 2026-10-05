@@ -1,19 +1,18 @@
 # Performance
 
-imgt uses Sharp/libvips with eight container shards, each allocated 1 vCPU,
-3 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
+imgt uses Sharp/libvips with four container shards, each allocated 2 vCPUs,
+6 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
 cache hits do not start a container.
 
 ## Current decisions
 
 - **Sharp/libvips:** the evaluated alternatives did not establish an overall
   advantage while retaining the required format and color support.
-- **One CPU and one encoder per shard:** the gallery comparison below completed
-  50 and 100 image bursts at the existing allocation. More CPUs improved burst
-  latency, but are not required to fix admission failures. Each shard accepts
-  up to 128 distinct jobs, with eight active downloads or uploads. Its container
-  encodes one image at a time. Earlier smaller allocations missed deadlines or
-  exhausted memory on the large-image workload.
+- **Two CPUs and two encoders per shard:** the effort-4 allocation comparison
+  below measures horizontal and vertical scaling with eight total CPUs. Each
+  shard still admits eight active jobs and at most 128 distinct jobs; ready
+  inputs use two encoder slots. Sharp uses one libvips thread per image.
+  Canceled native work retains its slot until processing settles.
 - **Late ICC conversion:** eligible RGB inputs resize before conversion to
   sRGB. Other color and depth cases use the original conversion order. Regression
   tests cover supported formats, EXIF orientation, profiles and transparency.
@@ -21,7 +20,7 @@ cache hits do not start a container.
   evaluated Vercel outputs at the same client quality. This replaces the earlier
   effort-2 throughput tradeoff. Renderer v4 isolates the new output from older
   cached images and running containers. Client quality values stay unchanged.
-- **Eight shards, two idle minutes:** stable routing deduplicates work for each
+- **Four shards, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
 - **Build-time type stripping:** the container loads JavaScript to reduce
@@ -115,7 +114,7 @@ These are individual burst observations, not a production latency SLO or a
 sustained load test. The warmup requests reported zero container startup time,
 so this run does not establish cold-start capacity.
 
-## Sustained capacity planning
+## Earlier effort-2 capacity planning
 
 A gallery burst checks admission behavior. It does not establish capacity for
 several applications sharing a deployment. Count new derivatives separately
@@ -251,6 +250,46 @@ Outputs were decoded and dimensions checked. Each scenario ran once.
 
 The sustained run slightly favored vertical scaling; burst results were close.
 These warm Docker observations exclude Cloudflare provisioning, origin
-downloads and real R2 writes. Eight shards are being verified live before
-comparing the larger allocation. No scheduler service or automatic scaling is
+downloads and real R2 writes. No scheduler service or automatic scaling is
 needed for this comparison.
+
+### Live horizontal scaling and backend comparison
+
+A live comparison requested the same 50 PNG sources at width 640, quality 98
+and WebP format from imgt and the viewer's Vercel backend. Extra source query
+parameters created distinct derivative keys without changing source bytes.
+Both requests entered through the providers' GRU edge locations; Cloudflare
+placed containers in North America. The 60-second sustained workload used
+open-loop arrivals. All fresh responses were cache misses and decoded to valid
+640-pixel WebP images. These are sequential individual runs from one client.
+
+| Workload, complete-response p95 | Eight 1-CPU imgt shards | Vercel |
+| --- | --- | --- |
+| 20 fresh images/s, 1,200 requests | 1.462 s | 1.341 s |
+| 50 fresh images together | 2.637 s | 1.377 s |
+| 200 fresh images together | 5.636 s | 1.508 s |
+| Repeat the 200-image burst | 222 ms | 193 ms |
+
+Every request succeeded. All 1,400 comparable fresh imgt outputs matched Vercel
+byte for byte, covering the 50 sources at the main application's loader
+settings. Conditional cache validation returned `304`. Sustained and cached
+delivery latency were close, while Vercel handled large all-miss bursts faster.
+This does not establish a multi-region latency SLO or every-input parity.
+
+The first eight-shard allocation had one startup failure and subsequent
+connection failures. Container-state restoration previously held the Durable
+Object initialization gate while a platform connection waited approximately
+30 seconds, exceeding the public deadline. Restoration now runs in the
+background and logs failures; uploads still require bounded readiness checks.
+The repeated run used fresh runtime identities: all eight boots succeeded,
+with the slowest warmup response taking 9.335 seconds. The failed observations
+are retained outside the checkout. This change does not guarantee platform
+provisioning within the deadline.
+
+Four 2-CPU shards use the same total eight CPUs and 24 GiB as eight smaller
+shards, with fewer Durable Objects and two encoder slots each. A separate
+large-input check on two such containers completed a 100-image burst including
+one 50-megapixel RGBA source and other inputs padded to 25 MiB. Peak memory was
+628 MiB per container with swap disabled and no memory kills. Four larger
+shards are the next live comparison; runtime versioning restarts the containers
+while retaining compatible renderer-v4 derivatives.

@@ -17,6 +17,7 @@ const server = createTransformServer({
   maxInFlight: Number(process.env.MAX_IN_FLIGHT ?? "8"),
   timeoutMs: Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000"),
   effort: effort as TransformOptions["effort"],
+  concurrency: Number(process.env.TRANSFORM_CONCURRENCY ?? "1"),
 });
 const port = Number(process.env.PORT ?? "8080");
 server.listen(port, "0.0.0.0", () =>

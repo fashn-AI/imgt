@@ -68,7 +68,7 @@ WebP.
 The four deterministic shards each accept up to 128 distinct jobs. At most eight
 jobs per shard download sources, start the container, upload, or encode at once;
 the others wait without downloading originals. Within a container, uploads run
-independently and ready inputs enter a queue with one active Sharp encoder. A
+independently and ready inputs enter a queue with two active Sharp encoders. A
 stalled upload does not block ready images. Completed results keep their
 single-flight entry during R2 writes but release active capacity immediately.
 Requests beyond the bounded admission limit return retryable `429`.
@@ -80,7 +80,9 @@ its slot until it settles so canceled work cannot overlap new work.
 
 `ImgtNativeImageTransformer` uses `ctx.container` with `durable_object`
 scheduling. Only configured shard IDs may start compute. Concurrent callers
-share startup and private health polling; canceling one caller does not cancel
+share startup and private health polling. Reconnect restoration runs in the
+background so an unavailable container connection cannot block cached delivery.
+Uploads still require a healthy container. Canceling one caller does not cancel
 another's startup. Transform uploads are never replayed automatically.
 
 The configured `containers.idleTimeoutMs` defaults to 120,000 milliseconds

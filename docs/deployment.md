@@ -63,7 +63,7 @@ Use the current [Workers pricing](https://developers.cloudflare.com/workers/plat
 [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/),
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
-Four running shards allocate 12 GiB. Containers stop after two idle minutes once
+Four running shards allocate 24 GiB. Containers stop after two idle minutes once
 foreground requests and background image refreshes finish. Shorter idle time
 reduces awake time but can cause more cold starts. Images served from Workers
 Cache or R2 do not start a container. An idle, awake container can still incur
@@ -110,6 +110,10 @@ for default quality, encoding effort, shards, idle time, cache lifetimes and
 fixed resource limits.
 The smaller `basic` and `lite` resource profiles did not pass the large-image
 workload; see [performance decisions](performance.md).
+
+When changing resource allocation or encoder concurrency, bump
+`CONTAINER_RUNTIME_VERSION` in `src/constants.ts` to start fresh containers
+without invalidating compatible derivatives.
 
 Changing shard count changes request routing and can temporarily run old and
 new work for the same derivative during rollout. R2 contents remain valid. Keep

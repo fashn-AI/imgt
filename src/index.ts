@@ -53,6 +53,7 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
       env: {
         MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
         MAX_IN_FLIGHT: String(MAX_ACTIVE_JOBS_PER_SHARD),
+        TRANSFORM_CONCURRENCY: "2",
         TRANSFORM_TIMEOUT_MS: String(TRANSFORM_TIMEOUT_MS),
         WEBP_EFFORT: String(config.transforms.webpEffort),
       },

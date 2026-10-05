@@ -53,7 +53,7 @@ async function until(predicate: () => Promise<boolean>) {
 }
 
 test("a 100-image gallery passes through the Worker, HTTP uploads, Sharp and R2", async (t) => {
-  const app = await serve(t, undefined, { maxInFlight: 8 });
+  const app = await serve(t, undefined, { maxInFlight: 8, concurrency: 2 });
   const input = await sharp({
     create: { width: 64, height: 32, channels: 3, background: "red" },
   })
@@ -337,4 +337,56 @@ test("an active disconnect retains native work through its original deadline", a
   assert.equal(signal!.reason.message, "client disconnected");
   release.resolve();
   await until(async () => (await app.health()).inFlight === 0);
+});
+
+test("two encoders retain timed-out native slots and remove expired queued work", async (t) => {
+  const gates = [deferred(), deferred()];
+  let calls = 0;
+  let active = 0;
+  let peak = 0;
+  const app = await serve(
+    t,
+    async () => {
+      const index = calls++;
+      active += 1;
+      peak = Math.max(peak, active);
+      if (index < 2) await gates[index].promise;
+      active -= 1;
+      return Buffer.from("webp");
+    },
+    { concurrency: 2 },
+  );
+  t.after(() => gates.forEach((gate) => gate.resolve()));
+  const first = app.post("first", Date.now() + 150);
+  const second = app.post("second", Date.now() + 150);
+  await until(async () => calls === 2);
+  const expired = await app.post("expired", Date.now() + 60);
+  assert.equal(expired.status, 504);
+  assert.equal((await first).status, 504);
+  assert.equal((await second).status, 504);
+  const next = app.post("next");
+  await until(async () => (await app.health()).queued === 1);
+  assert.equal(calls, 2);
+  gates[0].resolve();
+  assert.equal((await next).status, 200);
+  assert.equal(calls, 3);
+  assert.equal(peak, 2);
+  gates[1].resolve();
+  await until(async () => !(await app.health()).active);
+});
+
+test("container encoder concurrency rejects invalid settings", () => {
+  for (const concurrency of [0, -1, 1.5, NaN]) {
+    assert.throws(
+      () =>
+        createTransformServer({
+          maxInputBytes: 1024,
+          maxInFlight: 8,
+          timeoutMs: 1000,
+          effort: 4,
+          concurrency,
+        }),
+      /invalid transform concurrency/,
+    );
+  }
 });

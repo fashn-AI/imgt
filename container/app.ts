@@ -7,6 +7,7 @@ import { encodeImage, type TransformOptions } from "./transform.ts";
 export interface ServerOptions {
   maxInputBytes: number;
   maxInFlight: number;
+  concurrency?: number;
   timeoutMs: number;
   effort: TransformOptions["effort"];
 }
@@ -56,7 +57,7 @@ export function createTransformServer(
     if (!Number.isSafeInteger(settings[name]) || settings[name] < 1)
       throw new Error(`invalid ${name}`);
   }
-  const scheduler = new TransformScheduler();
+  const scheduler = new TransformScheduler(settings.concurrency ?? 1);
   let inFlight = 0;
   let uploading = 0;
 
