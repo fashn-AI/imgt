@@ -146,7 +146,7 @@
           <p class="chart-note">
             Live requests from one client through São Paulo edge locations.
             Cloudflare containers ran in North America. Each comparison ran
-            once. The two-container trial ran later; see its failures and
+            once. The two-container trials ran later; see their failures and
             variable delivery latency below. These results are not a global
             latency guarantee.
           </p>
@@ -224,6 +224,83 @@
           2-CPU container reserves 6 GiB. Reducing the number of containers or
           CPUs reduces that memory bill.
         </p>
+        <div class="benchmark-panel">
+          <div class="chart-heading">
+            <h3>Two 2-CPU containers, live</h3>
+            <span>12 GiB total reserved RAM</span>
+          </div>
+          <div class="table-scroll">
+            <table class="benchmark-table">
+              <caption>
+                Warm delivery and idle restarts; complete-response p95
+              </caption>
+              <thead>
+                <tr>
+                  <th>Workload</th>
+                  <th>Success</th>
+                  <th>p95</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th>5/s, 300 fresh requests</th>
+                  <td>300/300</td>
+                  <td>1.047 s</td>
+                </tr>
+                <tr>
+                  <th>10/s, 600 fresh requests</th>
+                  <td>600/600</td>
+                  <td>1.084 s</td>
+                </tr>
+                <tr>
+                  <th>10/s, five minutes, 3,000 fresh requests</th>
+                  <td>2,998/3,000</td>
+                  <td>1.094 s</td>
+                </tr>
+                <tr>
+                  <th>50 fresh images together</th>
+                  <td>50/50</td>
+                  <td>2.996 s</td>
+                </tr>
+                <tr>
+                  <th>200 fresh images together</th>
+                  <td>200/200</td>
+                  <td>9.812 s</td>
+                </tr>
+                <tr>
+                  <th>200 cached images together</th>
+                  <td>200/200</td>
+                  <td>280 ms</td>
+                </tr>
+                <tr>
+                  <th>50 images after idle stop, first cycle</th>
+                  <td>50/50</td>
+                  <td>3.515 s</td>
+                </tr>
+                <tr>
+                  <th>50 images after idle stop, second cycle</th>
+                  <td>50/50</td>
+                  <td>3.769 s</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="chart-note">
+            The first 50-image provisioning attempt immediately after deployment
+            returned 50 HTTP 500 responses. The later warm run and both idle
+            restarts succeeded. The first failure remains unresolved and is
+            retained in the results. The five-minute run had two 30 s client
+            timeouts; their causes remain unresolved. Successful warm fresh
+            outputs and the 100 restart outputs matched Vercel; cache and 304
+            checks passed. Warm delivery maxima were 17.486 s at 10/s and 28.644
+            s in the 200-image burst. The second restart's maximum was 19.157 s.
+            The five-minute run's maximum successful response was 28.885 s. P95
+            does not describe these slower responses. The deployment retains
+            four 2-CPU containers because the smaller trial failed its
+            reliability check. The measured encoder queue was short, so these
+            timeouts do not establish a CPU capacity limit.
+          </p>
+        </div>
         <div class="benchmark-panel">
           <div class="chart-heading">
             <h3>Two 1-CPU containers, live</h3>
@@ -499,6 +576,7 @@
                   <th>Component</th>
                   <th>1 × 1 CPU</th>
                   <th>2 × 1 CPU</th>
+                  <th>2 × 2 CPUs</th>
                   <th>4 × 2 CPUs</th>
                   <th>8 × 1 CPU</th>
                 </tr>

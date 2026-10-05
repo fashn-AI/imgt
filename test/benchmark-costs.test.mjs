@@ -7,8 +7,8 @@ import {
 } from "../public/benchmark-costs.js";
 
 test("cost estimates distinguish awake memory from consumed CPU", () => {
-  const vertical = estimateCosts(allocations[2]);
-  const horizontal = estimateCosts(allocations[3]);
+  const vertical = estimateCosts(allocations[3]);
+  const horizontal = estimateCosts(allocations[4]);
   assert.equal(vertical.cloudflare.memory, horizontal.cloudflare.memory);
   assert.equal(vertical.cloudflare.cpu, horizontal.cloudflare.cpu);
   assert.ok(horizontal.cloudflare.objects > vertical.cloudflare.objects);

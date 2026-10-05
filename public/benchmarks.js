@@ -1,10 +1,10 @@
 import { allocations, estimateCosts } from "./benchmark-costs.js";
 
 const workloads = {
-  gallery: [1.755, 2.637, 4.201, 1.377],
-  sustained: [1.148, 1.462, null, 1.341],
-  burst: [6.525, 5.636, 15.254, 1.508],
-  cached: [0.23, 0.222, 0.467, 0.193],
+  gallery: [1.755, 2.637, 4.201, 2.996, 1.377],
+  sustained: [1.148, 1.462, null, null, 1.341],
+  burst: [6.525, 5.636, 15.254, 9.812, 1.508],
+  cached: [0.23, 0.222, 0.467, 0.28, 0.193],
 };
 const currency = (value) => `$${value.toFixed(2)}`;
 

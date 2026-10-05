@@ -35,7 +35,7 @@ at least 3 GiB per CPU, so a 2-CPU container reserves at least 6 GiB. See
 Reducing shard count or CPU capacity reduces provisioned memory charges. It also
 reduces uncached burst capacity. The current production allocation remains four
 2-CPU containers, with two encoders per container. Smaller configurations are
-experiments, not general production recommendations. A live two-container repeat
+experiments, not general production recommendations. A live two-1-CPU-container repeat
 completed 300/300 fresh transforms at 5/s with a 1.222 s p95. Its 50-image burst
 was 4.201 s and its 200-image burst 15.254 s. At 10/s it completed 598/600, with
 two client timeouts. The initial 1/s attempt also had an upstream error and two
@@ -43,6 +43,25 @@ client timeouts; the repeated 1/s run completed 30/30 with a 5.380 s p95. Timeou
 causes remain unresolved. All 1,178 successful fresh repeat outputs matched
 Vercel, and cache and conditional 304 checks passed. Detailed smaller-allocation
 results are recorded in [performance notes](performance.md).
+
+### Two 2-CPU containers
+
+A later live trial allocated 12 GiB total RAM and retained two encoders per
+container. Warm 5/s completed 300/300 at 1.047 s p95; warm 10/s completed
+600/600 at 1.084 s. Fresh 50- and 200-image bursts completed every request at
+2.996 s and 9.812 s respectively. Two idle-stop/restart cycles completed 50/50
+fresh images each at 3.515 s and 3.769 s, with new boots for both containers.
+Cached repeats completed 200/200 at 280 ms and conditional validation passed.
+
+The first provisioning burst immediately after deployment returned 50 HTTP 500
+responses. Its cause remains unresolved. The five-minute 10/s confirmation then
+completed 2,998/3,000, with two 30-second client timeouts. Successful responses
+had a 1.094 s p95 and 28.885 s maximum. Admission p95 was zero and encoder
+queue p95 was 45.9 ms; the timeouts do not establish a CPU capacity limit.
+All 4,282 successful fresh outputs across the warm trial, restart cycles and
+longer confirmation matched Vercel. The four-container allocation is restored
+because the smaller trial failed its reliability check. See the complete
+[performance notes](performance.md) for failures and response maxima.
 
 ## Cost model
 
@@ -55,6 +74,7 @@ for a 30-day month. It assumes Cloudflare account allowances are available.
 | --- | --- | --- |
 | One 1-CPU container | 3 GiB | $38.02 |
 | Two 1-CPU containers | 6 GiB | $70.32 |
+| Two 2-CPU containers | 12 GiB | $109.20 |
 | Four 2-CPU containers | 24 GiB | $187.69 |
 | Eight 1-CPU containers | 24 GiB | $214.14 |
 

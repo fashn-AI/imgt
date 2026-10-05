@@ -2,6 +2,7 @@
 export const allocations = [
   { name: "1 × 1 CPU", shards: 1, cpu: 1, memory: 3, disk: 2 },
   { name: "2 × 1 CPU", shards: 2, cpu: 1, memory: 3, disk: 2 },
+  { name: "2 × 2 CPUs", shards: 2, cpu: 2, memory: 6, disk: 2 },
   { name: "4 × 2 CPUs", shards: 4, cpu: 2, memory: 6, disk: 2 },
   { name: "8 × 1 CPU", shards: 8, cpu: 1, memory: 3, disk: 2 },
 ];

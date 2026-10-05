@@ -404,3 +404,59 @@ reserved memory but was slower for fresh gallery bursts and had client timeouts.
 It is an option to evaluate for modest traffic, not a verified replacement for the
 20/s profile. Production returns to four 2-CPU containers with fresh runtime
 identities after the trial. Cache keys and WebP output remain compatible.
+
+
+### Two 2-CPU containers, traffic sizing trial
+
+A further temporary GitHub deployment retained two independent encoders per
+container but reduced routing to two shards. The container API confirmed two
+2-vCPU, 6-GiB, 2,000-MB instances in North America. Sources, client location,
+width 640, quality 98 and effort 4 stayed the same as the earlier comparison.
+All requests used fresh derivative keys unless labeled as a repeat.
+
+| Workload | Success | Complete-response p95 of successful requests |
+| --- | --- | --- |
+| First provisioning, 50 images together | 0/50; HTTP 500 | No successful responses |
+| Warm 1/s, 30 fresh requests | 30/30 | 1.263 s |
+| Warm 5/s, 300 fresh requests | 300/300 | 1.047 s |
+| Warm 10/s, 600 fresh requests | 600/600 | 1.084 s |
+| Warm 50 images together | 50/50 | 2.996 s |
+| Warm 200 images together | 200/200 | 9.812 s |
+| Repeat the 200-image burst | 200/200 edge hits | 280 ms |
+| 50 images after a 150-second idle period, first cycle | 50/50 | 3.515 s |
+| 50 images after a second 150-second idle period | 50/50 | 3.769 s |
+| Warm 10/s for five minutes, 3,000 fresh requests | 2,998/3,000 | 1.094 s |
+
+The first provisioning failure remains unresolved. Live tail connected after
+that burst, and the existing Wrangler OAuth permissions could not retrieve
+historical Observability events. Two sample retries later returned one retained
+R2 image and one new successful transform. This does not establish where the
+initial failures occurred. Retain the 50 failures rather than treating the warm
+repeat as the only observation.
+
+Both idle cycles reported new boot identities for both shards; the API confirmed
+both containers stopped before the first restart. Successful maxima were 3.922 s
+and 19.157 s. The warm 10/s minute had a 17.486 s maximum, the warm 200-image
+burst a 28.644 s maximum, and the five-minute run a 28.885 s maximum. These
+client measurements include delivery outside the instrumented transform job.
+The five-minute run's two failures were client timeouts at 30 seconds.
+
+Successful-request p95s by minute were 1.152, 1.134, 1.061, 0.993 and 1.090 s.
+Admission p95 was zero and encoder queue p95 was 45.9 ms; the same two boots
+remained throughout. These results do not establish a CPU saturation cause for
+the timeouts, or prove that increasing CPU fixes delivery failures.
+
+All 4,282 successful fresh responses across the warm trial, the idle restarts,
+and the five-minute confirmation matched the prior corresponding Vercel bytes.
+Cache repeats and conditional 304 validation passed. The two-container profile
+halves provisioned memory to 12 GiB and reduces the public synthetic cost model
+to $109.20/month, compared with $187.69 for four containers. These are modeled
+subtotals with the calculator's assumptions, not measured bills.
+
+The trial failed its zero-failure acceptance check. Production returns to four
+2-CPU containers with fresh runtime identities, preserving renderer-v4 cached
+derivatives. Four containers passed the earlier 20/s three-minute comparison;
+that remains a finite observation, not a guarantee of future delivery reliability.
+The smaller profile is retained in the benchmark page as an experiment, rather
+than a verified production recommendation. Raw request data stays outside the
+normal checkout.

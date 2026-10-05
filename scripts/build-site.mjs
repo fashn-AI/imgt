@@ -79,8 +79,14 @@ benchmarks = benchmarks
   .replace(
     "<!-- LATENCY_CHART -->",
     chart(
-      ["imgt · 4 × 2 CPUs", "imgt · 8 × 1 CPU", "imgt · 2 × 1 CPU", "Vercel"],
-      [1.755, 2.637, 4.201, 1.377],
+      [
+        "imgt · 4 × 2 CPUs",
+        "imgt · 8 × 1 CPU",
+        "imgt · 2 × 1 CPU",
+        "imgt · 2 × 2 CPUs",
+        "Vercel",
+      ],
+      [1.755, 2.637, 4.201, 2.996, 1.377],
       (value) => `${value.toFixed(3)} s`,
     ),
   )
