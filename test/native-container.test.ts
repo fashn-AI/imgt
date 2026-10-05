@@ -65,6 +65,7 @@ function harness(
   });
   return {
     transport,
+    api,
     timeouts,
     stopped,
     monitors,
@@ -213,4 +214,20 @@ test("a delayed old exit does not clear the replacement container readiness", as
   assert.equal(h.starts, 2);
   assert.equal(h.monitors.length, 2);
   assert.equal(polls, 2);
+});
+
+test("a failed reconnect restore leaves mandatory readiness usable", async () => {
+  let polls = 0;
+  const h = harness(async () => {
+    polls += 1;
+    return new Response("healthy");
+  });
+  h.setRunning(true);
+  h.api.setInactivityTimeout = async () => {
+    throw new Error("container connection temporarily unavailable");
+  };
+  await h.transport.restore();
+  await h.transport.prepare(new AbortController().signal);
+  assert.equal(polls, 1);
+  assert.equal(h.starts, 0);
 });

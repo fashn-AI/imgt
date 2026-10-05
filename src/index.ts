@@ -72,7 +72,9 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
           }),
         ),
     });
-    ctx.blockConcurrencyWhile(() => this.#transport.restore());
+    // Reconnection failures must not block cache reads or object initialization.
+    // Transform uploads still require successful readiness checks.
+    ctx.waitUntil(this.#transport.restore());
     this.#coordinator = new TransformCoordinator({
       rendererVersion: RENDERER_VERSION,
       allowedHosts: this.#allowedHosts,

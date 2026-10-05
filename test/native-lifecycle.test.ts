@@ -144,7 +144,7 @@ test("a cold stale refresh defers idle alarms while active and schedules shutdow
   assert.equal(await stale.text(), "old-webp");
   assert.equal(running, false);
   assert.deepEqual(alarms, []);
-  const refresh = background[0];
+  const refresh = background.at(-1)!;
 
   refreshRead.resolve();
   await encodingStarted.promise;
@@ -168,4 +168,71 @@ test("a cold stale refresh defers idle alarms while active and schedules shutdow
   assert.equal(fresh.headers.get("x-imgt-cache"), "R2");
   assert.equal(await fresh.text(), "new-webp");
   assert.equal(starts, 1, "fresh R2 data must not restart compute");
+});
+
+test("a stalled connection restore does not block fresh R2 delivery", async (t) => {
+  const restore = deferred();
+  const background: Promise<unknown>[] = [];
+  let initialization = Promise.resolve();
+  let starts = 0;
+  const bucket = new MemoryBucket();
+  const options = parseImageOptions(new URL(imageRequest().url), [
+    "images.unsplash.com",
+  ]);
+  const job = {
+    ...options,
+    outputKey: await derivativeKey(DERIVATIVE_PREFIX, options),
+  };
+  const name = containerNameForKey(job.outputKey, config.containers.shards);
+  await new DerivativeStore(bucket).put(
+    job.outputKey,
+    await new Response("cached-webp").arrayBuffer(),
+    `"${"a".repeat(64)}"`,
+    Date.now() + 60000,
+  );
+  const transformer = new ImgtNativeImageTransformer(
+    {
+      id: { toString: () => name },
+      container: {
+        running: true,
+        async setInactivityTimeout() {
+          await restore.promise;
+          throw new Error("connection unavailable");
+        },
+        start() {
+          starts += 1;
+        },
+      },
+      storage: { async setAlarm() {} },
+      // Model the runtime gate: initialization work blocks subsequent events.
+      blockConcurrencyWhile: (work: () => Promise<void>) =>
+        (initialization = work()),
+      waitUntil: (promise: Promise<unknown>) => background.push(promise),
+    } as unknown as DurableObjectState,
+    {
+      ALLOWED_HOSTS: "images.unsplash.com",
+      DERIVATIVES: bucket,
+      IMGT_NATIVE_TRANSFORMER: {
+        idFromName: (value: string) => ({ toString: () => value }),
+      },
+    } as unknown as ConstructorParameters<typeof ImgtNativeImageTransformer>[1],
+  );
+  t.after(async () => {
+    restore.resolve();
+    await Promise.allSettled(background);
+  });
+  const response = await Promise.race([
+    initialization.then(() => transformer.fetch(jobRequest(job))),
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("cache read blocked by restore")),
+        1000,
+      );
+      timer.unref();
+    }),
+  ]);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-imgt-cache"), "R2");
+  assert.equal(await response.text(), "cached-webp");
+  assert.equal(starts, 0);
 });

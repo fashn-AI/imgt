@@ -88,10 +88,15 @@ export class NativeContainerTransport {
   }
 
   async restore(): Promise<void> {
-    if (this.container.running) {
+    if (!this.container.running) return;
+    try {
       await this.container.setInactivityTimeout(this.options.idleTimeoutMs);
       this.#bootId = (await this.container.inspect())?.labels.boot_id;
       this.observe();
+    } catch (error) {
+      // Platform connection errors during reconnect must not block requests.
+      // prepare() still requires a healthy container before accepting uploads.
+      console.error("container state restore failed", error);
     }
   }
 
