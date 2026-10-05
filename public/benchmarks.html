@@ -146,9 +146,9 @@
           <p class="chart-note">
             Live requests from one client through São Paulo edge locations.
             Cloudflare containers ran in North America. Each comparison ran
-            once. The two-container trials ran later; see their failures and
-            variable delivery latency below. These results are not a global
-            latency guarantee.
+            once. Two-container chart values use the clean confirmation below.
+            Those trials ran later; see their failures and variable delivery
+            latency below. These results are not a global latency guarantee.
           </p>
         </div>
         <p class="benchmark-copy">
@@ -224,9 +224,85 @@
           2-CPU container reserves 6 GiB. Reducing the number of containers or
           CPUs reduces that memory bill.
         </p>
+        <div class="benchmark-panel" id="clean-confirmation">
+          <div class="chart-heading">
+            <h3>Clean two-container confirmation</h3>
+            <span>12 GiB total RAM, 60 s job / 90 s client limits</span>
+          </div>
+          <div class="table-scroll">
+            <table class="benchmark-table">
+              <caption>
+                Fresh shards, complete responses, zero errors in this run
+              </caption>
+              <thead>
+                <tr>
+                  <th>Workload</th>
+                  <th>Success</th>
+                  <th>p95</th>
+                  <th>Maximum</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th>First provisioning</th>
+                  <td>50/50</td>
+                  <td>12.394 s</td>
+                  <td>21.484 s</td>
+                </tr>
+                <tr>
+                  <th>10/s, five-minute arrival window</th>
+                  <td>3,000/3,000</td>
+                  <td>1.571 s</td>
+                  <td>67.690 s</td>
+                </tr>
+                <tr>
+                  <th>50 fresh images together</th>
+                  <td>50/50</td>
+                  <td>2.733 s</td>
+                  <td>2.913 s</td>
+                </tr>
+                <tr>
+                  <th>200 fresh images together</th>
+                  <td>200/200</td>
+                  <td>10.330 s</td>
+                  <td>26.125 s</td>
+                </tr>
+                <tr>
+                  <th>200 cached images together</th>
+                  <td>200/200</td>
+                  <td>296 ms</td>
+                  <td>533 ms</td>
+                </tr>
+                <tr>
+                  <th>50 fresh images after idle stop</th>
+                  <td>50/50</td>
+                  <td>4.237 s</td>
+                  <td>12.668 s</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="chart-note">
+            Both containers stopped and restarted with new boot IDs. All 3,352
+            fresh outputs, including the restart gallery, matched Vercel. The
+            sustained phase took 321.558 s including delivery after the
+            five-minute arrival window. All 20 responses slower than 20 s were
+            rechecked from edge cache in at most 70 ms. Two containers passed
+            this finite run, with slower uncached bursts than Vercel. Earlier
+            failed trials remain below.
+          </p>
+          <p class="chart-note">
+            The 67.690 s response had headers after 740 ms and a measured
+            transform job of 190 ms. Most waiting happened during body delivery,
+            outside the transform deadline. This delay remains unexplained; more
+            encoder capacity is not an established remedy. These results do not
+            establish Vercel-equivalent tail latency or an availability
+            guarantee.
+          </p>
+        </div>
         <div class="benchmark-panel">
           <div class="chart-heading">
-            <h3>Two 2-CPU containers, live</h3>
+            <h3>Earlier two 2-CPU trial</h3>
             <span>12 GiB total reserved RAM</span>
           </div>
           <div class="table-scroll">
@@ -397,9 +473,9 @@
             individual health probes to two seconds returned 33/50, with a
             successful p95 of 44.515 s and maximum of 44.908 s. Sixteen requests
             returned HTTP 504 and one failed the exact-version check. The next
-            two-shard warm-up returned 1/2, so sustained load was stopped. The
-            current trial uses fresh shard IDs with the same allocation. Two
-            containers have not passed the reliability acceptance check.
+            two-shard warm-up returned 1/2, so sustained load was stopped. A
+            later clean confirmation used fresh shard IDs with the same
+            allocation. Its results above do not erase these failed checks.
           </p>
           <p class="chart-note">
             Cloudflare reported a
@@ -552,9 +628,10 @@
             million new derivatives over 30 days average 0.77/s. Test your
             busiest minute and gallery bursts before choosing an allocation. The
             four-container profile completed the tested 20/s workload. The
-            current two-container reliability trial is still under evaluation.
-            Earlier smaller trials had slower bursts and client timeouts. It is
-            an option to evaluate for modest traffic, rather than a verified
+            current two-container default passed the clean 10/s confirmation and
+            idle restart, with response-body delays still unresolved. Earlier
+            smaller trials had slower bursts and client timeouts. It is an
+            option to evaluate for modest traffic, rather than a verified
             replacement for the 20/s allocation.
             <a
               href="https://developers.cloudflare.com/containers/platform/limits/"
@@ -819,9 +896,10 @@
             <h3>Bounded work</h3>
             <p>
               Eight active uploads and at most 128 distinct jobs per shard, with
-              a 20 s deadline. Native cancellation retains its slot until the
-              operation settles. Failed configurations stay visible; latency for
-              only successful requests does not demonstrate capacity when
+              a 20 s deadline in the earlier comparisons; current job attempts
+              have a 60 s deadline. Native cancellation retains its slot until
+              the operation settles. Failed configurations stay visible; latency
+              for only successful requests does not demonstrate capacity when
               failures occur.
             </p>
           </div>

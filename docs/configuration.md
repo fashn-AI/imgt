@@ -86,7 +86,7 @@ Edit `imgt.config.ts` to change these settings:
 | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `transforms.defaultQuality` | 77; must be an integer from 1 to 100.                                                                         |
 | `transforms.webpEffort`     | 4; accepted range 0–6.                                                                                        |
-| `containers.shards`         | 4; supported range 1–8.                                                                                       |
+| `containers.shards`         | 2; supported range 1–8.                                                                                       |
 | `containers.idleTimeoutMs`  | 120,000 milliseconds (2 minutes); compute stops after foreground requests and background refreshes finish and the idle interval passes. |
 | `cache.minFreshSeconds`     | 14,400 seconds (4 hours).                                                                                     |
 | `cache.maxStaleSeconds`     | 86,400 seconds (24 hours).                                                                                    |
@@ -111,12 +111,13 @@ These limits keep the service bounded; they are not additional deployment knobs:
 - JPEG, PNG, WebP and AVIF inputs; WebP output; 25 MiB and 50 megapixels per input.
 - Output width up to 3840 pixels; smaller sources are not enlarged.
 - Three source redirects and a 1,024-character source URL.
-- A 20-second deadline for fetch, startup, upload, queueing and encoding.
+- A 60-second deadline per job attempt for admission, fetch, startup, upload, queueing and encoding.
 - Up to 128 distinct jobs per shard, with eight active downloads/uploads/transforms.
-- One active Sharp encoder per container; waiting jobs share the 20-second deadline.
+- Two active Sharp encoders per container; waiting jobs share the 60-second deadline.
 
-Two independent encoder slots run per container. Sharp/libvips concurrency is
-fixed at one thread per image.
+Sharp/libvips concurrency is fixed at one thread per image.
+Read [request recovery behavior](architecture.md#slow-requests-and-errors) for
+bounded source retries, Durable Object resets and errors.
 
 `CONTAINER_RESOURCES` in `src/native-container.ts` allocates 2 vCPUs, 6 GiB RAM
 and 2,000 MB disk per shard. The smaller `basic` and `lite` profiles did not pass

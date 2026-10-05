@@ -86,7 +86,7 @@ benchmarks = benchmarks
         "imgt · 2 × 2 CPUs",
         "Vercel",
       ],
-      [1.755, 2.637, 4.201, 2.996, 1.377],
+      [1.755, 2.637, 4.201, 2.733, 1.377],
       (value) => `${value.toFixed(3)} s`,
     ),
   )

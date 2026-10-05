@@ -33,7 +33,7 @@ at least 3 GiB per CPU, so a 2-CPU container reserves at least 6 GiB. See
 [resource limits](https://developers.cloudflare.com/containers/platform/limits/).
 
 Reducing shard count or CPU capacity reduces provisioned memory charges. It also
-reduces uncached burst capacity. Four 2-CPU containers completed the 20/s comparison. The current trial uses two
+reduces uncached burst capacity. Four 2-CPU containers completed the 20/s comparison. The current default uses two
 2-CPU containers, with two encoders per container. Smaller configurations are
 experiments, not general production recommendations. A live two-1-CPU-container repeat
 completed 300/300 fresh transforms at 5/s with a 1.222 s p95. Its 50-image burst
@@ -102,7 +102,7 @@ The last check's successful p95 was 44.515 s and maximum 44.908 s. One shard
 became healthy in 40.204 s; the other exhausted its 60-second readiness limit.
 A subsequent two-shard warm-up completed 1/2 and stopped before sustained load.
 These results do not establish two-container reliability or a CPU capacity limit.
-The current trial uses fresh runtime-v11 shard IDs with the same allocation and
+The clean confirmation below used fresh runtime-v11 shard IDs with the same allocation and
 renderer; stored derivatives remain compatible.
 
 Cloudflare reported a [regional Durable Objects and Containers incident](https://www.cloudflarestatus.com/incidents/z28czd65h29l)
@@ -110,6 +110,32 @@ from October 5, 17:14 to 22:35 UTC in Eastern North America, matching the contai
 region. Earlier trials overlapped it; the latest checks followed its reported
 resolution. This is relevant context, not an established cause of every failure.
 The new pending-I/O compatibility flag was already enabled in the live Worker.
+
+### Clean confirmation with fresh shards
+
+A fresh runtime-v11 pair completed the immediate 50-image provisioning burst
+and all 3,000 arrivals at 10/s over five minutes. It retained two encoders per
+container, 12 GiB total RAM, a 60-second job deadline and 90-second client limit.
+
+| Workload | Success | Complete-response p95 | Maximum |
+| --- | --- | --- | --- |
+| First provisioning | 50/50 | 12.394 s | 21.484 s |
+| 10/s, five-minute arrival window | 3,000/3,000 | 1.571 s | 67.690 s |
+| 50 fresh images together | 50/50 | 2.733 s | 2.913 s |
+| 200 fresh images together | 200/200 | 10.330 s | 26.125 s |
+| 200 cached images together | 200/200 | 296 ms | 533 ms |
+| 50 fresh images after idle stop | 50/50 | 4.237 s | 12.668 s |
+
+Both containers stopped after idle time and restarted with new boot IDs.
+All 3,352 fresh outputs, including the restart gallery, matched Vercel.
+All 20 responses slower than 20 seconds were rechecked from edge cache in at most 70 ms. The sustained phase took
+321.558 seconds including delivery after the arrival window. Queueing remained
+short, but delivery outliers remain unresolved: the 67.690-second response had
+headers after 740 ms and a 190 ms transform job. A job deadline does not bound
+full-body delivery. The two-container allocation remains the smaller starting
+point for this tested workload; its 20/s capacity remains unverified. These finite
+results do not establish Vercel-equivalent tail latency or long-term reliability.
+The earlier failures remain visible above.
 
 ## Cost model
 

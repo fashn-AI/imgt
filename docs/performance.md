@@ -1,6 +1,6 @@
 # Performance
 
-imgt is testing Sharp/libvips with two container shards, each allocated 2 vCPUs,
+imgt uses Sharp/libvips with two container shards, each allocated 2 vCPUs,
 6 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
 cache hits do not start a container.
 
@@ -20,7 +20,7 @@ cache hits do not start a container.
   evaluated Vercel outputs at the same client quality. This replaces the earlier
   effort-2 throughput tradeoff. Renderer v4 isolates the new output from older
   cached images and running containers. Client quality values stay unchanged.
-- **Two shards under evaluation, two idle minutes:** stable routing deduplicates work for each
+- **Two shards, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
 - **Build-time type stripping:** the container loads JavaScript to reduce
@@ -585,3 +585,46 @@ matches the containers, but the incident does not prove the cause of each failur
 Runtime v11 gives the next trial fresh shard identities while retaining the same
 allocation, renderer and cached derivatives; it avoids reusing the objects that
 continued failing health across rollout attempts.
+
+### Clean two-container confirmation
+
+Runtime v11 started two fresh Durable Object shards, each 2 vCPUs, 6 GiB RAM
+and two encoders. The live Worker retained the pending-I/O compatibility flag,
+renderer v4 and effort 4. The client allowed 90 seconds; job attempts allowed
+60 seconds. Cloudflare placed both containers in ENAM. Exact Worker-version
+checks, full-body reads, WebP decoding and Vercel byte comparisons passed.
+
+| Workload | Success | Complete-response p95 | Maximum |
+| --- | --- | --- | --- |
+| Immediate provisioning burst | 50/50 | 12.394 s | 21.484 s |
+| 10/s, five-minute arrival window | 3,000/3,000 | 1.571 s | 67.690 s |
+| 50 fresh images together | 50/50 | 2.733 s | 2.913 s |
+| 200 fresh images together | 200/200 | 10.330 s | 26.125 s |
+| 200 cached images together | 200/200 | 296 ms | 533 ms |
+| Recheck 20 responses slower than 20 s | 20/20 edge hits | 64 ms | 70 ms |
+
+All 3,302 fresh outputs matched Vercel. The five-minute arrival window took
+321.558 seconds to deliver its last image, including draining outstanding
+requests. Admission p95 was zero and native queue p95 was 46.5 ms. Minute-by-minute
+p95 values were 1.979, 1.551, 1.211, 1.261 and 2.112 seconds. Both boot IDs
+remained stable during the warm run.
+
+Eighteen sustained responses took over 20 seconds; twelve exceeded 30 seconds,
+and two exceeded 60 seconds. The slowest had headers after 740 ms and an
+instrumented 190 ms job, with zero admission or encoder queueing. Most of its
+67.690 seconds elapsed while the client waited for the response body. The
+other over-60-second response reported a 356 ms job. These delivery outliers
+remain unexplained and do not establish a CPU limit. The longer client window
+allowed these images to arrive; a 30-second client limit would have rejected
+some successful full responses. A zero-error finite trial is not a latency or
+availability guarantee, and it does not explain the previous rollout failures.
+
+After 150 seconds with no image requests, the container API confirmed both
+instances stopped. A fresh 50-image gallery restarted both and completed
+50/50 at 4.237 s p95 and 12.668 s maximum, with new boot IDs. All 50 outputs
+matched Vercel, bringing the clean confirmation to 3,352 byte-matched fresh
+images. The two-container allocation is retained as a smaller starting point
+for traffic within the tested workload. Its 20/s capacity is unverified, and
+long response-body waits and historical startup failures remain unresolved.
+More encoders can shorten large fresh bursts, but the measurements do not
+establish that more memory fixes those delivery outliers.
