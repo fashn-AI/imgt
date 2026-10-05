@@ -85,7 +85,7 @@ Edit `imgt.config.ts` to change these settings:
 | Setting                     | Default                                                                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `transforms.defaultQuality` | 77; must be an integer from 1 to 100.                                                                         |
-| `transforms.webpEffort`     | 2; accepted range 0–6.                                                                                        |
+| `transforms.webpEffort`     | 4; accepted range 0–6.                                                                                        |
 | `containers.shards`         | 4; supported range 1–4.                                                                                       |
 | `containers.idleTimeoutMs`  | 120,000 milliseconds (2 minutes); compute stops after foreground requests and background refreshes finish and the idle interval passes. |
 | `cache.minFreshSeconds`     | 14,400 seconds (4 hours).                                                                                     |

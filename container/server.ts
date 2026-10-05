@@ -4,7 +4,7 @@ import { createTransformServer } from "./app.ts";
 import { RENDERER_VERSION } from "./renderer.ts";
 import type { TransformOptions } from "./transform.ts";
 
-const effort = Number(process.env.WEBP_EFFORT ?? "2");
+const effort = Number(process.env.WEBP_EFFORT ?? "4");
 if (!Number.isInteger(effort) || effort < 0 || effort > 6)
   throw new Error("WEBP_EFFORT must be an integer from 0 to 6");
 sharp.concurrency(1);

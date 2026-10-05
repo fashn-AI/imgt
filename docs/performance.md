@@ -17,9 +17,10 @@ cache hits do not start a container.
 - **Late ICC conversion:** eligible RGB inputs resize before conversion to
   sRGB. Other color and depth cases use the original conversion order. Regression
   tests cover supported formats, EXIF orientation, profiles and transparency.
-- **Quality 77, WebP effort 2:** higher effort produced smaller files at the
-  cost of substantially longer encoding. Changing effort requires a renderer
-  version bump so running containers cannot populate incompatible cache keys.
+- **Quality 77, WebP effort 4:** standard Sharp WebP effort matched the
+  evaluated Vercel outputs at the same client quality. This replaces the earlier
+  effort-2 throughput tradeoff. Renderer v4 isolates the new output from older
+  cached images and running containers. Client quality values stay unchanged.
 - **Four shards, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
@@ -222,8 +223,8 @@ and three rounds per source. At width 640 and quality 75, effort 2 averaged
 were 68 ms and 89 ms. These are local full-transform measurements, not deployed
 CPU or latency estimates.
 
-The simple candidate for matching Vercel is effort 4 with client quality
-unchanged. It requires a renderer version bump, cache isolation, and another
-live capacity check before rollout. Production still uses effort 2; this
-comparison did not change encoding settings. Results cover six sources and
-one width for byte parity, not all formats, profiles, or delivery sizes.
+The default now uses effort 4 with client quality unchanged. Renderer v4
+isolates R2, edge cache, and container shards from the previous encoder.
+The earlier capacity measurements above used effort 2; they must not be
+treated as measurements of effort 4. Results cover six sources and one
+width for byte parity, not all formats, profiles, or delivery sizes.

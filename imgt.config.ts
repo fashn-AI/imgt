@@ -17,12 +17,11 @@ export interface ImgtConfig {
 
 export const config = {
   transforms: {
-    // 0 is fastest and 6 is smallest. Effort 2 / quality 77 balanced encoding
-    // time and the measured SSIM proxy; see docs/performance.md.
+    // Match Sharp's standard WebP encoding effort; see docs/performance.md.
     defaultQuality: 77,
     // Bump the renderer version when changing effort so running containers and
     // the new cache keys cannot use different encoder settings.
-    webpEffort: 2,
+    webpEffort: 4,
   },
   containers: {
     // Routing count. Native scheduling permits up to four configured shards.

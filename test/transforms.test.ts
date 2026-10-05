@@ -156,3 +156,27 @@ test("integer widths resize exactly, never upscale, and keep distinct cached der
   assert.equal(h.transforms, 4);
   assert.equal(h.bucket.puts, 4);
 });
+
+// Independent standard Sharp options reproduce the Vercel WebP path.
+// Omitting effort here detects a regression to the former effort-2 tradeoff.
+test("current encoding matches standard Sharp WebP output at client quality 75", async (t) => {
+  const { h, input, request } = await serve(t);
+  const response = await h.gateway(request(32, 75));
+  assert.equal(response.status, 200);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const resized = sharp(input)
+    .rotate()
+    .resize({ width: 32, withoutEnlargement: true });
+  const standard = await resized.clone().webp({ quality: 75 }).toBuffer();
+  const previous = await resized
+    .clone()
+    .webp({ quality: 75, effort: 2 })
+    .toBuffer();
+  assert.notDeepEqual(
+    standard,
+    previous,
+    "fixture must distinguish encoding effort",
+  );
+  assert.deepEqual(bytes, standard);
+  await h.drain();
+});

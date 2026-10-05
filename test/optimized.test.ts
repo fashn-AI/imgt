@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
+import { config } from "../imgt.config";
 import { encodeImage } from "./fixtures/reference-transform";
 import { encodeImage as encodeOptimized } from "../container/transform";
 
-const settings = { width: 48, quality: 77, effort: 2 as const };
+const settings = {
+  width: 48,
+  quality: 77,
+  effort: config.transforms.webpEffort,
+};
 async function compare(input: Buffer, width = settings.width) {
   const options = { ...settings, width };
   const baseline = await encodeImage(

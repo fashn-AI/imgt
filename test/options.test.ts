@@ -181,8 +181,8 @@ test("each quality has its own R2 and canonical cache key", async () => {
   };
   const second = { ...first, quality: 77 };
   assert.notEqual(
-    await derivativeKey("derivatives/v3", first),
-    await derivativeKey("derivatives/v3", second),
+    await derivativeKey("derivatives/v4", first),
+    await derivativeKey("derivatives/v4", second),
   );
   assert.notEqual(
     canonicalCacheRequest(request, first).url,
@@ -199,8 +199,8 @@ test("arbitrary widths have separate R2 and canonical cache keys", async () => {
   };
   const second = { ...first, width: 642 };
   assert.notEqual(
-    await derivativeKey("derivatives/v3", first),
-    await derivativeKey("derivatives/v3", second),
+    await derivativeKey("derivatives/v4", first),
+    await derivativeKey("derivatives/v4", second),
   );
   assert.notEqual(
     canonicalCacheRequest(request, first).url,
@@ -235,8 +235,8 @@ test("canonicalizes Workers Cache keys to normalized public parameters", () => {
       ["url", "https://cdn.example.com/x.jpg"],
       ["w", "640"],
       ["q", "75"],
-      ["e", "2"],
-      ["v", "derivatives/v3"],
+      ["e", "4"],
+      ["v", "derivatives/v4"],
     ],
   );
 });

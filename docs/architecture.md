@@ -24,7 +24,7 @@ never replaces the full image in Workers Cache. Static assets bypass the Worker.
 
 ## Cache policy
 
-Only derivatives are stored, under `derivatives/v3/<hash>.webp`. The key includes
+Only derivatives are stored, under `derivatives/v4/<hash>.webp`. The key includes
 source URL, width, quality, output format, and encoder effort. ETags hash the
 output bytes. Absolute freshness and stale deadlines are stored in R2 metadata.
 

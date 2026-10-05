@@ -682,7 +682,7 @@ test("rollout rejects old renderer bytes without caching and recovers on the new
   let current = false;
   let cancelled = false;
   const h = createHarness({
-    rendererVersion: "v3",
+    rendererVersion: "v4",
     transform: async (body) => {
       await new Response(body).arrayBuffer();
       if (!current)
@@ -692,9 +692,10 @@ test("rollout rejects old renderer bytes without caching and recovers on the new
               cancelled = true;
             },
           }),
+          { headers: { "x-imgt-renderer": "v3" } },
         );
       return new Response("new renderer", {
-        headers: { "x-imgt-renderer": "v3" },
+        headers: { "x-imgt-renderer": "v4" },
       });
     },
   });
