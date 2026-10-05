@@ -113,3 +113,58 @@ also verified image decoding, cache reuse, and conditional `304` responses.
 These are individual burst observations, not a production latency SLO or a
 sustained load test. The warmup requests reported zero container startup time,
 so this run does not establish cold-start capacity.
+
+## Sustained capacity planning
+
+A gallery burst checks admission behavior. It does not establish capacity for
+several applications sharing a deployment. Count new derivatives separately
+from cached delivery requests, and benchmark the actual client width and quality
+settings before sizing compute. Monthly and daily totals do not reveal
+sub-minute peaks.
+
+A follow-up local comparison used the same 50 PNG sources at width 640 and
+quality 98. Every request had a distinct derivative key, so no edge hits, R2
+hits, or deduplication reduced encoder work. Two and four shards each used one
+CPU, 3 GiB RAM, eight active jobs, and a 128-job admission bound. Each rate ran
+for 60 seconds using open-loop arrivals. Storage was again an in-memory R2
+double with asynchronous writes delayed by 300 ms; outputs were decoded.
+
+| Workload | Two shards | Four shards |
+| --- | --- | --- |
+| 10 new derivatives/s, p95 | 166 ms | 167 ms |
+| 20 new derivatives/s, p95 | 1,131 ms | 351 ms |
+| CPU utilization per shard at 20/s | 87–96% | 46–51% |
+| 100 simultaneous new derivatives, p95 | 4.486 s | 3.073 s |
+| 200 simultaneous new derivatives, p95 | 9.134 s | 5.522 s |
+
+Every request succeeded: 1,860 sustained requests and 300 burst requests per
+allocation. Each scenario ran once, so these are individual observations,
+not a statistical capacity guarantee. Four shards had useful headroom at 20
+new derivatives/s. Two were close to CPU saturation at that rate, even though
+they returned no errors. Queue capacity cannot compensate for a sustained
+arrival rate higher than encoder throughput.
+
+A live two-shard probe at quality 98 returned 50/50 and 100/100 valid cache
+misses. The first burst included up to 5.092 seconds of startup and had an
+8.649-second p95. The warm 100-request burst used nearby widths 641 and 642
+and had a 5.864-second p95. Local replay latency therefore must not be treated
+as Cloudflare delivery latency. Larger inputs, other formats, distant origins,
+and other width/quality mixes still need representative verification.
+
+For a rollout that targets 20 new derivatives/s with compute margin, four
+existing shards are a simple capacity choice: set `containers.shards` to 4.
+There is no need to add a scheduler service, a per-application pool, or automatic
+scaling based on these observations. A smaller pilot can retain two shards.
+The current default remains two; the four-shard comparison was local only.
+
+Use production admission waits, encoder utilization, cache misses, failures,
+and sub-minute traffic peaks to validate the target. Apply the same 20-second
+deadline and memory bounds while increasing capacity. Keep source validation
+and deduplication across applications. Treat cached delivery throughput as a
+separate Worker/cache measurement because it does not start Sharp.
+
+[Container pricing](https://developers.cloudflare.com/containers/platform/pricing/)
+bills memory by provisioned awake capacity and CPU by active usage. Doubling
+shards doubles awake memory capacity; it does not automatically double CPU
+charges for the same total transform work. Storage, Worker and Durable Object
+usage, logs, and transfer are separate from the container memory estimate.
