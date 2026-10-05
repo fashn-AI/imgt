@@ -34,7 +34,7 @@ export async function fetchResizeJob(
       return await getStub().fetch(jobRequest(job));
     } catch (cause) {
       if (
-        attempt > 0 ||
+        attempt > 1 ||
         !cause ||
         typeof cause !== "object" ||
         !("retryable" in cause) ||
@@ -44,7 +44,7 @@ export async function fetchResizeJob(
         throw cause;
       }
       console.warn(JSON.stringify({ event: "resize_retry" }));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
     }
   }
 }

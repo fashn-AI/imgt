@@ -15,7 +15,7 @@ sharp.simd(true);
 const server = createTransformServer({
   maxInputBytes: Number(process.env.MAX_INPUT_BYTES ?? 25 * 1024 * 1024),
   maxInFlight: Number(process.env.MAX_IN_FLIGHT ?? "8"),
-  timeoutMs: Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000"),
+  timeoutMs: Number(process.env.TRANSFORM_TIMEOUT_MS ?? "60000"),
   effort: effort as TransformOptions["effort"],
   concurrency: Number(process.env.TRANSFORM_CONCURRENCY ?? "1"),
 });
@@ -50,7 +50,7 @@ function shutdown() {
   server.closeIdleConnections();
   setTimeout(
     () => process.exit(1),
-    Number(process.env.TRANSFORM_TIMEOUT_MS ?? "20000") + 1000,
+    Number(process.env.TRANSFORM_TIMEOUT_MS ?? "60000") + 1000,
   ).unref();
 }
 process.on("SIGTERM", shutdown);

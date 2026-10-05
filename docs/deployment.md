@@ -122,7 +122,7 @@ without invalidating compatible derivatives.
 Changing shard count changes request routing and can temporarily run old and
 new work for the same derivative during rollout. R2 contents remain valid. Keep
 the shard count stable during routine releases. The per-shard queue limit and
-20-second deadline remain fixed safety limits.
+60-second deadline remain fixed safety limits.
 
 ## Updates
 
@@ -142,7 +142,7 @@ container keeps its image until it stops; its next start selects the named
 `sharp` image from the deployed Worker. The two-minute idle alarm waits for
 foreground requests and background image refreshes to finish before
 stopping. Readiness checks wait for the private container health endpoint before
-uploading an image. Fresh allocation can still exceed the public 20-second
+uploading an image. Fresh allocation can still exceed the public 60-second
 deadline; deploy success is not a promise that every image request succeeds.
 
 When changing `transforms.webpEffort`, bump `RENDERER_VERSION` in
@@ -189,7 +189,7 @@ image available. Consult [container rollout behavior](https://developers.cloudfl
 
 ## Image request failures
 
-The transform deadline is 20 seconds, including admission waiting, origin fetch
+The transform deadline is 60 seconds, including admission waiting, origin fetch
 and container startup. This is not a complete-response deadline; cache lookups
 and network delivery can add time. The benchmark client timeout is separate.
 See [slow requests and errors](architecture.md#slow-requests-and-errors).
@@ -197,9 +197,9 @@ See [slow requests and errors](architecture.md#slow-requests-and-errors).
 Temporary source GET network failures and HTTP `500`, `502`, `503` or `504`
 responses are retried once after 100 ms within the original deadline, before
 uploading to the container. Responses with `Retry-After` are not retried.
-Cloudflare exceptions marked `retryable` also get one image-job retry with a
-fresh Durable Object stub, unless marked `overloaded`. It waits 100 ms and
-rechecks R2; both attempts retain a 20-second transform deadline. Container
+Cloudflare exceptions marked `retryable` also get up to two image-job retries with a
+fresh Durable Object stub, unless marked `overloaded`. It waits 100 ms then 200 ms and
+rechecks R2; each attempt retains a 60-second transform deadline. Container
 uploads and HTTP error responses are not replayed.
 Errors that remain are not cached and are returned to the caller. There is no
 original-image fallback. `Retry-After` describes when an

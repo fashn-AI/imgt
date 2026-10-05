@@ -65,20 +65,20 @@ from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to
 preserves orientation and aspect ratio, never enlarges a small source, and uses
 WebP.
 
-The four deterministic shards each accept up to 128 distinct jobs. At most eight
+The configured deterministic shards each accept up to 128 distinct jobs. At most eight
 jobs per shard download sources, start the container, upload, or encode at once;
 the others wait without downloading originals. Within a container, uploads run
 independently and ready inputs enter a queue with two active Sharp encoders. A
 stalled upload does not block ready images. Completed results keep their
 single-flight entry during R2 writes but release active capacity immediately.
 Requests beyond the bounded admission limit return retryable `429`.
-The 20-second deadline covers admission waiting, origin fetch, startup, upload, queueing, and
+The 60-second deadline covers admission waiting, origin fetch, startup, upload, queueing, and
 encoding. Canceled queued jobs are removed; active native processing retains
 its slot until it settles so canceled work cannot overlap new work.
 
 ## Slow requests and errors
 
-The 20-second transformation deadline starts when a distinct cache-miss job
+The 60-second transformation deadline starts when a distinct cache-miss job
 enters the coordinator, before admission waiting. It covers that wait, source
 fetch, container readiness, upload and encoding. It is not a total HTTP response
 time limit: the edge cache, initial R2 lookup and network delivery can add time
@@ -93,10 +93,10 @@ retry budget is shared across redirects and uses the original job deadline.
 Responses with `Retry-After`, permanent errors and source rate limits are not
 retried.
 
-Cloudflare exceptions explicitly marked `retryable` get one image-job retry
-after 100 ms with a fresh Durable Object stub. Exceptions marked `overloaded`
+Cloudflare exceptions explicitly marked `retryable` get up to two image-job retries
+after 100 ms and 200 ms with a fresh Durable Object stub. Exceptions marked `overloaded`
 and HTTP error responses are not retried. The retried job rechecks R2 before
-starting new work; each attempt retains its 20-second transform deadline.
+starting new work; each attempt retains its 60-second transform deadline.
 Recovery from a reset can therefore wait longer than one transform deadline.
 Container upload requests themselves are never replayed. There is no
 original-image fallback.
@@ -115,7 +115,10 @@ not replay an in-progress container upload automatically.
 scheduling. Only configured shard IDs may start compute. Concurrent callers
 share startup and private health polling. Reconnect restoration runs in the
 background so an unavailable container connection cannot block cached delivery.
-Uploads still require a healthy container. Canceling one caller does not cancel
+Uploads still require a healthy container. Startup, inactivity configuration and
+health checks share bounded readiness polling; transient setup failures wait
+within that deadline instead of failing immediately. Overload errors fail
+without a readiness retry. Canceling one caller does not cancel
 another's startup. Transform uploads are never replayed automatically.
 
 The configured `containers.idleTimeoutMs` defaults to 120,000 milliseconds

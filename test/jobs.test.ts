@@ -235,7 +235,7 @@ for (const flags of [
   });
 }
 
-test("resize reset retries stop after a second failed attempt", async () => {
+test("resize reset retries stop after three failed attempts", async () => {
   let calls = 0;
   const cause = Object.assign(new Error("reset"), { retryable: true });
   await assert.rejects(
@@ -247,7 +247,7 @@ test("resize reset retries stop after a second failed attempt", async () => {
     })),
     (e) => e === cause,
   );
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
 });
 
 test("HTTP job failures are not automatically retried", async () => {

@@ -25,7 +25,7 @@ async function request(url, headers) {
   const start = performance.now();
   const response = await fetch(url, {
     headers,
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(90000),
   });
   const body = Buffer.from(await response.arrayBuffer());
   return { response, body, ms: Math.round(performance.now() - start) };

@@ -231,3 +231,56 @@ test("a failed reconnect restore leaves mandatory readiness usable", async () =>
   assert.equal(polls, 1);
   assert.equal(h.starts, 0);
 });
+
+test("a transient start failure waits for readiness without failing all callers", async () => {
+  const h = harness(async () => new Response("healthy"));
+  const start = h.api.start;
+  let attempts = 0;
+  h.api.start = (options) => {
+    if (++attempts === 1) throw Error("startup connection reset");
+    start(options);
+  };
+  await Promise.all(
+    Array.from({ length: 8 }, () =>
+      h.transport.prepare(new AbortController().signal),
+    ),
+  );
+  assert.equal(attempts, 2);
+  assert.equal(h.starts, 1);
+  assert.equal(h.posts, 0);
+});
+
+test("inactivity setup is retried before health without restarting a running container", async () => {
+  const h = harness(async () => new Response("healthy"));
+  const setTimeout = h.api.setInactivityTimeout;
+  let attempts = 0;
+  h.api.setInactivityTimeout = async (ms) => {
+    if (++attempts === 1) throw Error("setup connection reset");
+    await setTimeout(ms);
+  };
+  await h.transport.prepare(new AbortController().signal);
+  assert.equal(attempts, 2);
+  assert.equal(h.starts, 1);
+  assert.deepEqual(h.timeouts, [120000]);
+});
+
+test("startup failures remain bounded by readiness deadline and skip overload retries", async () => {
+  for (const overloaded of [false, true]) {
+    const h = harness(async () => new Response("healthy"), 30);
+    let attempts = 0;
+    h.api.start = () => {
+      attempts++;
+      throw Object.assign(new Error("cannot start"), { overloaded });
+    };
+    const keepAlive = setTimeout(() => {}, 1000);
+    try {
+      await assert.rejects(h.transport.prepare(new AbortController().signal), {
+        status: 503,
+      });
+      assert.equal(attempts, 1);
+      assert.equal(h.posts, 0);
+    } finally {
+      clearTimeout(keepAlive);
+    }
+  }
+});

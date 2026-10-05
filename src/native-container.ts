@@ -157,9 +157,11 @@ export class NativeContainerTransport {
     );
     let lastError: unknown;
     let polls = 0;
+    let inactivityConfigured = this.container.running;
     while (!signal.aborted) {
-      if (!this.container.running) {
-        try {
+      try {
+        if (!this.container.running) {
+          inactivityConfigured = false;
           this.#monitor = undefined;
           this.#bootId = crypto.randomUUID();
           console.log(
@@ -178,16 +180,14 @@ export class NativeContainerTransport {
             env: this.options.env,
             labels: { boot_id: this.#bootId },
           });
+        }
+        if (!inactivityConfigured) {
           await waitFor(
             this.container.setInactivityTimeout(this.options.idleTimeoutMs),
             signal,
           );
-        } catch (error) {
-          console.error("native container start failed", error);
-          throw new ImageError("image container is unavailable", 503, "1");
+          inactivityConfigured = true;
         }
-      }
-      try {
         this.observe();
         polls += 1;
         const response = await waitFor(
@@ -212,7 +212,15 @@ export class NativeContainerTransport {
         lastError = new Error(`container health returned ${response.status}`);
       } catch (error) {
         lastError = error;
-        if (polls === 1) console.log("native container awaiting health", error);
+        if (
+          error &&
+          typeof error === "object" &&
+          "overloaded" in error &&
+          error.overloaded === true
+        )
+          throw new ImageError("image container is unavailable", 503, "1");
+        if (polls <= 1)
+          console.log("native container awaiting readiness", error);
       }
       try {
         await pause(100, signal);
