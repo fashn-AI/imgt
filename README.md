@@ -1,7 +1,5 @@
 ![imgt](public/logo.svg)
 
-# imgt
-
 Self-hosted image optimization on Cloudflare. Serve resized WebP images from
 your own account using Sharp, Workers Cache, and a private R2 bucket.
 
@@ -26,6 +24,8 @@ You need a GitHub account, Cloudflare Workers Paid, and R2 enabled. Workers Paid
 starts at $5/month; container, storage, and request usage can add charges.
 The deploy button requires a public source repository. See
 [deployment requirements and costs](docs/deployment.md).
+
+Prefer working with an agent? Use the [setup prompt](docs/setup-prompt.md).
 
 1. Click **Deploy to Cloudflare** above. Select your account and create your own
    repository. Cloudflare provisions the R2 bucket and Durable Object, then

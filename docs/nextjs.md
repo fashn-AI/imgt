@@ -3,6 +3,10 @@
 Use imgt as the optimizer for `next/image`. Next.js generates responsive image
 URLs; the browser requests them from your imgt deployment. Configure these three
 files in your Next.js project, replacing the endpoint with your own.
+The endpoint in these examples is a placeholder. Deploy your own instance;
+the FASHN AI demonstration website is not a shared optimization service.
+
+For agent-assisted setup, use the [setup prompt](setup-prompt.md).
 
 ## Configure the loader
 

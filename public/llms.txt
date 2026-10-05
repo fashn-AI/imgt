@@ -42,6 +42,7 @@ guide for setup and existing-bucket migration details.
 - [Overview and API](/index.md): Usage, defaults, deployment and local development.
 - [Configuration](/docs/configuration.md): Allowed source hosts, matching rules, application settings and fixed limits.
 - [Next.js integration](/docs/nextjs.md): `next.config.ts`, `image-loader.ts` and `app/page.tsx` examples.
+- [Agent setup prompt](/docs/setup-prompt.md): A copyable prompt for self-hosting imgt and integrating it into a project using the user's own endpoint.
 - [Deployment](/docs/deployment.md): Cloudflare setup, resource names, costs, cleanup, updates and troubleshooting.
 - [Complete documentation](/llms-full.txt): All repository guides combined into one text file.
 

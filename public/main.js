@@ -38,10 +38,6 @@ fetch(source, { method: "HEAD", signal: AbortSignal.timeout(10000) })
     originalSize.textContent = "Unavailable";
   });
 
-for (const origin of document.querySelectorAll("[data-deployment-origin]")) {
-  origin.textContent = location.origin;
-}
-
 for (const copy of document.querySelectorAll("[data-copy]")) {
   copy.disabled = false;
   copy.addEventListener("click", async () => {
@@ -49,7 +45,7 @@ for (const copy of document.querySelectorAll("[data-copy]")) {
     const filename = copy.getAttribute("aria-label").replace("Copy ", "");
     const copyStatus = copy
       .closest("section")
-      .querySelector("[data-copy-status]");
+      .querySelector(":scope > [data-copy-status]");
     copyStatus.dataset.error = "false";
     copyStatus.textContent = `Copying ${filename}…`;
     try {

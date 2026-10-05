@@ -12,11 +12,18 @@ const highlighter = await createHighlighter({
 });
 const styles = new Map();
 let html = await readFile(new URL("index.html", assets), "utf8");
+const prompt = await readFile(new URL("docs/setup-prompt.md", root), "utf8");
+html = html.replace(
+  "<!-- SETUP_PROMPT -->",
+  prompt
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;"),
+);
 for (const match of html.matchAll(
   /(<code\b[^>]*data-language="([^"]+)"[^>]*>)([\s\S]*?)(<\/code>)/g,
 )) {
   const code = match[3]
-    .replace(/<span data-deployment-origin>(.*?)<\/span>/g, "$1")
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
     .replaceAll("&amp;", "&");
@@ -28,11 +35,6 @@ for (const match of html.matchAll(
     if (!styles.has(style)) styles.set(style, `syntax-${styles.size}`);
     return ` class="${styles.get(style)}"`;
   });
-  const origin = "https://imgt.YOUR-SUBDOMAIN.workers.dev";
-  highlighted = highlighted.replace(
-    origin,
-    `<span data-deployment-origin>${origin}</span>`,
-  );
   html = html.replace(match[0], match[1] + highlighted + match[4]);
 }
 highlighter.dispose();

@@ -417,6 +417,55 @@ fieldset:disabled button {
   color: var(--muted);
   font-size: 14px;
 }
+.agent-setup {
+  margin-bottom: 36px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.agent-callout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.agent-callout p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.agent-callout button {
+  flex-shrink: 0;
+}
+.agent-setup details {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-setup summary {
+  cursor: pointer;
+}
+.agent-setup pre {
+  margin-top: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-setup pre code {
+  font-size: 12px;
+}
+#agent-copy-status {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+#agent-copy-status:empty {
+  display: none;
+}
+#agent-copy-status[data-error="true"] {
+  color: #fda4af;
+}
 .steps {
   margin: 0;
   padding: 0;
@@ -602,9 +651,18 @@ footer {
   border-top: 1px solid var(--border);
   font-size: 12px;
 }
-.footer-note {
-  margin-left: 12px;
-  color: var(--muted);
+.footer-brand,
+.footer-credit {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.footer-credit {
+  font-size: 12px;
+}
+.footer-credit img {
+  display: block;
 }
 footer a {
   color: var(--muted);
