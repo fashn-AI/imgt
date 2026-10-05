@@ -14,6 +14,7 @@
     <link rel="describedby" href="/llms.txt" />
     <link rel="alternate" type="text/plain" href="/index.md" />
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/syntax.css" />
     <script src="/main.js" defer></script>
   </head>
   <body>
@@ -70,7 +71,7 @@
             <h2 id="demo-title">See the difference.</h2>
           </div>
           <p class="section-intro">
-            One photo. Pick a width. Get a WebP.<br />
+            Pick a width and quality. Compare file sizes.<br />
             Run it again to see the cache at work.
           </p>
         </div>
@@ -101,20 +102,44 @@
           <div class="demo-controls">
             <form id="demo">
               <fieldset id="controls" disabled>
-                <label for="width">Output width</label>
-                <select id="width" name="width">
-                  <option value="640">640 px</option>
-                  <option value="1200">1200 px</option>
-                  <option value="1920">1920 px</option>
-                </select>
+                <label for="width"
+                  >Width
+                  <select id="width" name="width">
+                    <option value="640">640 px</option>
+                    <option value="1200" selected>1200 px</option>
+                    <option value="1920">1920 px</option>
+                  </select>
+                </label>
+                <label for="quality"
+                  >Quality
+                  <select id="quality" name="quality">
+                    <option value="77">77</option>
+                    <option value="85" selected>85</option>
+                    <option value="90">90</option>
+                  </select>
+                </label>
                 <button id="optimize" type="submit">Optimize image</button>
               </fieldset>
               <a id="output" target="_blank" rel="noopener" hidden
                 >Open WebP ↗</a
               >
             </form>
+            <dl class="demo-sizes" aria-label="Image file sizes">
+              <div>
+                <dt>Original JPEG</dt>
+                <dd id="original-size">Measuring…</dd>
+              </div>
+              <div>
+                <dt>Optimized WebP</dt>
+                <dd id="optimized-size">—</dd>
+              </div>
+              <div>
+                <dt>Size change</dt>
+                <dd id="size-change">—</dd>
+              </div>
+            </dl>
             <p id="status" role="status" aria-live="polite">
-              Choose a width to generate a WebP. The original is above.
+              Start at 1200 px and quality 85, or choose your own settings.
             </p>
             <noscript><p>Enable JavaScript to try the playground.</p></noscript>
           </div>
@@ -163,7 +188,7 @@
               <pre
                 tabindex="0"
                 aria-label="next.config.ts code"
-              ><code id="next-config">import type { NextConfig } from "next";
+              ><code id="next-config" data-language="ts">import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   images: {
@@ -201,7 +226,7 @@ export default nextConfig;</code></pre>
               <pre
                 tabindex="0"
                 aria-label="image-loader.ts code"
-              ><code id="image-loader">"use client";
+              ><code id="image-loader" data-language="ts">"use client";
 
 import type { ImageLoaderProps } from "next/image";
 
@@ -246,7 +271,7 @@ export default function imageLoader({
               <pre
                 tabindex="0"
                 aria-label="app/page.tsx code"
-              ><code id="next-page">import Image from "next/image";
+              ><code id="next-page" data-language="tsx">import Image from "next/image";
 
 export default function Page() {
   return (

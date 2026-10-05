@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:docs": "node scripts/build-docs.mjs",
-    "predev": "npm run build:docs",
+    "build:site": "node scripts/build-site.mjs",
+    "predev": "npm run build:site",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "tsx --test test/*.test.ts",
@@ -20,6 +20,7 @@
     "@types/node": "^24.3.0",
     "prettier": "3.9.6",
     "sharp": "0.35.4",
+    "shiki": "4.5.0",
     "tsx": "4.20.5",
     "typescript": "7.0.2",
     "wrangler": "4.145.0"

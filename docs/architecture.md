@@ -3,6 +3,9 @@
 imgt runs Sharp in a Cloudflare Container and caches generated WebP images in
 Workers Cache and a private R2 bucket. Originals are streamed to the container
 and never stored. The static demo uses plain HTML, CSS, and JavaScript.
+`npm run build:site` copies assets and documentation to `dist/public/` and
+highlights TypeScript examples with Shiki. Syntax colors are external CSS;
+the browser loads no highlighting library.
 
 ```text
 GET /image?url=…&w=640&q=77

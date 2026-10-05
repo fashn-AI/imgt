@@ -5,8 +5,10 @@
 The README's deploy button creates a repository in your GitHub account and
 connects it to Cloudflare Workers Builds. The production deploy command is
 `npm run deploy` (equivalent to `npx wrangler deploy`). The checked-in Wrangler
-build command runs `npm run check`, then `npm run build:docs` to publish the
-canonical Markdown guides and `/llms-full.txt` alongside the site. Cloudflare's
+build command runs `npm run check`, then `npm run build:site` to publish the
+site, canonical Markdown guides and `/llms-full.txt` from `dist/public/`.
+Shiki highlights the TypeScript examples at build time; only static HTML and
+CSS are shipped to the browser. Cloudflare's
 GitHub integration handles deployment; no GitHub Actions workflow is required.
 
 The deploy button requires the source repository to be public. You need Workers
@@ -190,7 +192,12 @@ image available. Consult [container rollout behavior](https://developers.cloudfl
 | HTTP 504                                     | Source download, startup, queueing, or transform exceeded the deadline. Check timing and source size.                                                           |
 | Container name already exists                | Use a distinct name for a new installation; do not delete an existing application's resources.                                                                  |
 
-The static homepage demonstrates resizing a fixed Unsplash photo. It requires
+The static homepage demonstrates resizing a fixed Unsplash photo, starting at
+1200 pixels and quality 85. Its quality selector affects only the demo; the
+API's default remains 77. It shows the original JPEG size, the optimized WebP
+size and the percentage change. The original size is read with a HEAD request;
+if the origin does not provide it, optimization still works.
+It requires
 `images.unsplash.com` in the allowlist. Opening the page loads the original from
 Unsplash; each click on Optimize image or Run again makes one image request
 against this deployment and counts toward the IP allowance. Use the smoke

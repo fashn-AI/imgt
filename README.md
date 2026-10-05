@@ -1,3 +1,5 @@
+![imgt](public/logo.svg)
+
 # imgt
 
 Self-hosted image optimization on Cloudflare. Serve resized WebP images from
@@ -39,7 +41,8 @@ The deploy button requires a public source repository. See
    Builds restores them while preserving your hosts. See the
    [deployment guide](docs/deployment.md#github-integration).
 4. Open the deployed Worker URL to try the Unsplash demo. Choose a width and
-   optimize the photo; run it again to see a cache hit. The demo requires
+   quality, then compare original and optimized file sizes. The demo starts at
+   1200 px and quality 85; run it again to see a cache hit. The demo requires
    `images.unsplash.com` in your allowlist. Allow several minutes for first-time
    container provisioning.
 5. Complete storage setup: in **R2 → imgt → Settings → Object Lifecycle Rules**,
