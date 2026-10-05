@@ -23,6 +23,14 @@ Include `images.unsplash.com` for the demo; see [source host configuration](conf
 `vars.ALLOWED_HOSTS` in `wrangler.jsonc` overrides that variable if you opt into
 repository management.
 
+After saving dashboard variables, run another production build from your
+connected GitHub repository before testing images. Dashboard variable deployments
+can omit the named image metadata used by native Containers, leaving `/health`
+working while image requests return `503`. A full deployment through Workers
+Builds restores the image references and preserves `ALLOWED_HOSTS`. Retry the
+production build or push a commit to the production branch; no application code
+change is needed to restore the references.
+
 ## Deployment names
 
 Names are scoped to the Cloudflare account. A new account can use the defaults.
@@ -91,7 +99,8 @@ the shard count stable during routine releases. The per-shard queue limit and
 ### Native image updates
 
 IMGT uses the native `ctx.container` API with `scheduling_policy:
-"durable_object"`. Deploy with `npm run deploy`, then verify a fresh image with
+"durable_object"`. Push to your connected GitHub repository's production branch
+and wait for Workers Builds to finish, then verify a fresh image with
 `npm run smoke -- YOUR_ENDPOINT YOUR_SOURCE_URL --fresh`. Use a public source
 that permits extra query parameters; adding parameters can invalidate signed
 URLs. `/health` checks the Worker, so a successful health response alone does
@@ -154,6 +163,7 @@ image available. Consult [container rollout behavior](https://developers.cloudfl
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Source host is not allowed                   | Add the original image's host to the dashboard `ALLOWED_HOSTS` Text variable and select Deploy; see [source host rules](configuration.md#allowed-source-hosts). |
 | Health succeeds but images fail after deploy | Check Workers Builds and container readiness logs; an existing native container uses the new image on its next start.                                           |
+| Images return 503 after changing dashboard variables | Run a production GitHub build to restore native Container image metadata; dashboard variable deployments can omit it. |
 | Smoke test has no `EDGE` hit                 | The source must permit caching. Check its cache headers and the Worker cache configuration.                                                                     |
 | Source returns 403/404/410                   | The source must be publicly accessible. imgt does not forward client credentials.                                                                               |
 | HTTP 429                                     | The IP rate limiter or shard admission limit was reached; honor `Retry-After`.                                                                                  |

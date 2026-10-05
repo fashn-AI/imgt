@@ -26,6 +26,11 @@ to comma-separated domains such as
 `images.unsplash.com,cdn.example.com,*.images.example.com`, then select **Deploy**.
 See [Cloudflare's dashboard instructions](https://developers.cloudflare.com/workers/configuration/environment-variables/#add-environment-variables-via-the-dashboard).
 
+After saving the variable, run a production build through your connected GitHub
+repository before testing images. Dashboard variable deployments can omit native
+Container image metadata; the GitHub deployment restores it while keeping the
+saved value. See [deployment setup](deployment.md#github-integration).
+
 For local development, run `cp .env.example .env` and edit `.env`:
 
 ```bash
