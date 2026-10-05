@@ -320,3 +320,87 @@ a 30-day month is approximately $155 in memory charges alone, before shared
 included usage. Actual awake time can reduce this estimate. CPU, disk, Worker,
 Durable Object, R2, logs and network usage are separate charges. See
 [Cloudflare container pricing](https://developers.cloudflare.com/containers/platform/pricing/).
+
+
+## Smaller effort-4 allocations
+
+The [benchmark page](https://imgt.fashn.ai/benchmarks) separates deployed
+latency from local capacity experiments and modeled monthly charges. Its
+[Markdown summary](benchmarks.md) is included in the agent documentation.
+
+A new local replay used the same 50 PNG inputs at width 640, quality 98 and
+effort 4. Docker enforced CPU and memory limits with swap disabled. Actual
+routing and coordinator modules uploaded to Sharp over HTTP, sources were
+replayed locally, and an R2 double delayed writes by 300 ms. Timings include
+output validation. Each rate ran once for 30 seconds; later bursts were separate.
+
+| Allocation per shard | Shards | 1/s success; p95 | 5/s success; p95 | 10/s success; p95 | 20/s success; p95 | 50-image burst success; p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 CPU, 3 GiB, one encoder | 1 | 30/30; 243 ms | 150/150; 212 ms | 300/300; 7.712 s | 356/600; 16.012 s | 50/50; 6.222 s |
+| 1 CPU, 3 GiB, one encoder | 2 | 30/30; 246 ms | 150/150; 216 ms | 300/300; 385 ms | 600/600; 9.612 s | 50/50; 3.443 s |
+| 0.25 CPU, 1 GiB, one encoder | 4 | 30/30; 1.075 s | 150/150; 2.179 s | 298/300; 15.191 s | 309/600; 19.545 s | 50/50; 7.500 s |
+
+P95 values include only successful requests. They do not establish capacity
+when any request fails. One CPU rejected 244 requests at 20/s. Two CPUs
+completed that arrival window but needed another ten seconds to drain their
+growing queue; this is overload rather than sustained 20/s capacity. At 10/s,
+one CPU needed another eight seconds to drain, while two CPUs kept up.
+The fractional allocation returned deadline, admission and service failures at
+higher rates. A 200-image burst completed 128/200 on one CPU, 200/200 on two
+CPUs (12.648 s p95), and 149/200 on four quarter-CPU shards.
+
+Peak regular container memory was 334 MiB, 272 MiB and 259 MiB respectively.
+CPU usage at 5/s was about 0.12 to 0.14 consumed seconds per fresh transform.
+These observations exclude Cloudflare placement and provisioning, remote source
+fetching and actual R2 latency. They do not establish deployed performance.
+
+Cloudflare custom containers require at least 3 GiB per CPU. The published
+`basic` tier provides 0.25 CPU and 1 GiB, but the native start API documentation
+and current Workers types omit that named tier. Its local resource experiment
+does not establish compatibility with this project's native deployment API.
+See [instance limits](https://developers.cloudflare.com/containers/platform/limits/)
+and the [native API](https://developers.cloudflare.com/containers/api/durable-object-container/).
+
+At continuously awake capacity, custom allocations reserve 3 GiB for one CPU,
+6 GiB for two total CPUs and 24 GiB for eight total CPUs. Provisioned memory,
+Durable Object duration and disk make spare capacity costly even when encoding
+CPU usage is low. The public cost calculator includes these components and
+explicit account-allowance assumptions; memory-only estimates are not total bills.
+Monthly transformation counts cannot determine the uncached burst capacity
+required to match Vercel delivery. Start with measured peaks and a latency target.
+
+### Two smaller containers on Cloudflare
+
+A temporary GitHub deployment allocated two 1-CPU, 3-GiB containers with one
+encoder each. The container API confirmed both allocations running in North
+America. Runtime identities changed without invalidating renderer-v4 derivatives.
+The same client, sources, width and quality were used for this later trial.
+
+The first 1/s run returned 27/30: one upstream HTTP 500 and two client timeouts at
+30 seconds. Direct source checks subsequently succeeded. The failed run was
+retained, and a fresh-key repeat continued through sustained rates and bursts.
+
+| Repeat workload | Success | Complete-response p95 of successful requests |
+| --- | --- | --- |
+| 1/s, 30 fresh requests | 30/30 | 5.380 s |
+| 5/s, 300 fresh requests | 300/300 | 1.222 s |
+| 10/s, 600 fresh requests | 598/600 | 1.510 s |
+| 50 fresh images together | 50/50 | 4.201 s |
+| 200 fresh images together | 200/200 | 15.254 s |
+| 200 cached images together | 200/200 | 467 ms |
+
+The two failures at 10/s were client timeouts. Their causes remain unresolved;
+this does not establish reliable 10/s capacity. Long successful low-rate requests
+also had substantial time outside the instrumented job: one client response took
+18.421 s while the job reported 385 ms with no admission or encoder queue. Do not
+attribute every delivery outlier to encoder CPU, or remove those observations
+from end-to-end results. Cloudflare tail recorded two canceled outcomes and no
+exceptions during the repeat, with the same two container boots throughout.
+
+All 1,178 successful fresh repeat outputs matched the existing corresponding
+Vercel outputs byte for byte. All 200 repeats were edge hits, and conditional
+validation returned `304`. The two-container option substantially reduces
+reserved memory but was slower for fresh gallery bursts and had client timeouts.
+It is an option to evaluate for modest traffic, not a verified replacement for the
+20/s profile. Production returns to four 2-CPU containers with fresh runtime
+identities after the trial. Cache keys and WebP output remain compatible.

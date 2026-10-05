@@ -8,7 +8,7 @@
     "predev": "npm run build:site",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test test/*.test.ts test/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx,html,css}\"",
     "format:check": "prettier --check \"**/*.{js,mjs,cjs,ts,mts,cts,tsx,jsx,html,css}\"",

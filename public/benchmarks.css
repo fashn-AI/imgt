@@ -1,0 +1,227 @@
+nav [aria-current="page"] {
+  color: var(--accent);
+}
+.benchmark-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid var(--border);
+}
+.benchmark-stats > div {
+  padding: 28px 32px;
+}
+.benchmark-stats > div + div {
+  border-left: 1px solid var(--border);
+}
+.benchmark-stats strong {
+  display: block;
+  font-size: 30px;
+  font-weight: 550;
+  letter-spacing: -1px;
+}
+.benchmark-stats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.benchmark-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.chart-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.chart-heading h3 {
+  margin: 0;
+}
+.chart-heading > span {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.bar-chart {
+  display: grid;
+  gap: 22px;
+  padding: 30px 20px;
+}
+.chart-row {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr) 84px;
+  gap: 16px;
+  align-items: center;
+  font-size: 13px;
+}
+.chart-row svg {
+  display: block;
+  width: 100%;
+  height: 24px;
+  background: #ffffff04;
+}
+.chart-row rect {
+  fill: var(--accent);
+}
+.chart-row.vercel rect {
+  fill: #d4d4d4;
+}
+.chart-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.chart-note {
+  margin: 0;
+  padding: 0 20px 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.content-section > .chart-note {
+  padding: 20px 0 0;
+}
+.benchmark-copy {
+  max-width: 780px;
+  color: var(--muted);
+  font-size: 14px;
+  margin: 24px 0;
+}
+.benchmark-details {
+  border-bottom: 1px solid var(--border);
+  padding: 18px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.benchmark-details summary {
+  color: var(--text);
+  cursor: pointer;
+}
+.benchmark-details p {
+  max-width: 800px;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.benchmark-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.benchmark-table caption {
+  padding: 16px 20px;
+  text-align: left;
+  color: var(--muted);
+}
+.benchmark-table th,
+.benchmark-table td {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.benchmark-table th {
+  font-weight: 500;
+}
+.benchmark-table td {
+  color: var(--muted);
+}
+.cost-inputs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px 16px;
+  margin: 28px 0;
+}
+.cost-inputs label {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  font-size: 11px;
+}
+.cost-inputs input,
+.cost-inputs select {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid #3b3b3b;
+  border-radius: 6px;
+}
+.method-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px 40px;
+}
+.method-grid p {
+  color: var(--muted);
+  font-size: 13px;
+}
+.benchmark-panel .chart-note a {
+  text-decoration: underline;
+}
+@media (max-width: 760px) {
+  .section-intro br {
+    display: block;
+  }
+  .benchmark-stats > div {
+    padding: 20px 16px;
+  }
+  .benchmark-stats strong {
+    font-size: 24px;
+  }
+  .cost-inputs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .chart-row {
+    grid-template-columns: 110px minmax(0, 1fr) 76px;
+    gap: 10px;
+    font-size: 12px;
+  }
+  .method-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+@media (max-width: 480px) {
+  .benchmark-stats {
+    grid-template-columns: 1fr;
+  }
+  .benchmark-stats > div {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+  .benchmark-stats > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+  .benchmark-stats span {
+    text-align: right;
+    max-width: 200px;
+  }
+  .bar-chart {
+    padding: 24px 14px;
+  }
+  .chart-row {
+    grid-template-columns: 96px minmax(0, 1fr) 68px;
+    font-size: 11px;
+  }
+  .chart-heading {
+    padding: 14px;
+  }
+  .chart-heading > span {
+    width: 100%;
+    margin-left: 0;
+  }
+  .chart-heading select {
+    width: 100%;
+  }
+  .chart-note {
+    padding: 0 14px 16px;
+  }
+}

@@ -43,6 +43,8 @@ guide for setup and existing-bucket migration details.
 
 ## Guides
 
+- [Benchmarks and pricing](/benchmarks): Live latency charts, smaller local allocations and an interactive cost model. [Markdown summary](/docs/benchmarks.md).
+
 - [Overview and API](/index.md): Usage, defaults, deployment and local development.
 - [Configuration](/docs/configuration.md): Allowed source hosts, matching rules, application settings and fixed limits.
 - [Next.js integration](/docs/nextjs.md): `next.config.ts`, `image-loader.ts` and `app/page.tsx` examples.

@@ -160,6 +160,7 @@ version bump; see [native image updates](docs/deployment.md#native-image-updates
 - [Deployment, costs, updates, and troubleshooting](docs/deployment.md)
 - [Architecture and cache semantics](docs/architecture.md)
 - [Performance decisions](docs/performance.md)
+- [Benchmarks and pricing](https://imgt.fashn.ai/benchmarks)
 - [Contributing](CONTRIBUTING.md)
 - [MIT license](LICENSE)
 

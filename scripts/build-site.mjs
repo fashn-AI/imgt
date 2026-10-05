@@ -1,6 +1,11 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createHighlighter } from "shiki";
+import {
+  allocations,
+  defaultScenario,
+  estimateCosts,
+} from "../public/benchmark-costs.js";
 
 const root = new URL("../", import.meta.url);
 const assets = new URL("dist/public/", root);
@@ -39,20 +44,83 @@ for (const match of html.matchAll(
   html = html.replace(match[0], match[1] + highlighted + match[4]);
 }
 highlighter.dispose();
-// Allow only this static structured-data block without enabling inline scripts.
-const structuredData = html.match(
-  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
-)[1];
-const hash = createHash("sha256").update(structuredData).digest("base64");
-const headers = await readFile(new URL("_headers", assets), "utf8");
-await writeFile(
-  new URL("_headers", assets),
-  headers.replace("script-src 'self'", `script-src 'self' 'sha256-${hash}'`),
-);
 await writeFile(new URL("index.html", assets), html);
 await writeFile(
   new URL("syntax.css", assets),
   [...styles].map(([style, name]) => `.${name}{${style}}`).join("\n") + "\n",
+);
+
+const currency = (value) => `$${value.toFixed(2)}`;
+const chart = (labels, values, format) => {
+  const maximum = Math.max(1, ...values) * 1.05;
+  return labels
+    .map(
+      (label, i) =>
+        `<div class="chart-row${label === "Vercel" ? " vercel" : ""}"><span>${label}</span><svg viewBox="0 0 1000 24" preserveAspectRatio="none" aria-hidden="true"><rect width="${(values[i] / maximum) * 1000}" height="24" rx="2" /></svg><span class="chart-value">${format(values[i])}</span></div>`,
+    )
+    .join("\n");
+};
+const costs = allocations.map((allocation) =>
+  estimateCosts(allocation, defaultScenario),
+);
+const components = {
+  plan: "Workers plan",
+  memory: "Container memory",
+  cpu: "Active container CPU",
+  disk: "Container disk",
+  objects: "Durable Objects",
+  r2: "R2 storage and operations",
+  worker: "Workers usage",
+  transfer: "Container output transfer",
+  total: "Modeled subtotal",
+};
+let benchmarks = await readFile(new URL("benchmarks.html", assets), "utf8");
+benchmarks = benchmarks
+  .replace(
+    "<!-- LATENCY_CHART -->",
+    chart(
+      ["imgt · 4 × 2 CPUs", "imgt · 8 × 1 CPU", "imgt · 2 × 1 CPU", "Vercel"],
+      [1.755, 2.637, 4.201, 1.377],
+      (value) => `${value.toFixed(3)} s`,
+    ),
+  )
+  .replace(
+    "<!-- COST_CHART -->",
+    chart(
+      [
+        ...allocations.map((allocation) => `imgt · ${allocation.name}`),
+        "Vercel",
+      ],
+      [...costs.map((cost) => cost.imgtTotal), costs[0].vercelTotal],
+      currency,
+    ),
+  )
+  .replace(
+    "<!-- COST_BREAKDOWN -->",
+    Object.entries(components)
+      .map(
+        ([key, label]) =>
+          `<tr data-component="${key}"><th scope="row">${label}</th>${costs.map((cost) => `<td>${currency(key === "total" ? cost.imgtTotal : cost.cloudflare[key])}</td>`).join("")}</tr>`,
+      )
+      .join("\n"),
+  );
+await writeFile(new URL("benchmarks.html", assets), benchmarks);
+
+// Hash each static JSON-LD block; keep inline executable scripts disabled.
+const hashes = [html, benchmarks].flatMap((page) =>
+  [
+    ...page.matchAll(
+      /<script type="application\/ld\+json">([\s\S]*?)<\/script>/g,
+    ),
+  ].map(
+    (match) =>
+      `'sha256-${createHash("sha256").update(match[1]).digest("base64")}'`,
+  ),
+);
+const headers = await readFile(new URL("_headers", assets), "utf8");
+await writeFile(
+  new URL("_headers", assets),
+  headers.replace("script-src 'self'", `script-src 'self' ${hashes.join(" ")}`),
 );
 
 const docs = (await readdir(new URL("docs/", root)))

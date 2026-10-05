@@ -55,6 +55,10 @@ Resource names and allowlisted hosts belong to that installation.
 
 ## Costs
 
+See the [benchmark and pricing page](https://imgt.fashn.ai/benchmarks) for live
+latency comparisons and an editable monthly cost model. The model includes
+smaller allocations, shared allowances, and explicit assumptions and exclusions.
+
 Workers Paid has a $5 monthly minimum. Containers add usage charges for memory,
 CPU, disk, and applicable network traffic beyond included allowances. R2 has
 storage and operation charges. Workers Cache, requests, and build usage also
