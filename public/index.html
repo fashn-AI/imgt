@@ -398,6 +398,80 @@ export default function Page() {
           >
         </div>
       </section>
+      <section
+        id="storage"
+        class="content-section"
+        aria-labelledby="storage-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">04 / STORAGE</p>
+            <h2 id="storage-title">Set up cache cleanup.</h2>
+          </div>
+          <p class="section-intro">
+            Keep cached images for 30 days.<br />
+            Regenerate them when needed.
+          </p>
+        </div>
+        <p class="integration-intro">
+          Complete this step before production use. Deployment creates the
+          private <code>imgt</code> R2 bucket, but does not add a lifecycle
+          rule. Without one, unused cached images remain in storage and
+          accumulate.
+        </p>
+        <div class="configuration-grid">
+          <div class="step-description">
+            <h3>Add a lifecycle rule.</h3>
+            <p>
+              In Cloudflare, open R2 → imgt → Settings → Object Lifecycle Rules
+              → Add rule. Enter these settings, enable the rule and save it. Use
+              your own bucket name if you changed the default.
+            </p>
+          </div>
+          <table class="host-rules">
+            <caption>
+              R2 lifecycle settings
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Setting</th>
+                <th scope="col">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Rule name</th>
+                <td><code>expire-cached-images</code></td>
+              </tr>
+              <tr>
+                <th scope="row">Prefix</th>
+                <td><code>derivatives/</code></td>
+              </tr>
+              <tr>
+                <th scope="row">Action</th>
+                <td>Delete objects after 30 days</td>
+              </tr>
+              <tr>
+                <th scope="row">Status</th>
+                <td>Enabled</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <aside class="source-note" aria-label="Cache storage behavior">
+          <span class="note-label">CACHE ONLY</span>
+          <p>
+            Original images are never stored. Expired optimized images are
+            regenerated when requested. Keep the bucket private and use Standard
+            storage; no public URL or S3 credentials are needed.
+          </p>
+        </aside>
+        <div class="guide-links">
+          <a href="/docs/deployment.md#storage-cleanup"
+            >Read the storage setup guide <span aria-hidden="true">↗</span></a
+          >
+        </div>
+      </section>
       <footer>
         <span
           >imgt<span class="accent">.</span>

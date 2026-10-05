@@ -31,6 +31,12 @@ pipeline.
 These Markdown resources are served from this deployment without GitHub access.
 For local development, copy `.env.example` to `.env`.
 
+Production storage setup requires an R2 lifecycle rule: in the private `imgt`
+bucket, delete objects under `derivatives/` after 30 days. Deployment provisions
+the bucket and `DERIVATIVES` binding but does not create this cleanup rule.
+Expired optimized images are regenerated when requested. See the deployment
+guide for setup and existing-bucket migration details.
+
 ## Guides
 
 - [Overview and API](/index.md): Usage, defaults, deployment and local development.

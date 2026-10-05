@@ -42,7 +42,10 @@ The deploy button requires a public source repository. See
    optimize the photo; run it again to see a cache hit. The demo requires
    `images.unsplash.com` in your allowlist. Allow several minutes for first-time
    container provisioning.
-5. Add an R2 lifecycle rule to expire derivatives after 30 days; see
+5. Complete storage setup: in **R2 → imgt → Settings → Object Lifecycle Rules**,
+   add an enabled rule to **delete objects with prefix `derivatives/` after
+   30 days**. Deployment creates the private bucket but does not add this rule.
+   Without it, unused cached images accumulate. See
    [storage cleanup](docs/deployment.md#storage-cleanup).
 
 Future pushes to your production branch deploy automatically through the

@@ -5,7 +5,7 @@ settings in your repository.
 
 | Location                | What belongs here                                                                 |
 | ----------------------- | --------------------------------------------------------------------------------- |
-| Cloudflare dashboard    | Production `ALLOWED_HOSTS` text variable.                                         |
+| Cloudflare dashboard    | Production `ALLOWED_HOSTS` text variable and R2 lifecycle cleanup rule.            |
 | `.env`                  | Local source hosts; copy `.env.example` to get started.                           |
 | `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`. |
 | `imgt.config.ts`        | Encoding defaults, shard count, idle time and cache lifetimes.                   |
@@ -72,6 +72,11 @@ bucket names and a separate rate-limit namespace ID; see [deployment names](depl
 Keep the binding names `DERIVATIVES`, `IMGT_NATIVE_TRANSFORMER` and
 `IMAGE_RATE_LIMITER`, Durable Object class names and migration history intact.
 Preserve existing resource names when upgrading an installation.
+
+The default R2 bucket is `imgt`, bound as `DERIVATIVES`. Complete production
+setup by adding an enabled lifecycle rule that deletes the `derivatives/`
+prefix after 30 days; deployment does not create this rule. Keep the bucket
+private and use Standard storage. See the [storage cleanup steps](deployment.md#storage-cleanup).
 
 ## Application defaults
 

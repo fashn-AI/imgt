@@ -31,6 +31,9 @@ Builds restores the image references and preserves `ALLOWED_HOSTS`. Retry the
 production build or push a commit to the production branch; no application code
 change is needed to restore the references.
 
+Complete the [R2 lifecycle setup](#storage-cleanup) before using the deployment
+in production. The bucket is provisioned automatically; image expiration is not.
+
 ## Deployment names
 
 Names are scoped to the Cloudflare account. A new account can use the defaults.
@@ -40,7 +43,7 @@ For a second copy in the same account, change all of these before deploying:
 | ---------------------------- | ---------------------------------------------- |
 | `name`                       | `shop-images`                                  |
 | `containers[0].name`         | `shop-images-transformer`                      |
-| `r2_buckets[0].bucket_name`  | `shop-image-derivatives`                       |
+| `r2_buckets[0].bucket_name`  | `shop-images`                                 |
 | `ratelimits[0].namespace_id` | A numeric string unused by your other limiters |
 
 Keep the binding names (`DERIVATIVES`, `IMGT_NATIVE_TRANSFORMER`, and
@@ -71,15 +74,32 @@ alerts and keep `ALLOWED_HOSTS` limited to the public assets you intend to serve
 
 ## Storage cleanup
 
-In your derivative bucket's **Settings → Object Lifecycle Rules**, add an
-expiration rule for the `derivatives/` prefix after 30 days. This is a cache:
-deleted derivatives are regenerated when needed. Keep it private and use
-Standard storage. The application never needs a public bucket URL or S3 keys.
+**Set up an R2 lifecycle rule before production use.** Deployment creates the
+private `imgt` bucket and connects it through the `DERIVATIVES` binding, but it
+does not add an image expiration rule. Without one, unused cached images remain
+in R2 and storage usage grows.
 
-Wrangler/deploy-button provisioning creates the bucket; it does not install
-this lifecycle rule. Lifecycle age is measured from object creation, not last
-access. Application freshness and stale deadlines are independent of cleanup.
+1. Open **R2 → imgt → Settings → Object Lifecycle Rules → Add rule**. If you
+   configured a different bucket name, select that bucket.
+2. Name the rule `expire-cached-images` and set its prefix to `derivatives/`.
+3. Set the action to **Delete objects** after **30 days**.
+4. Enable the rule and save it.
+
+This bucket stores only optimized images, which are regenerated when requested
+after deletion. Keep it private and use Standard storage. No public bucket URL,
+custom domain, CORS configuration or S3 credentials are needed.
+
+Lifecycle age is measured from object creation, not last access. Application
+freshness and stale deadlines are independent of cleanup.
 See [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lifecycles/).
+
+### Existing installations
+
+The previous default bucket was `imgt-derivatives`. Using the new `imgt` default
+starts a new cache; deployment does not rename, copy or delete the old bucket.
+No cache migration is required. Add the lifecycle rule to both buckets if you
+retain the old one, so its cached images also expire. Keep your existing
+`bucket_name` when upgrading if you want to continue using that cache instead.
 
 ## Capacity
 

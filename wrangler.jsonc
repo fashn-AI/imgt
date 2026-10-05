@@ -69,7 +69,7 @@
   "r2_buckets": [
     {
       "binding": "DERIVATIVES",
-      "bucket_name": "imgt-derivatives"
+      "bucket_name": "imgt"
     }
   ]
 }
