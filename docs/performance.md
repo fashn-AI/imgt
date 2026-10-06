@@ -1,19 +1,19 @@
 # Performance
 
-imgt uses Rust/libvips with two container shards, each allocated 2 vCPUs,
-6 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
-cache hits do not start a container.
+imgt uses Rust/libvips with four container shards, each allocated 1 vCPU, 3 GiB RAM
+and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so cache hits do not
+start a container.
 
 ## Current decisions
 
 - **Rust/libvips runtime:** identical native library and codec versions retain
   the evaluated Sharp output, while reducing the runtime footprint. Controlled
   local repeats show similar rendering speed, lower memory use and modest CPU
-  savings. Cloudflare rollout checks and load measurements follow packaging.
-- **Two CPUs and two encoders per shard:** the effort-4 allocation comparison
-  below measures horizontal and vertical scaling with eight total CPUs. Each
+  savings. The current capacity comparison below includes live Cloudflare load tests.
+- **Four CPUs across four shards:** the October 6 Rust capacity comparison
+  below evaluates smaller pairs and horizontal scaling with four total CPUs. Each
   shard still admits eight active jobs and at most 128 distinct jobs; ready
-  inputs use two encoder slots. libvips uses one thread per image.
+  inputs use one encoder slot per shard. libvips uses one thread per image.
   Canceled native work retains its slot until processing settles.
 - **Late ICC conversion:** eligible RGB inputs resize before conversion to
   sRGB. Other color and depth cases use the original conversion order. Regression
@@ -26,12 +26,70 @@ cache hits do not start a container.
   evaluated Vercel outputs at the same client quality. This replaces the earlier
   effort-2 throughput tradeoff. Renderer v5 isolates the Rust output from older
   cached images and running containers. Client quality values stay unchanged.
-- **Two shards, two idle minutes:** stable routing deduplicates work for each
+- **Four shards, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
 - **Owned native buffers:** the Rust HTTP body owns the encoded allocation
   directly. Input buffers outlive every lazy image depending on their bytes;
   native work retains its permits until completion, including after cancellation.
+
+## Rust capacity and horizontal scaling, October 6, 2026
+
+Use four 1-CPU / 3-GiB shards, one encoder per shard and one libvips thread per image.
+Total CPU and reserved RAM stay at four CPUs and 12 GiB. The smaller 1-CPU pair is a
+budget option at the observed average peak, but its longer 20/s run exhausted
+admission capacity and returned seven HTTP 429 responses. Four 1-CPU shards passed
+3,600 fresh arrivals at 20/s and improved the 200-image burst. The longer two-2-CPU
+confirmation also passed 3,600 arrivals, with p95 1.282 s versus 1.046 s for four
+1-CPU shards. The horizontal allocation costs only $0.72/month more in the model, so
+use it for FASHN. These are separate bounded runs, not proof of a universal latency
+winner.
+
+| Allocation | 50 together | 3/s | 10/s | 20/s | 200 together |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4 × 1 CPU | 2.402 s | 0.934 s | 0.942 s | 1.046 s | 6.836 s |
+| 2 × 2 CPUs | 2.460 s | 1.063 s | 0.968 s | 1.282 s | 7.703 s |
+| 2 × 1 CPU | 4.954 s | 0.990 s | 1.122 s | 19.857 s (7 failures) | 17.321 s |
+| Vercel | 1.100 s | 1.273 s | 1.252 s | 1.219 s | 2.044 s |
+
+The first post-restore gallery returned all 50 images in Cloudflare tail, but two
+gateway responses still identified the previous version during rollout. The
+version-pinned benchmark rejected those two samples; cache readbacks validated their
+optimized WebP output. Preserve the distinction between rollout version mismatches and
+image failures. The warm charts exclude that startup.
+
+The local comparison covers five allocations, including four and eight basic
+quarter-CPU containers, and retains the Worker request flow, deduplication and
+persistence. All 7,400 fresh outputs matched Sharp bytes; cache readbacks and
+50-caller deduplication passed for every profile. Local-only basic is unavailable
+through the current native durable_object scheduling API; changing scheduling policy
+requires a new Container application. Eight basic shards were slower and had higher
+modeled cost than the recommended four-shard allocation.
+
+In the separate eight-upload maximum-input fixture, basic charged memory reached 1,018
+MiB without an OOM. That single fixture leaves little margin and does not establish
+that every allowed image fits in 1 GiB. Measured memory is below the recommended
+provisioned allocation; Cloudflare custom sizes require at least 3 GiB per CPU.
+
+The final runtime-v16 deployment passed 50/50 first-provisioning images, another 600
+arrivals at 20/s, two fresh bursts and 200 edge-cached readbacks. All four containers
+then stopped cleanly and restarted with new boot IDs for 50/50 fresh images: p95 2.834
+s, maximum 2.913 s. The first provisioning p95 was 6.397 s. Every accepted final image
+decoded as the requested 640px WebP. No image or version-check failure occurred in the
+final deployment check.
+
+The public benchmark now has two charts: latency by workload and estimated monthly
+cost. It uses 2.25M fresh derivatives, 10M assumed image requests, 120 KiB average
+output, 0.14 consumed CPU seconds per transform, 30-day R2 retention and all replicas
+awake for the full month. Four 1-CPU shards model about $122/month; the smaller pair
+about $82. At the recent 101K/day snapshot, the four-shard estimate is $130/month with
+the same other assumptions. Shared account allowances are assumed available, and the
+estimate is not an invoice. Vercel remains faster for the measured simultaneous
+galleries. Complete timings, counts, pricing sources and limitations are in [the
+benchmark report](benchmarks.md).
+
+Raw benchmark scripts, source lists and per-request responses remain in the external
+research checkout. Aggregate measurements alone are committed.
 
 ## Packaged Rust release, October 6, 2026
 

@@ -23,14 +23,15 @@ test("built benchmark charts work without scripts and both JSON-LD blocks satisf
     }
     assert.doesNotMatch(
       page,
-      /<!-- (?:SETUP_PROMPT|LATENCY_CHART|COST_CHART|COST_BREAKDOWN|LOWER_RESULTS) -->/,
+      /<!-- (?:SETUP_PROMPT|LATENCY_CHART|LATENCY_NOTE|COST_CHART|RECOMMENDATION_TITLE|RECOMMENDATION_COPY) -->/,
     );
     assert.doesNotMatch(page, /\u2014/);
   }
   const benchmarks = await readFile(new URL("benchmarks.html", assets), "utf8");
-  assert.match(benchmarks, /1\.755 s/);
-  assert.match(benchmarks, /\$187\.69/);
-  assert.match(benchmarks, /\$223\.20/);
+  assert.match(benchmarks, /2\.402 s/);
+  assert.match(benchmarks, /\$120\.80/);
+  assert.match(benchmarks, /\$250\.93/);
+  assert.doesNotMatch(benchmarks, /comparison in progress|cost-inputs/);
   const agents = await readFile(new URL("llms-full.txt", assets), "utf8");
   assert.match(agents, /Source: \/docs\/benchmarks\.md/);
 });

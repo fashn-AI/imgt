@@ -77,7 +77,7 @@ Resource names and allowlisted hosts belong to that installation.
 ## Costs
 
 See the [benchmark and pricing page](https://imgt.fashn.ai/benchmarks) for live
-latency comparisons and an editable monthly cost model. The model includes
+latency comparisons and estimated monthly cost charts. The model includes
 smaller allocations, shared allowances, and explicit assumptions and exclusions.
 
 Workers Paid has a $5 monthly minimum. Containers add usage charges for memory,
@@ -88,7 +88,7 @@ Use the current [Workers pricing](https://developers.cloudflare.com/workers/plat
 [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/),
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
-Two running shards allocate 12 GiB. Containers stop after two idle minutes once
+Four running 1-CPU shards allocate 12 GiB. Containers stop after two idle minutes once
 foreground requests and background image refreshes finish. Shorter idle time
 reduces awake time but can cause more cold starts. Images served from Workers
 Cache or R2 do not start a container. An idle, awake container can still incur

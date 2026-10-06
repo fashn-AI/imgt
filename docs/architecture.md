@@ -80,7 +80,7 @@ WebP.
 The configured deterministic shards each accept up to 128 distinct jobs. At most eight
 jobs per shard download sources, start the container, upload, or encode at once;
 the others wait without downloading originals. Within a container, uploads run
-independently and ready inputs enter a queue with two active native encoders. A
+independently and ready inputs enter a queue with one active native encoder per 1-CPU shard. A
 stalled upload does not block ready images. Completed results keep their
 single-flight entry during R2 writes but release active capacity immediately.
 Requests beyond the bounded admission limit return retryable `429`.

@@ -1,11 +1,15 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createHighlighter } from "shiki";
+import { allocations, estimateCosts } from "../public/benchmark-costs.js";
 import {
-  allocations,
-  defaultScenario,
-  estimateCosts,
-} from "../public/benchmark-costs.js";
+  profiles,
+  recommendedProfile,
+  recommendation,
+  costScenario,
+  latencyRows,
+  latencyNote,
+} from "../public/benchmark-data.js";
 
 const root = new URL("../", import.meta.url);
 const assets = new URL("dist/public/", root);
@@ -51,65 +55,41 @@ await writeFile(
 );
 
 const currency = (value) => `$${value.toFixed(2)}`;
-const chart = (labels, values, format) => {
-  const maximum = Math.max(1, ...values) * 1.05;
-  return labels
+const chart = (rows, format) => {
+  const maximum = Math.max(0.001, ...rows.map((row) => row.value ?? 0)) * 1.05;
+  return rows
     .map(
-      (label, i) =>
-        `<div class="chart-row${label === "Vercel" ? " vercel" : ""}"><span>${label}</span><svg viewBox="0 0 1000 24" preserveAspectRatio="none" aria-hidden="true"><rect width="${(values[i] / maximum) * 1000}" height="24" rx="2" /></svg><span class="chart-value">${format(values[i])}</span></div>`,
+      (row) =>
+        `<div class="chart-row${row.recommended ? " recommended" : ""}${row.name === "Vercel" ? " vercel" : ""}"><span class="chart-label">${row.name}<small>${row.detail}</small></span><svg viewBox="0 0 1000 24" preserveAspectRatio="none" aria-hidden="true"><rect width="${((row.value ?? 0) / maximum) * 1000}" height="24" rx="2" /></svg><span class="chart-value">${row.value === null ? row.emptyLabel : format(row.value)}<small>${row.status ?? ""}</small></span></div>`,
     )
     .join("\n");
 };
-const costs = allocations.map((allocation) =>
-  estimateCosts(allocation, defaultScenario),
-);
-const components = {
-  plan: "Workers plan",
-  memory: "Container memory",
-  cpu: "Active container CPU",
-  disk: "Container disk",
-  objects: "Durable Objects",
-  r2: "R2 storage and operations",
-  worker: "Workers usage",
-  transfer: "Container output transfer",
-  total: "Modeled subtotal",
-};
+const costs = profiles.map((profile) => ({
+  ...profile,
+  value: estimateCosts(
+    allocations.find((allocation) => allocation.name === profile.name),
+    costScenario,
+  ).imgtTotal,
+  recommended: profile.id === recommendedProfile,
+}));
+costs.push({
+  name: "Vercel",
+  detail: "Modeled image meters",
+  value: estimateCosts(allocations[0], costScenario).vercelTotal,
+});
 let benchmarks = await readFile(new URL("benchmarks.html", assets), "utf8");
 benchmarks = benchmarks
+  .replace("<!-- RECOMMENDATION_TITLE -->", recommendation.title)
+  .replace("<!-- RECOMMENDATION_COPY -->", recommendation.copy)
   .replace(
     "<!-- LATENCY_CHART -->",
     chart(
-      [
-        "imgt · 4 × 2 CPUs",
-        "imgt · 8 × 1 CPU",
-        "imgt · 2 × 1 CPU",
-        "imgt · 2 × 2 CPUs",
-        "Vercel",
-      ],
-      [1.755, 2.637, 4.201, 2.733, 1.377],
+      latencyRows("live", "gallery-50"),
       (value) => `${value.toFixed(3)} s`,
     ),
   )
-  .replace(
-    "<!-- COST_CHART -->",
-    chart(
-      [
-        ...allocations.map((allocation) => `imgt · ${allocation.name}`),
-        "Vercel",
-      ],
-      [...costs.map((cost) => cost.imgtTotal), costs[0].vercelTotal],
-      currency,
-    ),
-  )
-  .replace(
-    "<!-- COST_BREAKDOWN -->",
-    Object.entries(components)
-      .map(
-        ([key, label]) =>
-          `<tr data-component="${key}"><th scope="row">${label}</th>${costs.map((cost) => `<td>${currency(key === "total" ? cost.imgtTotal : cost.cloudflare[key])}</td>`).join("")}</tr>`,
-      )
-      .join("\n"),
-  );
+  .replace("<!-- LATENCY_NOTE -->", latencyNote("live"))
+  .replace("<!-- COST_CHART -->", chart(costs, currency));
 await writeFile(new URL("benchmarks.html", assets), benchmarks);
 
 // Hash each static JSON-LD block; keep inline executable scripts disabled.

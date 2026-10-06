@@ -1,205 +1,212 @@
 # Benchmarks and pricing
 
-The [benchmark page](https://imgt.fashn.ai/benchmarks) provides live latency
-charts, smaller local allocations, and an interactive monthly cost model.
-Measurements and rates were checked on October 5, 2026.
+The [benchmark page](https://imgt.fashn.ai/benchmarks) contains response-time and
+estimated-cost charts. These measurements were collected on October 6, 2026.
 
-An October 6 local cache-refresh replay verified that unchanged direct origins
-with strong ETags reuse their existing WebP derivative without starting compute.
-This avoids repeated encoding after expiration. It does not change first-image
-latency or the live fresh-image charts below. See [refresh measurements](performance.md#avoiding-unchanged-source-encoding-october-6-2026).
+## Production choice
 
-## Live comparison
+Four containers, one CPU each. About $122/month at 2.25M fresh images, or $130/month
+at the recent 101K/day rate, using the same assumptions. Faster measured 200-image
+bursts and sustained load at almost the same cost as two 2-CPU containers. The cheaper
+two-1-CPU pair overloaded during stress testing.
 
-Same 50 PNG sources, width 640, quality 98 and WebP effort 4. One client entered
-through São Paulo edge locations; Cloudflare containers were in North America.
-These were sequential single runs with warm containers. Complete-response latency
-ends after the response body, before output validation.
+The target includes all FASHN projects: approximately 2.25M monthly transformations
+and a busiest observed 15-minute interval of about 2.9/s. We test 3/s, 10/s and 20/s,
+plus simultaneous galleries. Fifteen-minute averages do not reveal second-by-second
+bursts.
 
-| Workload, p95 | Four 2-CPU containers | Eight 1-CPU containers | Vercel |
-| --- | --- | --- | --- |
-| 20 fresh images/s, 1,200 requests | 1.148 s | 1.462 s | 1.341 s |
-| 50 fresh images together | 1.755 s | 2.637 s | 1.377 s |
-| 200 fresh images together | 6.525 s | 5.636 s | 1.508 s |
-| 200 cached images together | 230 ms | 222 ms | 193 ms |
+## Live response times
 
-All requests succeeded. All 1,400 comparable fresh outputs matched Vercel byte
-for byte. A separate three-minute run completed 3,600 fresh transforms at 20/s,
-without errors, at a 1.110 s p95. Four-shard fresh-container warmups took up to
-7.376 s and eight-shard warmups up to 9.335 s. Cold provisioning can exceed the
-20-second deadline. These results do not establish a global latency SLO.
+Successful complete-response p95, including source fetch, Cloudflare request flow and
+the full response body. Each configuration ran separately from a client in Brazil,
+using 50 real FASHN PNG originals, width 640, quality 98, WebP effort 4 and unique
+query keys. All accepted optimized responses were decoded and checked for the
+requested dimensions and format. Gallery bars use warm containers. Results are finite
+runs, not a global latency guarantee.
 
-## Memory and allocation
+| Allocation | 50 together | 3/s | 10/s | 20/s | 200 together |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4 × 1 CPU | 2.402 s | 0.934 s | 0.942 s | 1.046 s | 6.836 s |
+| 2 × 2 CPUs | 2.460 s | 1.063 s | 0.968 s | 1.282 s | 7.703 s |
+| 2 × 1 CPU | 4.954 s | 0.990 s | 1.122 s | 19.857 s (7 failures) | 17.321 s |
+| Vercel | 1.100 s | 1.273 s | 1.252 s | 1.219 s | 2.044 s |
 
-The measured renderer does not require the full provisioned allocation. A local
-100-request large-input test, including a 50-megapixel RGBA image and inputs padded
-to 25 MiB, peaked at 628 MiB per container. Cloudflare custom allocations require
-at least 3 GiB per CPU, so a 2-CPU container reserves at least 6 GiB. See
-[resource limits](https://developers.cloudflare.com/containers/platform/limits/).
+The selected profile uses its final warm-gallery and 200-image burst repeat; the
+original repeats remain in the timing details. The quick 3/s phase has 180 arrivals
+and 10/s has 600. The two-2-CPU and four-1-CPU profiles also receive longer
+confirmation at 20/s; counts and maximum response times are listed below. The
+two-1-CPU 20/s entry instead includes the longer trial: 619 requests were dispatched
+from a planned 3,600, with seven HTTP 429 admission errors. The run stopped after the
+error threshold. Its earlier 600-request 20/s trial returned all images, but needed
+48.283 seconds to finish 30 seconds of arrivals. That configuration cannot be called
+sustainable at 20/s.
 
-Reducing shard count or CPU capacity reduces provisioned memory charges. It also
-reduces uncached burst capacity. Four 2-CPU containers completed the 20/s comparison. The current default uses two
-2-CPU containers, with two encoders per container. Smaller configurations are
-experiments, not general production recommendations. A live two-1-CPU-container repeat
-completed 300/300 fresh transforms at 5/s with a 1.222 s p95. Its 50-image burst
-was 4.201 s and its 200-image burst 15.254 s. At 10/s it completed 598/600, with
-two client timeouts. The initial 1/s attempt also had an upstream error and two
-client timeouts; the repeated 1/s run completed 30/30 with a 5.380 s p95. Timeout
-causes remain unresolved. All 1,178 successful fresh repeat outputs matched
-Vercel, and cache and conditional 304 checks passed. Detailed smaller-allocation
-results are recorded in [performance notes](performance.md).
+The smaller pair returned all 180 requests at 3/s and all 600 at 10/s. It is a budget
+alternative, but slower galleries and burst overload make it a weaker production
+choice when avoiding broken images is the priority.
 
-### Two 2-CPU containers
+The charts retain failure counts. Failed responses are excluded from successful
+latency percentiles, never presented as fast images. The Vercel reference used here
+returned all 1,830 responses as optimized images. An earlier reference run returned
+three valid original PNG images under HTTP 200 instead of optimized WebP; these were
+original-image fallbacks, not broken responses. imgt does not currently fall back to
+the original after a transform error.
 
-A later live trial allocated 12 GiB total RAM and retained two encoders per
-container. Warm 5/s completed 300/300 at 1.047 s p95; warm 10/s completed
-600/600 at 1.084 s. Fresh 50- and 200-image bursts completed every request at
-2.996 s and 9.812 s respectively. Two idle-stop/restart cycles completed 50/50
-fresh images each at 3.515 s and 3.769 s, with new boots for both containers.
-Cached repeats completed 200/200 at 280 ms and conditional validation passed.
+The restored pair's immediate rollout gallery accepted 48/50 responses on the expected
+Worker version. The other two were rejected by the benchmark version guard. Cloudflare
+tail identified the previous gateway version calling the new cache entrypoint and
+returning HTTP 200 with no exception for both requests. Both retained images were
+rechecked as valid 640px WebP on the new version. These were mixed-version rollout
+samples, not observed broken images; they are excluded from the warm steady-state
+charts. The original rejection records are retained in research.
 
-The first provisioning burst immediately after deployment returned 50 HTTP 500
-responses. Its cause remains unresolved. The five-minute 10/s confirmation then
-completed 2,998/3,000, with two 30-second client timeouts. Successful responses
-had a 1.094 s p95 and 28.885 s maximum. Admission p95 was zero and encoder
-queue p95 was 45.9 ms; the timeouts do not establish a CPU capacity limit.
-All 4,282 successful fresh outputs across the warm trial, restart cycles and
-longer confirmation matched Vercel. That trial restored the four-container allocation
-because the smaller configuration failed its reliability check. See the complete
-[performance notes](performance.md) for failures and response maxima.
+## Smaller local containers
 
-### Reliability repeat
+Production ARM64 Rust image, Docker CPU and memory quotas without swap, original
+bodies replayed in memory, and R2 writes delayed 300 ms. The real Worker gateway,
+coordinator, HTTP service and persistence flow are exercised. These measurements
+exclude Cloudflare provisioning and real origin, R2 and network latency.
 
-A repeat used a 60-second client limit with the unchanged 20-second transform
-deadline. First provisioning returned 50/50 fresh images at 8.862 s p95.
-A five-minute 3/s phase completed 900/900 at 1.105 s; the five-minute 10/s
-phase completed 2,999/3,000 at 1.099 s. There were no timeouts. The one failure
-was a source HTTP 500, surfaced as HTTP 502 in 440 ms; repeating it later
-succeeded in 799 ms. Fresh 50- and 200-image bursts returned every image at
-2.988 s and 9.208 s p95, cached repeats at 223 ms. An idle restart returned
-50/50 at 4.131 s. All 4,252 successful fresh outputs matched Vercel.
+| Allocation | 50 together | 3/s | 10/s | 20/s | 200 together |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4 × 1 CPU | 2.092 s | 0.203 s | 0.243 s | 0.440 s | 7.475 s |
+| 2 × 2 CPUs | 2.080 s | 0.217 s | 0.227 s | 0.339 s | 6.702 s |
+| 2 × 1 CPU | 3.636 s | 0.202 s | 0.296 s | 7.501 s | 12.291 s |
+| 4 × basic | 7.480 s | 1.071 s | 10.067 s | 43.184 s | 24.090 s |
+| 8 × basic | 4.373 s | 0.911 s | 2.209 s | 10.767 s | 13.097 s |
 
-Every successful response arrived within the earlier 30-second limit; the
-longer client timeout did not recover a slower response in this repeat.
-Earlier failures remain unexplained. A subsequent source-retry rollout caught
-explicit Durable Object reset errors: the 10/s test stopped at 414 requests,
-with 408 successes and six HTTP 500 responses. A later 200-image burst
-returned 199 errors; repeating it returned all 200, including 193 retained in
-R2. Those failures were rollout interruptions, rather than encoder deadline
-failures. imgt now retries the source GET once on temporary failures and
-reacquires a Durable Object stub up to twice on exceptions marked retryable, excluding
-overloaded objects. Container uploads and HTTP errors are not replayed.
-See [request recovery behavior](architecture.md#slow-requests-and-errors).
+All 7,400 fresh local outputs matched the Sharp control byte for byte. All 7,400 R2
+readbacks avoided another transform, and 50 concurrent callers shared one uncached
+transform in each profile. No out-of-memory exit occurred. At 20/s, four basic
+containers needed 77.481 seconds to finish 30 seconds of arrivals; eight basic needed
+43.140 seconds. Completing finite arrivals does not establish sustainable throughput.
 
-### Rollout and health checks
+A separate input-limit test uploaded eight simultaneous 25 MiB bodies, including a
+50-megapixel RGBA image, and requested width 3840 / quality 98. All 24 outputs across
+the three sizes matched Sharp. Maximum charged cgroup memory was 880 MiB for 2 CPU / 6
+GiB, 951 MiB for 1 CPU / 3 GiB, and 1,018 MiB for basic / 1 GiB. This includes charged
+file cache. Basic had little memory headroom in that fixture; this is not proof that
+every allowed image fits in 1 GiB.
 
-Later startup checks retained two 2-CPU containers but increased each transform
-attempt to 60 seconds and the client limit to 90 seconds. They did not pass:
+Cloudflare offers basic at 1/4 CPU and 1 GiB, but the current native durable_object
+scheduling API explicitly does not accept basic. Switching scheduling policy requires
+a new Container application. Basic is a local experiment, not a supported drop-in
+production configuration. Custom resources have a 1-CPU minimum and 3 GiB minimum RAM
+per CPU.
 
-| Check | Successful images | Other results |
-| --- | --- | --- |
-| One reset retry, earlier 20 s deadline | 38/50 | Eleven HTTP 503, one HTTP 500 |
-| 60 s deadline, settings before health | 0/50 accepted | 39 HTTP 504, four HTTP 503, seven version-check failures |
-| Settings moved to background restoration | 0/50 | 49 HTTP 504, one HTTP 503 |
-| Two-second health probes | 33/50 | Sixteen HTTP 504, one version-check failure |
+Other native-supported fractional presets were not benchmarked. Standard-1 reserves 4
+GiB for half a CPU, so matching the same four-CPU budget would reserve 32 GiB rather
+than 12 GiB. Lite's 256 MiB allocation is below the memory observed in the
+allowed-input fixture; it is not qualified for these limits.
 
-The last check's successful p95 was 44.515 s and maximum 44.908 s. One shard
-became healthy in 40.204 s; the other exhausted its 60-second readiness limit.
-A subsequent two-shard warm-up completed 1/2 and stopped before sustained load.
-These results do not establish two-container reliability or a CPU capacity limit.
-The clean confirmation below used fresh runtime-v11 shard IDs with the same allocation and
-renderer; stored derivatives remain compatible.
+The final four-shard runtime passed another 600 arrivals at 20/s, both fresh galleries
+and 200 cached edge readbacks. All four instances then stopped with exit code 0 after
+idle time. Fifty new uncached images restarted all four with new boot IDs and
+succeeded at p95 2.834 s, maximum 2.913 s. First provisioning returned 50/50 at p95
+6.397 s, maximum 6.510 s. No image or version-check failure occurred in that final
+verification.
 
-Cloudflare reported a [regional Durable Objects and Containers incident](https://www.cloudflarestatus.com/incidents/z28czd65h29l)
-from October 5, 17:14 to 22:35 UTC in Eastern North America, matching the container
-region. Earlier trials overlapped it; the latest checks followed its reported
-resolution. This is relevant context, not an established cause of every failure.
-The new pending-I/O compatibility flag was already enabled in the live Worker.
+## Estimated monthly cost
 
-### Clean confirmation with fresh shards
+Both providers use the same modeled image workload: 2.25M fresh derivatives, 10M total
+image requests, 120 KiB average output, 8.57M billed Vercel read units, 0.14 consumed
+container CPU seconds per transform, and every container awake for a 30-day month.
+Total image requests and output size are assumptions; Vercel cache units cannot be
+translated directly into request counts.
 
-A fresh runtime-v11 pair completed the immediate 50-image provisioning burst
-and all 3,000 arrivals at 10/s over five minutes. It retained two encoders per
-container, 12 GiB total RAM, a 60-second job deadline and 90-second client limit.
+| Allocation | Total RAM | Estimated monthly cost |
+| --- | ---: | ---: |
+| 4 × 1 CPU | 12 GiB | $121.52 |
+| 2 × 2 CPUs | 12 GiB | $120.80 |
+| 2 × 1 CPU | 6 GiB | $81.92 |
+| 4 × basic (local only) | 4 GiB | $71.13 |
+| 8 × basic (local only) | 8 GiB | $124.96 |
+| Vercel image meters, iad1 | Managed | $250.93 |
 
-| Workload | Success | Complete-response p95 | Maximum |
-| --- | --- | --- | --- |
-| First provisioning | 50/50 | 12.394 s | 21.484 s |
-| 10/s, five-minute arrival window | 3,000/3,000 | 1.571 s | 67.690 s |
-| 50 fresh images together | 50/50 | 2.733 s | 2.913 s |
-| 200 fresh images together | 200/200 | 10.330 s | 26.125 s |
-| 200 cached images together | 200/200 | 296 ms | 533 ms |
-| 50 fresh images after idle stop | 50/50 | 4.237 s | 12.668 s |
+The recent 101K/day snapshot projects to 3.03M fresh derivatives over 30 days. With
+the same 10M total-request budget and other assumptions, four 1-CPU shards model
+$130.01/month. One day is not a measured monthly bill or forecast guarantee.
 
-Both containers stopped after idle time and restarted with new boot IDs.
-All 3,352 fresh outputs, including the restart gallery, matched Vercel.
-All 20 responses slower than 20 seconds were rechecked from edge cache in at most 70 ms. The sustained phase took
-321.558 seconds including delivery after the arrival window. Queueing remained
-short, but delivery outliers remain unresolved: the 67.690-second response had
-headers after 740 ms and a 190 ms transform job. A job deadline does not bound
-full-body delivery. The two-container allocation remains the smaller starting
-point for this tested workload; its 20/s capacity remains unverified. These finite
-results do not establish Vercel-equivalent tail latency or long-term reliability.
-The earlier failures remain visible above.
+imgt includes a $5 Workers plan, consumed CPU, provisioned RAM and disk, Durable
+Object requests and awake duration, R2 storage/operations, Worker invocations/CPU and
+North American container output transfer. Account allowances are shared and assumed
+available. CPU usage is a local estimate, not a measured Cloudflare invoice. The model
+conservatively sends every image request to R2 and the coordinator rather than
+assuming edge cache hits.
 
-## Cost model
+A [30-day R2 lifecycle rule](deployment.md#storage-cleanup) is required for the
+modeled retained storage. Source transfer, excess logging, Durable Object storage,
+taxes and support time are excluded. Vercel uses iad1 on-demand image rates before
+plan credits and delivery charges. These estimates are not invoices.
 
-The public calculator uses a synthetic scenario: two million fresh derivatives,
-three million total requests, 120 KiB per output, eight million billed Vercel read
-units, 0.14 consumed CPU seconds per fresh transform, and every container awake
-for a 30-day month. It assumes Cloudflare account allowances are available.
+More horizontal replicas add provisioned RAM, disk and Durable Object awake duration.
+Eight basic containers reserve more memory and model higher cost than four 1-CPU
+containers, while performing worse locally. RAM allocation is largely Cloudflare's
+sizing minimum, not the renderer's measured working set.
 
-| Allocation | Total reserved RAM | Modeled imgt monthly subtotal |
-| --- | --- | --- |
-| One 1-CPU container | 3 GiB | $38.02 |
-| Two 1-CPU containers | 6 GiB | $70.32 |
-| Two 2-CPU containers | 12 GiB | $109.20 |
-| Four 2-CPU containers | 24 GiB | $187.69 |
-| Eight 1-CPU containers | 24 GiB | $214.14 |
+## Timing and reliability details
 
-The equivalent modeled Vercel image meters are $223.20 at iad1 on-demand rates,
-or $359.52 at gru1 rates, before plan credits and delivery charges. These are
-estimates, not bills or savings guarantees. The smaller profiles provide less
-uncached throughput and have not established live parity with the larger profile.
+The transform deadline remains 60 seconds and the benchmark client limit is 90
+seconds. Each shard has eight active source/upload jobs, bounded waiting,
+deduplication and 128 distinct pending jobs. Basic and 1-CPU profiles use one native
+encoder per shard; 2-CPU profiles use two. Each image uses one libvips thread. Queued
+native work retains its slot until completion after cancellation. The two-minute idle
+stop waits for active work. R2 and edge hits avoid compute.
 
-imgt subtotals include the $5 Workers plan, provisioned container memory and disk,
-consumed CPU, modeled Durable Object duration/requests, R2 Standard storage and
-operations, Worker requests/CPU, and North American container output transfer.
-The model conservatively sends every request through the Durable Object and R2,
-adds an extra R2 read per transform, and retains 30 days of unique derivatives.
-Workers bill both the gateway and cached loopback invocation, with an assumed
-combined 7 ms CPU per external request; Durable Objects stay active for the
-container's entire awake period at 128 MB each. R2 and Durable Object excess
-billing units are rounded up. These assumptions can differ from actual usage.
+### 4 × 1 CPU
 
-CPU measurements were approximately 0.12 to 0.15 seconds per transform locally.
-The default rounds to 0.14. Provisioned CPUs are not billed as active continuously.
-Awake time cannot be below the modeled consumed CPU requirement; allocations with
-insufficient monthly CPU capacity are flagged. Uniform traffic and the two-minute
-idle timeout can keep all containers awake even at modest average throughput.
+- first-gallery-50: 50/50 succeeded; p95 6.338 s, maximum 6.559 s, total elapsed 6.607 s.
+- steady-3: 180/180 succeeded; p95 0.934 s, maximum 1.361 s, total elapsed 60.325 s.
+- steady-10: 600/600 succeeded; p95 0.942 s, maximum 2.597 s, total elapsed 60.598 s.
+- stress-20: 3600/3600 succeeded; p95 1.046 s, maximum 5.783 s, total elapsed 181.134 s.
+- burst-200: 200/200 succeeded; p95 6.836 s, maximum 7.848 s, total elapsed 7.885 s.
+- cached-200: 200/200 succeeded; p95 0.205 s, maximum 0.222 s, total elapsed 1.329 s.
+- gallery-50: 50/50 succeeded; p95 2.402 s, maximum 2.823 s, total elapsed 2.841 s.
+- first-gallery-50-final: 50/50 succeeded; p95 6.397 s, maximum 6.510 s, total elapsed 6.553 s.
+- stress-20-final: 600/600 succeeded; p95 1.126 s, maximum 2.959 s, total elapsed 31.509 s.
+- burst-200-initial: 200/200 succeeded; p95 6.743 s, maximum 7.640 s, total elapsed 7.699 s.
+- cached-200-initial: 200/200 succeeded; p95 0.191 s, maximum 0.206 s, total elapsed 1.416 s.
+- gallery-50-initial: 50/50 succeeded; p95 2.597 s, maximum 2.832 s, total elapsed 2.847 s.
+- idle-restart-50: 50/50 succeeded; p95 2.834 s, maximum 2.913 s, total elapsed 2.933 s.
 
-Vercel write units are fresh transforms multiplied by output size rounded up to
-8 KiB. Read units must come from billed usage, not image request counts; recently
-cached regional reads may avoid the read meter. Two million transformations over
-30 days average 0.77/s, but monthly counts cannot establish peak traffic.
+### 2 × 2 CPUs
 
-Excluded: Vercel subscription, credits, CDN requests and data transfer;
-source-host transfer on either provider; excess logs/traces, Durable Object storage,
-and container idle/startup CPU overhead. Taxes and support time are excluded.
-Shared allowances, caching, retained unique objects and geography affect costs.
-Use a private `imgt` bucket with an enabled `derivatives/` lifecycle rule deleting
-after 30 days, as described in [deployment](deployment.md#storage-cleanup).
+- gallery-50: 50/50 succeeded; p95 2.460 s, maximum 2.789 s, total elapsed 2.804 s.
+- steady-3: 180/180 succeeded; p95 1.063 s, maximum 3.119 s, total elapsed 60.293 s.
+- steady-10: 600/600 succeeded; p95 0.968 s, maximum 1.954 s, total elapsed 60.788 s.
+- stress-20: 3600/3600 succeeded; p95 1.282 s, maximum 5.281 s, total elapsed 181.025 s.
+- burst-200: 200/200 succeeded; p95 7.703 s, maximum 8.237 s, total elapsed 8.277 s.
+- cached-200: 200/200 succeeded; p95 1.296 s, maximum 1.332 s, total elapsed 1.413 s.
+- first-gallery-50: 50/50 succeeded; p95 2.837 s, maximum 2.968 s, total elapsed 3.011 s.
+- rollout-first-gallery-50: 48/50 accepted by the version guard; p95 7.253 s, maximum 7.776 s, total elapsed 7.817 s.
+- steady-10-five-minutes: 3000/3000 succeeded; p95 0.957 s, maximum 4.984 s, total elapsed 300.642 s.
+- burst-200-initial: 200/200 succeeded; p95 7.854 s, maximum 8.592 s, total elapsed 8.645 s.
+- cached-200-confirmation: 200/200 succeeded; p95 0.871 s, maximum 1.512 s, total elapsed 1.562 s.
 
-Price sources:
+### 2 × 1 CPU
 
-- [Cloudflare Containers](https://developers.cloudflare.com/containers/platform/pricing/)
-- [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/)
-- [Cloudflare Workers](https://developers.cloudflare.com/workers/platform/pricing/)
+- first-gallery-50: 50/50 succeeded; p95 9.135 s, maximum 9.497 s, total elapsed 9.568 s.
+- steady-3: 180/180 succeeded; p95 0.990 s, maximum 1.205 s, total elapsed 60.352 s.
+- steady-10: 600/600 succeeded; p95 1.122 s, maximum 4.551 s, total elapsed 60.830 s.
+- stress-20: 612/619 succeeded (3600 planned; stopped after error threshold); p95 19.857 s, maximum 22.695 s, total elapsed 52.347 s.
+- burst-200: 200/200 succeeded; p95 17.321 s, maximum 18.820 s, total elapsed 18.874 s.
+- cached-200: 200/200 succeeded; p95 0.240 s, maximum 0.267 s, total elapsed 1.336 s.
+- gallery-50: 50/50 succeeded; p95 4.954 s, maximum 5.198 s, total elapsed 5.217 s.
+
+See [performance history](performance.md) for earlier trials and unresolved historical
+failures. These October 6 results supersede older Sharp allocation comparisons for the
+current Rust capacity decision. Earlier failures remain in the history; this bounded
+test does not establish long-term reliability or Vercel-equivalent burst latency. Raw
+scripts, per-request logs and source URLs stay outside the normal repository.
+
+## Sources
+
+- [Container pricing](https://developers.cloudflare.com/containers/platform/pricing/)
+- [Native scheduling and supported sizes](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
+- [Container limits](https://developers.cloudflare.com/containers/platform/limits/)
+- [Durable Object pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+- [R2 pricing](https://developers.cloudflare.com/r2/pricing/)
+- [Worker pricing](https://developers.cloudflare.com/workers/platform/pricing/)
 - [Workers Cache invocation billing](https://developers.cloudflare.com/workers/cache/#pricing)
-- [Cloudflare R2](https://developers.cloudflare.com/r2/pricing/)
+- [Vercel iad1 pricing](https://vercel.com/docs/pricing/regional-pricing/iad1)
 - [Vercel image billing units](https://vercel.com/docs/image-optimization/limits-and-pricing)
-- [Vercel iad1 rates](https://vercel.com/docs/pricing/regional-pricing/iad1)
-- [Vercel gru1 rates](https://vercel.com/docs/pricing/regional-pricing/gru1)
-
-Raw inputs, credentials, per-request logs and research scripts are excluded from
-the public site and normal repository checkout.

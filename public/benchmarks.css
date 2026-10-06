@@ -1,26 +1,44 @@
 nav [aria-current="page"] {
   color: var(--accent);
 }
-.benchmark-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  border-bottom: 1px solid var(--border);
+.benchmark-hero {
+  padding: 24px 32px;
+  border-bottom: 0;
 }
-.benchmark-stats > div {
-  padding: 28px 32px;
+.benchmark-hero h1 {
+  font-size: clamp(32px, 4vw, 48px);
+  margin: 0 0 12px;
 }
-.benchmark-stats > div + div {
-  border-left: 1px solid var(--border);
+.benchmark-hero .hero-badge {
+  margin-bottom: 12px;
 }
-.benchmark-stats strong {
-  display: block;
-  font-size: 30px;
-  font-weight: 550;
-  letter-spacing: -1px;
+.benchmark-hero .hero-intro {
+  margin: 0 auto;
+  font-size: 15px;
 }
-.benchmark-stats span {
+.content-section {
+  padding: 36px 40px;
+}
+.section-heading {
+  margin-bottom: 20px;
+}
+.benchmark-recommendation {
+  margin: 0 32px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.benchmark-recommendation h2 {
+  font-size: 24px;
+  letter-spacing: -0.5px;
+}
+.benchmark-recommendation p:last-child {
+  max-width: 760px;
+  margin-bottom: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
 }
 .benchmark-panel {
   border: 1px solid var(--border);
@@ -36,22 +54,18 @@ nav [aria-current="page"] {
   padding: 16px 20px;
   border-bottom: 1px solid var(--border);
 }
-.chart-heading h3 {
-  margin: 0;
-}
-.chart-heading > span {
-  margin-left: auto;
+.chart-heading label {
+  font-size: 12px;
   color: var(--muted);
-  font-size: 11px;
 }
 .bar-chart {
   display: grid;
-  gap: 22px;
+  gap: 24px;
   padding: 30px 20px;
 }
 .chart-row {
   display: grid;
-  grid-template-columns: 160px minmax(0, 1fr) 84px;
+  grid-template-columns: 170px minmax(0, 1fr) 110px;
   gap: 16px;
   align-items: center;
   font-size: 13px;
@@ -63,10 +77,20 @@ nav [aria-current="page"] {
   background: #ffffff04;
 }
 .chart-row rect {
+  fill: #707070;
+}
+.chart-row.recommended rect {
   fill: var(--accent);
 }
 .chart-row.vercel rect {
   fill: #d4d4d4;
+}
+.chart-label small,
+.chart-value small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
 }
 .chart-value {
   text-align: right;
@@ -78,14 +102,14 @@ nav [aria-current="page"] {
   color: var(--muted);
   font-size: 12px;
 }
-.content-section > .chart-note {
-  padding: 20px 0 0;
-}
 .benchmark-copy {
-  max-width: 780px;
+  max-width: 800px;
   color: var(--muted);
-  font-size: 14px;
-  margin: 24px 0;
+  font-size: 13px;
+  margin: 20px 0 0;
+}
+.benchmark-method {
+  padding-top: 0;
 }
 .benchmark-details {
   border-bottom: 1px solid var(--border);
@@ -100,126 +124,41 @@ nav [aria-current="page"] {
 .benchmark-details p {
   max-width: 800px;
 }
-.table-scroll {
-  overflow-x: auto;
-}
-.benchmark-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.benchmark-table caption {
-  padding: 16px 20px;
-  text-align: left;
-  color: var(--muted);
-}
-.benchmark-table th,
-.benchmark-table td {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-.benchmark-table th {
-  font-weight: 500;
-}
-.benchmark-table td {
-  color: var(--muted);
-}
-.cost-inputs {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 20px 16px;
-  margin: 28px 0;
-}
-.cost-inputs label {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  font-size: 11px;
-}
-.cost-inputs input,
-.cost-inputs select {
-  width: 100%;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  padding: 10px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid #3b3b3b;
-  border-radius: 6px;
-}
-.method-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px 40px;
-}
-.method-grid p {
-  color: var(--muted);
-  font-size: 13px;
-}
-.benchmark-panel .chart-note a {
-  text-decoration: underline;
-}
 @media (max-width: 760px) {
-  .section-intro br {
-    display: block;
-  }
-  .benchmark-stats > div {
-    padding: 20px 16px;
-  }
-  .benchmark-stats strong {
-    font-size: 24px;
-  }
-  .cost-inputs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .benchmark-recommendation {
+    margin: 0 20px;
+    padding: 20px;
   }
   .chart-row {
-    grid-template-columns: 110px minmax(0, 1fr) 76px;
+    grid-template-columns: 120px minmax(0, 1fr) 90px;
     gap: 10px;
     font-size: 12px;
   }
-  .method-grid {
-    grid-template-columns: 1fr;
-    gap: 16px;
-  }
 }
 @media (max-width: 480px) {
-  .benchmark-stats {
-    grid-template-columns: 1fr;
+  .content-section {
+    padding: 28px 16px;
   }
-  .benchmark-stats > div {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 16px;
+  .benchmark-recommendation {
+    margin: 0 16px;
+    padding: 16px;
   }
-  .benchmark-stats > div + div {
-    border-left: 0;
-    border-top: 1px solid var(--border);
-  }
-  .benchmark-stats span {
-    text-align: right;
-    max-width: 200px;
+  .chart-row {
+    grid-template-columns: 98px minmax(0, 1fr) 82px;
+    gap: 8px;
+    font-size: 11px;
   }
   .bar-chart {
     padding: 24px 14px;
   }
-  .chart-row {
-    grid-template-columns: 96px minmax(0, 1fr) 68px;
-    font-size: 11px;
-  }
   .chart-heading {
     padding: 14px;
-  }
-  .chart-heading > span {
-    width: 100%;
-    margin-left: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
   }
   .chart-heading select {
     width: 100%;
+    min-width: 0;
   }
   .chart-note {
     padding: 0 14px 16px;

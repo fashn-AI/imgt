@@ -7,7 +7,7 @@
     <meta name="author" content="FASHN AI" />
     <meta
       name="description"
-      content="Compare imgt and Vercel image optimization latency, smaller container allocations and modeled monthly costs. Measured results, assumptions and pricing sources."
+      content="Image optimization benchmarks: compare container sizes, response times and estimated monthly costs."
     />
     <meta name="robots" content="max-image-preview:large" />
     <title>imgt: Benchmarks and pricing on Cloudflare</title>
@@ -22,7 +22,7 @@
     />
     <meta
       property="og:description"
-      content="Compare imgt and Vercel image optimization latency, smaller container allocations and modeled monthly costs. Measured results, assumptions and pricing sources."
+      content="Image optimization benchmarks: compare container sizes, response times and estimated monthly costs."
     />
     <meta property="og:image" content="https://imgt.fashn.ai/og.png" />
     <meta property="og:image:type" content="image/png" />
@@ -39,7 +39,7 @@
     />
     <meta
       name="twitter:description"
-      content="Compare imgt and Vercel image optimization latency, smaller container allocations and modeled monthly costs. Measured results, assumptions and pricing sources."
+      content="Image optimization benchmarks: compare container sizes, response times and estimated monthly costs."
     />
     <meta name="twitter:image" content="https://imgt.fashn.ai/og.png" />
     <meta
@@ -65,7 +65,7 @@
         "name": "imgt benchmarks and pricing",
         "url": "https://imgt.fashn.ai/benchmarks",
         "description": "Measured image optimization latency and modeled monthly costs.",
-        "dateModified": "2026-10-05",
+        "dateModified": "2026-10-06",
         "publisher": {
           "@type": "Organization",
           "name": "FASHN AI",
@@ -90,834 +90,166 @@
       </div>
     </header>
     <main id="content" tabindex="-1">
-      <section class="hero">
+      <section class="hero benchmark-hero">
         <div class="hero-content">
           <p class="hero-badge">
-            <span aria-hidden="true"></span>MEASURED OCTOBER 5, 2026
+            <span aria-hidden="true"></span>TESTED OCTOBER 6, 2026
           </p>
-          <h1>Performance has<br /><span>a price.</span></h1>
+          <h1>Image benchmarks.</h1>
           <p class="hero-intro">
-            Measured latency. Smaller allocations. Monthly cost estimates.<br />Choose
-            the capacity your images actually need.
+            Compare speed and cost across container sizes.
           </p>
-          <p class="hero-intro">
-            These live measurements used the former Sharp runtime. The October 6
-            Rust/libvips release keeps the same allocation and encoding
-            settings.
-            <a href="/docs/performance.md"
-              >Read the Rust comparison and release checks ↗</a
-            >
-          </p>
-          <div class="actions">
-            <a class="button primary" href="#latency">Explore the results ↓</a
-            ><a class="button secondary" href="#pricing"
-              >Estimate your costs →</a
-            >
-          </div>
         </div>
       </section>
-      <div class="benchmark-stats" aria-label="Test highlights">
-        <div>
-          <strong>1.15 s</strong><span>Live p95 at 20 fresh images/s</span>
-        </div>
-        <div>
-          <strong>0 / 3,600</strong
-          ><span>Errors in the three-minute confirmation</span>
-        </div>
-        <div>
-          <strong>628 MiB</strong
-          ><span>Peak per container in a local large-input test</span>
-        </div>
-      </div>
+      <aside
+        class="benchmark-recommendation"
+        aria-label="Production recommendation"
+      >
+        <p class="eyebrow">FOR FASHN PRODUCTION</p>
+        <h2><!-- RECOMMENDATION_TITLE --></h2>
+        <p><!-- RECOMMENDATION_COPY --></p>
+      </aside>
       <section id="latency" class="content-section">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">01 / LIVE LATENCY</p>
-            <h2>Compare complete response time.</h2>
+            <p class="eyebrow">01 / SPEED</p>
+            <h2>How long do images take?</h2>
           </div>
           <p class="section-intro">
-            Same sources. 640 px. Quality 98.<br />WebP effort 4. Warm
-            containers.
+            Complete response time, p95.<br />
+            Lower is faster.
           </p>
         </div>
         <div class="benchmark-panel">
           <div class="chart-heading">
-            <label for="workload">Workload</label
-            ><select id="workload">
-              <option value="gallery" selected>50 fresh images together</option>
-              <option value="sustained">20 fresh images per second</option>
-              <option value="burst">200 fresh images together</option>
-              <option value="cached">200 cached images together</option></select
-            ><span>p95 · lower is faster</span>
+            <label for="environment">Test</label>
+            <select id="environment">
+              <option value="live">Live services</option>
+              <option value="local">Local Docker</option>
+            </select>
+            <label for="workload">Workload</label>
+            <select id="workload">
+              <option value="gallery-50">50 fresh images together</option>
+              <option value="steady-3">3 fresh images / second</option>
+              <option value="steady-10">10 fresh images / second</option>
+              <option value="stress-20">20 fresh images / second</option>
+              <option value="burst-200">200 fresh images together</option>
+            </select>
           </div>
-          <div id="latency-chart" class="bar-chart"><!-- LATENCY_CHART --></div>
-          <p class="chart-note">
-            Live requests from one client through São Paulo edge locations.
-            Cloudflare containers ran in North America. Each comparison ran
-            once. Two-container chart values use the clean confirmation below.
-            Those trials ran later; see their failures and variable delivery
-            latency below. These results are not a global latency guarantee.
-          </p>
+          <div
+            id="latency-chart"
+            class="bar-chart"
+            role="group"
+            aria-label="Image response times"
+            aria-live="polite"
+          >
+            <!-- LATENCY_CHART -->
+          </div>
+          <p id="latency-note" class="chart-note"><!-- LATENCY_NOTE --></p>
         </div>
         <p class="benchmark-copy">
-          imgt was close to Vercel for sustained requests and cached delivery.
-          Vercel was faster for large bursts of uncached images. All fresh
-          outputs in the matched 1,400-request comparison were byte-identical.
+          640 px, quality 98, WebP effort 4. Fresh cache keys for every image.
+          Bars use warm containers. Failed requests stay visible. Local results
+          measure the image service and Worker request flow; Cloudflare results
+          include the origin, R2 and network.
         </p>
-        <details class="benchmark-details">
-          <summary>All live results and sample counts</summary>
-          <div class="table-scroll">
-            <table class="benchmark-table">
-              <caption>
-                Complete-response p95; every request succeeded
-              </caption>
-              <thead>
-                <tr>
-                  <th>Workload</th>
-                  <th>4 × 2 CPUs</th>
-                  <th>8 × 1 CPU</th>
-                  <th>Vercel</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th>20/s, 1,200 fresh requests</th>
-                  <td>1.148 s</td>
-                  <td>1.462 s</td>
-                  <td>1.341 s</td>
-                </tr>
-                <tr>
-                  <th>50 fresh requests together</th>
-                  <td>1.755 s</td>
-                  <td>2.637 s</td>
-                  <td>1.377 s</td>
-                </tr>
-                <tr>
-                  <th>200 fresh requests together</th>
-                  <td>6.525 s</td>
-                  <td>5.636 s</td>
-                  <td>1.508 s</td>
-                </tr>
-                <tr>
-                  <th>200 cached requests together</th>
-                  <td>230 ms</td>
-                  <td>222 ms</td>
-                  <td>193 ms</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p>
-            Four 2-CPU containers also completed 3,600 fresh requests at 20/s
-            with zero errors and a 1.110 s p95. Fresh-container warmups took up
-            to 7.376 s for four shards and 9.335 s for eight. Cold starts are
-            excluded from the charts and can exceed the 20 s request deadline.
-          </p>
-        </details>
-      </section>
-      <section id="smaller" class="content-section">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">02 / SMALLER ALLOCATIONS</p>
-            <h2>How small can you go?</h2>
-          </div>
-          <p class="section-intro">
-            Memory follows the CPU allocation.<br />Your traffic determines the
-            CPU need.
-          </p>
-        </div>
-        <p class="benchmark-copy">
-          The renderer does not need 6 GiB to process the tested images.
-          Cloudflare custom containers require at least 3 GiB per CPU, so each
-          2-CPU container reserves 6 GiB. Reducing the number of containers or
-          CPUs reduces that memory bill.
-        </p>
-        <div class="benchmark-panel" id="clean-confirmation">
-          <div class="chart-heading">
-            <h3>Clean two-container confirmation</h3>
-            <span>12 GiB total RAM, 60 s job / 90 s client limits</span>
-          </div>
-          <div class="table-scroll">
-            <table class="benchmark-table">
-              <caption>
-                Fresh shards, complete responses, zero errors in this run
-              </caption>
-              <thead>
-                <tr>
-                  <th>Workload</th>
-                  <th>Success</th>
-                  <th>p95</th>
-                  <th>Maximum</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th>First provisioning</th>
-                  <td>50/50</td>
-                  <td>12.394 s</td>
-                  <td>21.484 s</td>
-                </tr>
-                <tr>
-                  <th>10/s, five-minute arrival window</th>
-                  <td>3,000/3,000</td>
-                  <td>1.571 s</td>
-                  <td>67.690 s</td>
-                </tr>
-                <tr>
-                  <th>50 fresh images together</th>
-                  <td>50/50</td>
-                  <td>2.733 s</td>
-                  <td>2.913 s</td>
-                </tr>
-                <tr>
-                  <th>200 fresh images together</th>
-                  <td>200/200</td>
-                  <td>10.330 s</td>
-                  <td>26.125 s</td>
-                </tr>
-                <tr>
-                  <th>200 cached images together</th>
-                  <td>200/200</td>
-                  <td>296 ms</td>
-                  <td>533 ms</td>
-                </tr>
-                <tr>
-                  <th>50 fresh images after idle stop</th>
-                  <td>50/50</td>
-                  <td>4.237 s</td>
-                  <td>12.668 s</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="chart-note">
-            Both containers stopped and restarted with new boot IDs. All 3,352
-            fresh outputs, including the restart gallery, matched Vercel. The
-            sustained phase took 321.558 s including delivery after the
-            five-minute arrival window. All 20 responses slower than 20 s were
-            rechecked from edge cache in at most 70 ms. Two containers passed
-            this finite run, with slower uncached bursts than Vercel. Earlier
-            failed trials remain below.
-          </p>
-          <p class="chart-note">
-            The 67.690 s response had headers after 740 ms and a measured
-            transform job of 190 ms. Most waiting happened during body delivery,
-            outside the transform deadline. This delay remains unexplained; more
-            encoder capacity is not an established remedy. These results do not
-            establish Vercel-equivalent tail latency or an availability
-            guarantee.
-          </p>
-        </div>
-        <div class="benchmark-panel">
-          <div class="chart-heading">
-            <h3>Earlier two 2-CPU trial</h3>
-            <span>12 GiB total reserved RAM</span>
-          </div>
-          <div class="table-scroll">
-            <table class="benchmark-table">
-              <caption>
-                Warm delivery and idle restarts; complete-response p95
-              </caption>
-              <thead>
-                <tr>
-                  <th>Workload</th>
-                  <th>Success</th>
-                  <th>p95</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th>5/s, 300 fresh requests</th>
-                  <td>300/300</td>
-                  <td>1.047 s</td>
-                </tr>
-                <tr>
-                  <th>10/s, 600 fresh requests</th>
-                  <td>600/600</td>
-                  <td>1.084 s</td>
-                </tr>
-                <tr>
-                  <th>10/s, five minutes, 3,000 fresh requests</th>
-                  <td>2,998/3,000</td>
-                  <td>1.094 s</td>
-                </tr>
-                <tr>
-                  <th>50 fresh images together</th>
-                  <td>50/50</td>
-                  <td>2.996 s</td>
-                </tr>
-                <tr>
-                  <th>200 fresh images together</th>
-                  <td>200/200</td>
-                  <td>9.812 s</td>
-                </tr>
-                <tr>
-                  <th>200 cached images together</th>
-                  <td>200/200</td>
-                  <td>280 ms</td>
-                </tr>
-                <tr>
-                  <th>50 images after idle stop, first cycle</th>
-                  <td>50/50</td>
-                  <td>3.515 s</td>
-                </tr>
-                <tr>
-                  <th>50 images after idle stop, second cycle</th>
-                  <td>50/50</td>
-                  <td>3.769 s</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="chart-note">
-            The first 50-image provisioning attempt immediately after deployment
-            returned 50 HTTP 500 responses. The later warm run and both idle
-            restarts succeeded. The first failure remains unresolved and is
-            retained in the results. The five-minute run had two 30 s client
-            timeouts; their causes remain unresolved. Successful warm fresh
-            outputs and the 100 restart outputs matched Vercel; cache and 304
-            checks passed. Warm delivery maxima were 17.486 s at 10/s and 28.644
-            s in the 200-image burst. The second restart's maximum was 19.157 s.
-            The five-minute run's maximum successful response was 28.885 s. P95
-            does not describe these slower responses. That trial restored four
-            2-CPU containers because the smaller configuration failed its
-            reliability check. The measured encoder queue was short, so these
-            timeouts do not establish a CPU capacity limit.
-          </p>
-        </div>
-        <div class="benchmark-panel" id="reliability">
-          <div class="chart-heading">
-            <h3>Two-container reliability repeat</h3>
-            <span>60 s client limit, 20 s transform deadline</span>
-          </div>
-          <div class="table-scroll">
-            <table class="benchmark-table">
-              <caption>
-                Complete responses in the repeat trial, including cold starts
-              </caption>
-              <thead>
-                <tr>
-                  <th>Workload</th>
-                  <th>Success</th>
-                  <th>p95</th>
-                  <th>Maximum</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th>First provisioning, 50 fresh images</th>
-                  <td>50/50</td>
-                  <td>8.862 s</td>
-                  <td>9.201 s</td>
-                </tr>
-                <tr>
-                  <th>3/s, five minutes</th>
-                  <td>900/900</td>
-                  <td>1.105 s</td>
-                  <td>1.453 s</td>
-                </tr>
-                <tr>
-                  <th>10/s, five minutes</th>
-                  <td>2,999/3,000</td>
-                  <td>1.099 s</td>
-                  <td>3.766 s</td>
-                </tr>
-                <tr>
-                  <th>50 fresh images together</th>
-                  <td>50/50</td>
-                  <td>2.988 s</td>
-                  <td>3.173 s</td>
-                </tr>
-                <tr>
-                  <th>200 fresh images together</th>
-                  <td>200/200</td>
-                  <td>9.208 s</td>
-                  <td>10.292 s</td>
-                </tr>
-                <tr>
-                  <th>200 cached images together</th>
-                  <td>200/200</td>
-                  <td>223 ms</td>
-                  <td>408 ms</td>
-                </tr>
-                <tr>
-                  <th>50 images after idle stop</th>
-                  <td>50/50</td>
-                  <td>4.131 s</td>
-                  <td>4.298 s</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="chart-note">
-            No timeouts occurred. The single failure was a source HTTP 500,
-            returned to the client as HTTP 502 in 440 ms. A later retry
-            succeeded in 799 ms. All 4,252 successful fresh responses matched
-            Vercel. Every successful response arrived within the earlier 30 s
-            client limit; increasing the client limit did not recover a slower
-            image in this repeat. Earlier timeouts remain unexplained.
-          </p>
-          <p class="chart-note">
-            A follow-up after adding a source retry caught deployment resets:
-            the 10/s test stopped at 414 requests with six HTTP 500 responses,
-            and a later 200-image burst returned 199 errors. Cloudflare reported
-            Durable Object resets because its code was updated. Repeating the
-            burst returned 200 images, including 193 from R2. This identifies a
-            rollout interruption for those failures, not an encoder limit. imgt
-            now retries temporary source GET failures once and reacquires a
-            Durable Object stub up to twice for exceptions marked retryable. It
-            does not retry overloaded objects or replay container uploads.
-            Startup now waits through setup failures within a 60 s deadline, and
-            each fresh transform attempt gets 60 s. This repeat's timings above
-            used the earlier 20 s deadline.
-            <a href="/docs/architecture.md#slow-requests-and-errors"
-              >Read the request recovery behavior</a
-            >.
-          </p>
-          <p class="chart-note">
-            Later rollout checks with a 60 s transform deadline and 90 s client
-            limit still failed. Moving native inactivity settings off the
-            request path returned 0/50: 49 HTTP 504 and one HTTP 503. Bounding
-            individual health probes to two seconds returned 33/50, with a
-            successful p95 of 44.515 s and maximum of 44.908 s. Sixteen requests
-            returned HTTP 504 and one failed the exact-version check. The next
-            two-shard warm-up returned 1/2, so sustained load was stopped. A
-            later clean confirmation used fresh shard IDs with the same
-            allocation. Its results above do not erase these failed checks.
-          </p>
-          <p class="chart-note">
-            Cloudflare reported a
-            <a href="https://www.cloudflarestatus.com/incidents/z28czd65h29l"
-              >Durable Objects and Containers incident in Eastern North
-              America</a
-            >
-            on October 5, from 17:14 to 22:35 UTC, matching the container
-            region. Earlier trials overlapped it; the latest checks followed its
-            reported resolution. This does not prove the cause of every failure.
-            The new pending-I/O compatibility behavior was already enabled.
-          </p>
-        </div>
-        <div class="benchmark-panel">
-          <div class="chart-heading">
-            <h3>Two 1-CPU containers, live</h3>
-            <span>6 GiB total reserved RAM</span>
-          </div>
-          <div class="table-scroll">
-            <table class="benchmark-table">
-              <caption>
-                Warm repeat trial; p95 of successful responses
-              </caption>
-              <thead>
-                <tr>
-                  <th>Workload</th>
-                  <th>Success</th>
-                  <th>p95</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th>1/s, 30 fresh requests</th>
-                  <td>30/30</td>
-                  <td>5.380 s</td>
-                </tr>
-                <tr>
-                  <th>5/s, 300 fresh requests</th>
-                  <td>300/300</td>
-                  <td>1.222 s</td>
-                </tr>
-                <tr>
-                  <th>10/s, 600 fresh requests</th>
-                  <td>598/600</td>
-                  <td>1.510 s</td>
-                </tr>
-                <tr>
-                  <th>50 fresh images together</th>
-                  <td>50/50</td>
-                  <td>4.201 s</td>
-                </tr>
-                <tr>
-                  <th>200 fresh images together</th>
-                  <td>200/200</td>
-                  <td>15.254 s</td>
-                </tr>
-                <tr>
-                  <th>200 cached images together</th>
-                  <td>200/200</td>
-                  <td>467 ms</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="chart-note">
-            The first 1/s trial returned 27/30: one upstream HTTP 500 and two 30
-            s client timeouts. The repeat had two client timeouts at 10/s. Long
-            low-load client waits were observed outside the instrumented
-            transform job: one 18.4 s delivery reported a 385 ms job and no
-            admission/encoder queue. The timeout causes remain unresolved. These
-            observations do not establish reliable 10/s capacity. All 1,178
-            successful fresh repeat outputs matched Vercel; cached responses and
-            conditional 304 validation passed.
-          </p>
-        </div>
-        <p class="benchmark-copy">
-          Less reserved memory buys a smaller encoding capacity. The
-          two-container live trial was slower for fresh bursts, while its 5/s
-          run completed without errors. Keep reliability and your uncached
-          latency target alongside the cost estimate.
-        </p>
-        <div class="benchmark-panel">
-          <div class="chart-heading">
-            <h3>Warm local replay</h3>
-            <span>640 px · quality 98 · effort 4</span>
-          </div>
-          <div class="table-scroll">
-            <table class="benchmark-table">
-              <caption>
-                Successful requests / attempted; p95 of successful requests
-              </caption>
-              <thead>
-                <tr>
-                  <th>Allocation / total RAM</th>
-                  <th>1/s · 30 requests</th>
-                  <th>5/s · 150</th>
-                  <th>10/s · 300</th>
-                  <th>20/s · 600</th>
-                  <th>50-image burst</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th scope="row">1 × 1 CPU / 3 GiB</th>
-                  <td>30/30; 0.243 s</td>
-                  <td>150/150; 0.212 s</td>
-                  <td>300/300; 7.712 s</td>
-                  <td>356/600; 16.012 s</td>
-                  <td>50/50; 6.222 s</td>
-                </tr>
-                <tr>
-                  <th scope="row">2 × 1 CPU / 6 GiB</th>
-                  <td>30/30; 0.246 s</td>
-                  <td>150/150; 0.216 s</td>
-                  <td>300/300; 0.385 s</td>
-                  <td>600/600; 9.612 s</td>
-                  <td>50/50; 3.443 s</td>
-                </tr>
-                <tr>
-                  <th scope="row">4 × ¼ CPU / 4 GiB</th>
-                  <td>30/30; 1.075 s</td>
-                  <td>150/150; 2.179 s</td>
-                  <td>298/300; 15.191 s</td>
-                  <td>309/600; 19.545 s</td>
-                  <td>50/50; 7.500 s</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="chart-note">
-            Two CPUs completed the 20/s arrival window, but their queue grew and
-            needed another 10 seconds to drain. That is overload, not sustained
-            20/s capacity. One CPU rejected 244 of 600 requests at 20/s. The
-            fractional tier had deadline and admission failures at 10/s and
-            20/s. Cloudflare lists basic in its limits/pricing tables, but the
-            native start API documentation and current types omit it; native
-            deployment support is unverified.
-          </p>
-        </div>
-        <p class="benchmark-copy">
-          The table above measures local capacity, rather than deployed delivery
-          latency. Local sources and simulated R2 writes remove network and
-          provisioning costs. More CPU improves uncached burst latency; cache
-          hits skip encoding entirely.
-        </p>
-        <aside class="source-note">
-          <span class="note-label">RIGHTSIZE FIRST</span>
-          <p>
-            A monthly total gives average throughput, not burst capacity. Two
-            million new derivatives over 30 days average 0.77/s. Test your
-            busiest minute and gallery bursts before choosing an allocation. The
-            four-container profile completed the tested 20/s workload. The
-            current two-container default passed the clean 10/s confirmation and
-            idle restart, with response-body delays still unresolved. Earlier
-            smaller trials had slower bursts and client timeouts. It is an
-            option to evaluate for modest traffic, rather than a verified
-            replacement for the 20/s allocation.
-            <a
-              href="https://developers.cloudflare.com/containers/platform/limits/"
-              >Cloudflare resource limits ↗</a
-            >
-          </p>
-        </aside>
       </section>
       <section id="pricing" class="content-section">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">03 / COST MODEL</p>
-            <h2>See what you would pay.</h2>
+            <p class="eyebrow">02 / COST</p>
+            <h2>What does capacity cost?</h2>
           </div>
           <p class="section-intro">
-            USD · 30-day month.<br />Estimates, not measured bills.
+            Estimated monthly total.<br />
+            Lower is cheaper.
+          </p>
+        </div>
+        <div class="benchmark-panel">
+          <div
+            id="cost-chart"
+            class="bar-chart"
+            role="group"
+            aria-label="Estimated monthly costs"
+          >
+            <!-- COST_CHART -->
+          </div>
+          <p class="chart-note">
+            2.25M fresh images per month. Assumes 10M total image requests, 120
+            KiB outputs and containers awake all month. Includes the Workers
+            plan, CPU, RAM, disk, Durable Objects, R2 and modeled output
+            transfer. Basic is ¼ CPU / 1 GiB per container, tested locally only.
           </p>
         </div>
         <p class="benchmark-copy">
-          imgt can cost more at low traffic if containers stay awake. At higher
-          volume, smaller allocations can be substantially cheaper. Memory and
-          disk are billed while allocated; CPU is billed for active usage.
-          Change the assumptions below to compare.
+          Both providers use the same modeled image volume. Vercel uses iad1
+          on-demand rates before credits and delivery charges. imgt assumes
+          shared Cloudflare allowances are available. These are estimates, not
+          invoices.
         </p>
-        <form
-          id="cost-inputs"
-          class="cost-inputs"
-          aria-label="Monthly pricing assumptions"
-        >
-          <label
-            >Fresh transforms / month<input
-              id="transforms"
-              name="transforms"
-              type="number"
-              min="0"
-              max="100000000"
-              step="1"
-              value="2000000"
-              required
-          /></label>
-          <label
-            >Total image requests / month<input
-              id="requests"
-              name="requests"
-              type="number"
-              min="0"
-              max="1000000000"
-              step="1"
-              value="3000000"
-              required
-          /></label>
-          <label
-            >Average output size (KiB)<input
-              id="outputKiB"
-              name="outputKiB"
-              type="number"
-              min="1"
-              max="25000"
-              step="1"
-              value="120"
-              required
-          /></label>
-          <label
-            >Vercel billed cache read units<input
-              id="readUnits"
-              name="readUnits"
-              type="number"
-              min="0"
-              max="1000000000"
-              step="1"
-              value="8000000"
-              required
-          /></label>
-          <label
-            >Active CPU seconds / transform<input
-              id="cpuSeconds"
-              name="cpuSeconds"
-              type="number"
-              min="0.001"
-              max="20"
-              step="0.001"
-              value="0.14"
-              required
-          /></label>
-          <label
-            >Average awake time per shard<select
-              id="awakePercent"
-              name="awakePercent"
-            >
-              <option value="100">100% / always awake</option>
-              <option value="50">50% / 12 hours per day</option>
-              <option value="25">25% / 6 hours per day</option>
-              <option value="10">10% / 2.4 hours per day</option>
-            </select></label
-          >
-          <label
-            >Vercel on-demand region<select id="region" name="region">
-              <option value="iad1">Washington D.C. (iad1)</option>
-              <option value="gru1">São Paulo (gru1)</option>
-            </select></label
-          >
-          <label
-            >Cloudflare included usage<select id="included" name="included">
-              <option value="true">Available to this service</option>
-              <option value="false">Already used elsewhere</option>
-            </select></label
-          >
-        </form>
-        <div class="benchmark-panel">
-          <div class="chart-heading">
-            <h3>Modeled monthly cost</h3>
-            <span>lower is cheaper</span>
-          </div>
-          <div id="cost-chart" class="bar-chart"><!-- COST_CHART --></div>
-          <p id="cost-status" class="chart-note" role="status"></p>
-          <p class="chart-note">
-            imgt bars include the $5 Workers plan, container memory, active CPU,
-            disk, Durable Objects, R2, Worker usage and modeled container output
-            transfer. Vercel bars cover image transformations and cache meters
-            only.
-          </p>
-        </div>
-        <details class="benchmark-details">
-          <summary>Cost breakdown by allocation</summary>
-          <div class="table-scroll">
-            <table class="benchmark-table">
-              <caption>
-                Modeled imgt monthly charges in USD
-              </caption>
-              <thead>
-                <tr>
-                  <th>Component</th>
-                  <th>1 × 1 CPU</th>
-                  <th>2 × 1 CPU</th>
-                  <th>2 × 2 CPUs</th>
-                  <th>4 × 2 CPUs</th>
-                  <th>8 × 1 CPU</th>
-                </tr>
-              </thead>
-              <tbody id="cost-breakdown">
-                <!-- COST_BREAKDOWN -->
-              </tbody>
-            </table>
-          </div>
-        </details>
-        <details class="benchmark-details">
-          <summary>Assumptions, exclusions and billing units</summary>
-          <p>
-            This is a synthetic scenario, not a customer invoice. The CPU
-            default is rounded from local consumed CPU measurements, roughly
-            0.12 to 0.15 seconds per transform on this input mix. Deployed CPU
-            usage and idle overhead may differ. Wider images, AVIF sources and
-            different qualities change compute cost.
-          </p>
-          <p>
-            Every request is conservatively modeled as reaching the Durable
-            Object and R2, with one extra R2 read per transform and one write
-            per fresh derivative. Workers bill both the gateway and the cached
-            loopback invocation. The assumed 7 ms CPU per external request is
-            combined across both entrypoints. R2 holds a rolling 30 days of
-            unique outputs in Standard storage, with the required lifecycle
-            rule. Container output transfer uses North American rates. Durable
-            Objects are assumed active for the entire container awake period at
-            128 MB each. Rounded R2 and Durable Object billing units and
-            available account allowances are applied.
-          </p>
-          <p>
-            Awake time cannot fall below the CPU time needed to process the
-            modeled volume. The calculator raises it to that theoretical minimum
-            when needed. That floor assumes full CPU utilization and is not a
-            throughput promise. Uniform fresh traffic can keep every shard awake
-            because of the two-minute idle timeout.
-          </p>
-          <p>
-            Vercel writes are fresh transforms multiplied by output size rounded
-            up to 8 KiB units. Enter billed cache read units from your
-            dashboard; they are not image request counts. Recently cached
-            regional reads can avoid that meter. Prices use on-demand regional
-            rates before plan credits.
-          </p>
-          <p>
-            Excluded: Vercel subscription, credits, CDN requests and data
-            transfer; source-host transfer charges on either provider; excess
-            logs/traces, Durable Object storage and container idle/startup CPU
-            overhead. Taxes and support time are excluded. Actual cache reuse,
-            unique retained objects, geography and shared account usage change
-            your bill. The chart does not promise savings or include every
-            platform charge.
-          </p>
-        </details>
-        <div class="guide-links">
-          <a
-            href="https://developers.cloudflare.com/containers/platform/pricing/"
-            >Container prices ↗</a
-          ><a
-            href="https://developers.cloudflare.com/durable-objects/platform/pricing/"
-            >Durable Object prices ↗</a
-          ><a href="https://developers.cloudflare.com/workers/platform/pricing/"
-            >Workers prices ↗</a
-          ><a href="https://developers.cloudflare.com/r2/pricing/"
-            >R2 prices ↗</a
-          ><a
-            href="https://vercel.com/docs/image-optimization/limits-and-pricing"
-            >Vercel image pricing ↗</a
-          ><a href="https://vercel.com/docs/pricing/regional-pricing/iad1"
-            >iad1 rates ↗</a
-          ><a href="https://vercel.com/docs/pricing/regional-pricing/gru1"
-            >gru1 rates ↗</a
-          >
-        </div>
-        <p class="chart-note">
-          Workers Cache also bills internal fetch invocations. See
-          <a href="https://developers.cloudflare.com/workers/cache/#pricing"
-            >cache invocation pricing</a
-          >. Rates checked October 5, 2026. Provider prices can change.
-        </p>
-        <noscript
-          ><p>
-            The charts show the default scenario. Enable JavaScript to change
-            workloads or pricing assumptions.
-          </p></noscript
-        >
       </section>
-      <section id="method" class="content-section">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">04 / METHODOLOGY</p>
-            <h2>Know what was measured.</h2>
-          </div>
-        </div>
-        <div class="method-grid">
-          <div>
-            <h3>Inputs and verification</h3>
-            <p>
-              50 public PNG sources, 1.1 to 4.3 megapixels, averaging about 3.2
-              MB. Width 640, quality 98, WebP effort 4, one libvips thread per
-              image. Source query parameters created fresh cache keys without
-              changing bytes. Successful outputs were decoded and dimensions
-              checked.
-            </p>
-          </div>
-          <div>
-            <h3>Live delivery</h3>
-            <p>
-              Open-loop arrivals at 20/s for 60 seconds, separate simultaneous
-              bursts, then cache repeats. Latency runs from request start to the
-              complete response body. Sequential provider runs from one client;
-              no multi-region SLO or long-term reliability claim.
-            </p>
-          </div>
-          <div>
-            <h3>Local capacity</h3>
-            <p>
-              Actual Worker routing and coordinator modules upload to Sharp over
-              HTTP in Docker with enforced CPU and memory limits and swap
-              disabled. Source bytes are replayed locally and R2 writes are
-              simulated with 300 ms latency. Timings include output validation.
-              Each smaller workload ran once for 30 seconds.
-            </p>
-          </div>
-          <div>
-            <h3>Bounded work</h3>
-            <p>
-              Eight active uploads and at most 128 distinct jobs per shard, with
-              a 20 s deadline in the earlier comparisons; current job attempts
-              have a 60 s deadline. Native cancellation retains its slot until
-              the operation settles. Failed configurations stay visible; latency
-              for only successful requests does not demonstrate capacity when
-              failures occur.
-            </p>
-          </div>
-        </div>
+      <section id="method" class="content-section benchmark-method">
+        <details class="benchmark-details">
+          <summary>Test method, reliability and pricing assumptions</summary>
+          <p>
+            The traffic target comes from FASHN's projects together: about 2.25M
+            monthly transformations and a busiest observed 15-minute interval of
+            roughly 2.9 transformations/second. Tests at 10 and 20/second add
+            headroom; the dashboard does not reveal second-by-second peaks.
+          </p>
+          <p>
+            All configurations retain source validation, eight active jobs per
+            shard, bounded waiting, deduplication and a 60-second transform
+            deadline. Small containers use one native encoder; 2-CPU containers
+            use two. Cache hits avoid compute.
+          </p>
+          <p>
+            Local Docker enforces CPU and RAM limits without swap. Origins are
+            replayed in memory and R2 writes are delayed 300 ms. These timings
+            do not include Cloudflare provisioning or real network latency. The
+            basic tier cannot run through the current native container
+            scheduling API.
+          </p>
+          <p>
+            Live tests use real FASHN PNG sources from one client in Brazil.
+            Each profile runs separately. Latency charts show
+            successful-response p95 alongside errors; errors cannot be treated
+            as fast responses. Cold starts and maximum latencies are included in
+            the linked report.
+          </p>
+          <p>
+            Cost estimates use 0.14 consumed CPU seconds per transform, a 30-day
+            month, North American container output transfer and 30 days of
+            retained derivatives. A
+            <a href="/docs/deployment.md#storage-cleanup"
+              >30-day R2 lifecycle rule</a
+            >
+            is required for this storage estimate. Total requests and average
+            output size are assumptions, not values inferred from Vercel cache
+            units. Source transfer, excess logs, storage for Durable Objects,
+            taxes and support time are excluded.
+          </p>
+          <p>
+            <a
+              href="https://developers.cloudflare.com/containers/platform/pricing/"
+              >Cloudflare pricing ↗</a
+            >
+            ·
+            <a
+              href="https://developers.cloudflare.com/containers/configuration/scheduling-policy/"
+              >Container sizing support ↗</a
+            >
+            ·
+            <a
+              href="https://vercel.com/docs/image-optimization/limits-and-pricing"
+              >Vercel image billing ↗</a
+            >
+          </p>
+        </details>
         <div class="guide-links">
-          <a href="/docs/benchmarks.md">Benchmark summary for agents →</a
-          ><a href="/docs/performance.md">Detailed performance notes →</a
-          ><a href="https://github.com/fashn-AI/imgt"
-            >Inspect the implementation ↗</a
-          >
+          <a href="/docs/benchmarks.md">Results and methodology →</a
+          ><a href="/docs/performance.md">Performance history →</a
+          ><a href="https://github.com/fashn-AI/imgt">Source code ↗</a>
         </div>
       </section>
       <footer>

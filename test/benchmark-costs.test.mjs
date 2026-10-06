@@ -5,6 +5,41 @@ import {
   defaultScenario,
   estimateCosts,
 } from "../public/benchmark-costs.js";
+import { latencyRows, measurements } from "../public/benchmark-data.js";
+
+test("fractional horizontal scaling includes its extra memory and objects", () => {
+  const small = estimateCosts(allocations.find((a) => a.name === "2 × 1 CPU"));
+  const fractional = estimateCosts(
+    allocations.find((a) => a.name === "8 × basic"),
+  );
+  assert.equal(small.cloudflare.cpu, fractional.cloudflare.cpu);
+  assert.ok(fractional.cloudflare.memory > small.cloudflare.memory);
+  assert.ok(fractional.cloudflare.objects > small.cloudflare.objects);
+  assert.ok(fractional.imgtTotal > small.imgtTotal);
+});
+
+test("latency charts separate local-only profiles and do not present failures as zero latency", () => {
+  assert.ok(
+    latencyRows("local", "gallery-50").some((r) => r.id === "four-basic"),
+  );
+  assert.ok(
+    latencyRows("live", "gallery-50").every((r) => !r.id.includes("basic")),
+  );
+  const before = measurements.local["two-1cpu"];
+  try {
+    measurements.local["two-1cpu"] = {
+      failed: { p95Ms: null, ok: 0, count: 50 },
+    };
+    const failed = latencyRows("local", "failed").find(
+      (r) => r.id === "two-1cpu",
+    );
+    assert.equal(failed.value, null);
+    assert.equal(failed.emptyLabel, "No successes");
+    assert.equal(failed.status, "0/50 succeeded · 50 failed");
+  } finally {
+    measurements.local["two-1cpu"] = before;
+  }
+});
 
 test("cost estimates distinguish awake memory from consumed CPU", () => {
   const vertical = estimateCosts(allocations[3]);

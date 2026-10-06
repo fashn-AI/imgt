@@ -1,10 +1,13 @@
-// USD rates checked against provider documentation on 2026-10-05.
+// USD rates checked against provider documentation on 2026-10-06.
 export const allocations = [
   { name: "1 × 1 CPU", shards: 1, cpu: 1, memory: 3, disk: 2 },
   { name: "2 × 1 CPU", shards: 2, cpu: 1, memory: 3, disk: 2 },
   { name: "2 × 2 CPUs", shards: 2, cpu: 2, memory: 6, disk: 2 },
   { name: "4 × 2 CPUs", shards: 4, cpu: 2, memory: 6, disk: 2 },
   { name: "8 × 1 CPU", shards: 8, cpu: 1, memory: 3, disk: 2 },
+  { name: "4 × 1 CPU", shards: 4, cpu: 1, memory: 3, disk: 2 },
+  { name: "4 × basic", shards: 4, cpu: 0.25, memory: 1, disk: 4 },
+  { name: "8 × basic", shards: 8, cpu: 0.25, memory: 1, disk: 4 },
 ];
 
 export const defaultScenario = {

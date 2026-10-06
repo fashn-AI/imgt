@@ -1,89 +1,47 @@
-import { allocations, estimateCosts } from "./benchmark-costs.js";
+import { latencyRows, latencyNote } from "./benchmark-data.js";
 
-const workloads = {
-  gallery: [1.755, 2.637, 4.201, 2.733, 1.377],
-  sustained: [1.148, 1.462, null, null, 1.341],
-  burst: [6.525, 5.636, 15.254, 10.33, 1.508],
-  cached: [0.23, 0.222, 0.467, 0.296, 0.193],
-};
-const currency = (value) => `$${value.toFixed(2)}`;
-
-function updateChart(id, values, format) {
-  const maximum =
-    Math.max(0.001, ...values.filter((value) => value !== null)) * 1.05;
-  document.querySelectorAll(`#${id} .chart-row`).forEach((row, i) => {
-    row
-      .querySelector("rect")
-      .setAttribute("width", String(((values[i] ?? 0) / maximum) * 1000));
-    row.querySelector(".chart-value").textContent =
-      values[i] === null ? "Not tested" : format(values[i]);
-  });
-}
-
+const environment = document.querySelector("#environment");
 const workload = document.querySelector("#workload");
-workload.addEventListener("change", () => {
-  updateChart(
-    "latency-chart",
-    workloads[workload.value],
-    (value) => `${value.toFixed(3)} s`,
-  );
-});
+const chart = document.querySelector("#latency-chart");
+const namespace = "http://www.w3.org/2000/svg";
 
-const form = document.querySelector("#cost-inputs");
-function updateCosts() {
-  const status = document.querySelector("#cost-status");
-  if (!form.checkValidity()) {
-    status.textContent =
-      "Enter valid numbers within the field limits. The chart retains the last valid scenario.";
-    return;
-  }
-  const values = new FormData(form);
-  const scenario = Object.fromEntries(
-    [...values].map(([key, value]) => [
-      key,
-      key === "region"
-        ? value
-        : key === "included"
-          ? value === "true"
-          : Number(value),
-    ]),
+function updateLatency() {
+  const rows = latencyRows(environment.value, workload.value);
+  const maximum = Math.max(0.001, ...rows.map((row) => row.value ?? 0)) * 1.05;
+  chart.replaceChildren(
+    ...rows.map((row) => {
+      const element = document.createElement("div");
+      element.className = `chart-row${row.recommended ? " recommended" : ""}${row.id === "vercel" ? " vercel" : ""}`;
+      const label = document.createElement("span");
+      label.className = "chart-label";
+      label.textContent = row.name;
+      const detail = document.createElement("small");
+      detail.textContent = row.detail;
+      label.append(detail);
+      const svg = document.createElementNS(namespace, "svg");
+      svg.setAttribute("viewBox", "0 0 1000 24");
+      svg.setAttribute("preserveAspectRatio", "none");
+      svg.setAttribute("aria-hidden", "true");
+      const bar = document.createElementNS(namespace, "rect");
+      bar.setAttribute("width", String(((row.value ?? 0) / maximum) * 1000));
+      bar.setAttribute("height", "24");
+      bar.setAttribute("rx", "2");
+      svg.append(bar);
+      const value = document.createElement("span");
+      value.className = "chart-value";
+      value.textContent =
+        row.value === null ? row.emptyLabel : `${row.value.toFixed(3)} s`;
+      const status = document.createElement("small");
+      status.textContent = row.status;
+      value.append(status);
+      element.append(label, svg, value);
+      return element;
+    }),
   );
-  if (scenario.requests < scenario.transforms) {
-    status.textContent =
-      "Total requests must be at least the number of fresh transforms. The chart retains the last valid scenario.";
-    return;
-  }
-  const costs = allocations.map((allocation) =>
-    estimateCosts(allocation, scenario),
+  document.querySelector("#latency-note").textContent = latencyNote(
+    environment.value,
+    workload.value,
   );
-  updateChart(
-    "cost-chart",
-    [...costs.map((cost) => cost.imgtTotal), costs[0].vercelTotal],
-    currency,
-  );
-  document.querySelectorAll("#cost-chart .chart-row").forEach((row, i) => {
-    if (costs[i] && !costs[i].feasible) {
-      row.querySelector("rect").setAttribute("width", "0");
-      row.querySelector(".chart-value").textContent = "Over capacity";
-    }
-  });
-  for (const row of document.querySelectorAll("#cost-breakdown tr")) {
-    row.querySelectorAll("td").forEach((cell, i) => {
-      cell.textContent = currency(
-        row.dataset.component === "total"
-          ? costs[i].imgtTotal
-          : costs[i].cloudflare[row.dataset.component],
-      );
-    });
-  }
-  const adjusted = costs.filter(
-    (cost) => cost.effectiveAwakePercent > scenario.awakePercent + 0.01,
-  );
-  status.textContent = costs.some((cost) => !cost.feasible)
-    ? "At least one allocation lacks enough CPU time for this volume, even awake all month. Its price is not a viable capacity estimate."
-    : adjusted.length
-      ? "Some allocations need more awake time than selected to cover the modeled CPU work. Their prices use that theoretical minimum."
-      : "Estimates use the selected assumptions. Smaller allocations have less uncached burst capacity.";
 }
-form.addEventListener("input", updateCosts);
-updateCosts();
+environment.addEventListener("change", updateLatency);
+workload.addEventListener("change", updateLatency);
