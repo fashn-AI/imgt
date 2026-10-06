@@ -6,8 +6,11 @@ cache hits do not start a container.
 
 ## Current decisions
 
-- **Sharp/libvips:** the evaluated alternatives did not establish an overall
-  advantage while retaining the required format and color support.
+- **Sharp/libvips in production:** the Rust/libvips HTTP prototype now passes
+  local compatibility and lifecycle tests with a much smaller runtime footprint.
+  Burst latency and sustained medians are similar, with a slower Rust p95 in
+  the final sustained repeat. Native AMD64 performance and a Cloudflare trial
+  remain necessary before a production replacement.
 - **Two CPUs and two encoders per shard:** the effort-4 allocation comparison
   below measures horizontal and vertical scaling with eight total CPUs. Each
   shard still admits eight active jobs and at most 128 distinct jobs; ready
@@ -80,10 +83,10 @@ marker in median 186 ms for Sharp and 125 ms for Rust, including Docker launch
 and attachment. These tiny samples do not establish Cloudflare cold-start gains,
 and the marker does not mean an HTTP listener is ready.
 
-**Decision:** retain Sharp. Rust offers a substantial footprint reduction in
-this screen, but only about a 2% median rendering improvement, with no quality-98
+**Initial screen decision:** retain Sharp pending HTTP qualification. Rust
+offers a substantial footprint reduction in this screen, but only about a 2% median rendering improvement, with no quality-98
 p95 improvement. This does not establish a meaningful capacity or delivery-time
-advantage. The prototype uses a minimal C FFI harness; it does not yet implement
+advantage. At this stage the prototype used a minimal C FFI harness without
 the production HTTP admission, concurrent encoder scheduling, deadlines,
 cancellation or graceful draining. Available [Rust libvips bindings](https://github.com/olxgroup-oss/libvips-rust-bindings)
 can wrap the native API, but selecting and qualifying a production binding is
@@ -100,6 +103,107 @@ startup or CPU savings sufficient to justify owning another service runtime.
 The research branch is `renan/rust-libvips-research`; prototypes and raw results
 remain outside the normal checkout. No production implementation, allocation or
 deployment changed for this investigation.
+
+## Rust HTTP qualification follow-up, October 2026
+
+The prototype now implements the private HTTP transform protocol with Axum and
+Tokio, bounded uploads, independent upload and encoder admission, deadlines,
+disconnection handling and graceful shutdown. Native work retains its admission
+and encoder permits until it settles, even when the caller leaves. Cancellation
+signals libvips through its progress/kill API. These are research implementations;
+production still uses Sharp.
+
+The initial color mismatches came from operation order. Matching Sharp's
+shrink-on-load, resizing, ICC conversion, autorotation and alpha handling fixed
+the evaluated cases. Malformed embedded profiles use the same fallback behavior.
+The final ARM64 HTTP revision passed 832 paired comparisons: all 800 successful
+outputs matched byte for byte, and both engines rejected the 32 invalid or
+truncated cases with HTTP 400. Inputs included JPEG, PNG, WebP and AVIF, eight
+EXIF orientations, P3 and CMYK profiles, 16-bit pixels, grayscale, transparency,
+no enlargement and one-pixel resize edges. Quality values included 1, 77, 98
+and 100. This establishes parity for the evaluated corpus, not every possible
+input. An earlier HTTP revision also matched all 352 valid AMD64 comparisons
+and rejected 32 invalid cases under emulation; that does not measure native
+AMD64 performance.
+
+Thirteen HTTP contract scenarios passed for each engine, including byte and
+pixel limits, stalled uploads, retryable admission rejection, expired or
+abandoned queued work, active cancellation, recovery after a real native timeout
+and draining an admitted upload on SIGTERM. The prototype uses a separate
+research renderer identifier; no production cache entries were written.
+
+Local integration tests exercised the actual Worker gateway, coordinator,
+single-flight and derivative storage modules against HTTP containers. Origins
+were replayed in memory and an R2 double delayed writes by 300 ms. Every stored
+derivative was read back without another transform. Fifty callers for one
+uncached derivative produced one transform, including during the delayed write.
+Workers Cache, real R2 latency and Cloudflare container provisioning are outside
+this local workload.
+
+Two shards ran each workload. Regular bursts used the same 50 gallery PNGs and
+two adjacent widths to create 100 distinct derivatives, with three trials per
+engine and allocation. There were 2,400 successful responses and 1,200 matching
+Sharp/Rust output pairs. CPU allocation was enforced with no swap: two CPUs,
+two encoders and 1 GiB per shard, or one CPU, one encoder and 512 MiB per shard.
+The lower-memory allocations are Docker test limits, not available Cloudflare
+custom instance configurations. Burst p95 values are the median of three runs.
+
+| Measurement | Sharp HTTP | Rust HTTP |
+| --- | ---: | ---: |
+| Runtime filesystem, sum of regular-file sizes | 248.4 MB | 125.0 MB |
+| Docker-reported stored image size | 86.6 MB | 40.9 MB |
+| Idle process RSS, median of five starts | 110.6 MiB | 24.3 MiB |
+| Local Docker launch to HTTP readiness, median of five starts | 326 ms | 246 ms |
+| 100-image burst p95, 2 CPUs/shard, width 640, quality 98 | 3.41 s | 3.27 s |
+| 100-image burst p95, 2 CPUs/shard, width 1024, quality 77 | 4.12 s | 4.11 s |
+| 100-image burst p95, 1 CPU/shard, width 640, quality 98 | 6.26 s | 6.09 s |
+| 100-image burst p95, 1 CPU/shard, width 1024, quality 77 | 7.86 s | 7.82 s |
+| Maximum cgroup memory across regular 2-CPU bursts | 351 MiB | 310 MiB |
+| Maximum cgroup memory across regular 1-CPU bursts | 302 MiB | 237 MiB |
+| Initial sustained 20 images/second, 600 images, p95 | 260 ms | 260 ms |
+| Initial sustained run, CPU seconds across both shards | 79.0 s | 77.2 s |
+| Initial sustained run, maximum cgroup memory | 339 MiB | 264 MiB |
+| Final revision sustained repeat, 600 images, median / p95 | 171 / 285 ms | 176 / 433 ms |
+| Final sustained repeat, CPU seconds across both shards | 78.9 s | 78.5 s |
+| Final sustained repeat, maximum cgroup memory | 328 MiB | 286 MiB |
+| Maximum-input stress, 100-image burst p95 | 12.78 s | 13.56 s |
+| Maximum-input stress, maximum cgroup memory | 629 MiB | 693 MiB |
+
+The sustained workload used width 640, quality 98, two CPUs and two encoders per
+shard. Both engines completed all 600 fresh images at 20 requests/second in
+each of two paired screens, with matching outputs and no failed requests. Each
+was a 30-second local run, not a production capacity guarantee. Burst, startup
+and the first sustained screen preceded the final removal of an extra Rust
+upload buffer copy. Output and contract qualification, maximum-input stress and
+the sustained workload were repeated afterward. The final sustained repeat had
+a higher Rust p95 despite similar medians and CPU use; these samples do not
+establish equal tail latency or a Rust speed advantage. Repository checks ran
+on the host during part of the Sharp repeat; performance runs were otherwise
+sequential, with no concurrent Docker build.
+
+The stress workload padded every input to the permitted 25 MiB and included a
+50-megapixel RGBA source. Both engines completed all 100 requests with matching
+outputs inside the deadline and without running out of memory. Removing the
+Rust buffer copy reduced its observed peak from 770 MiB to 693 MiB, but that
+remains higher than Sharp's 629 MiB in the paired rerun. Rust is not uniformly
+better on memory or latency. Cgroup peaks include filesystem cache and other
+charged memory, rather than just process RSS. Runtime filesystem sizes and
+Docker-reported stored sizes are separate measurements, not registry transfer
+sizes.
+
+**Follow-up decision:** the much smaller complete HTTP runtime makes Rust a
+viable migration candidate. Local output, lifecycle and integration tests now
+support proceeding to a native AMD64 and isolated Cloudflare comparison. Burst
+latency and sustained medians are similar, but the final Rust sustained p95 regressed in this screen. Measured CPU savings are small, and reduced
+RSS does not automatically reduce provisioned-memory charges. A production
+migration must retain validation, resource limits, deadlines and deduplication,
+review the native FFI ownership and packaging, and use a new renderer version.
+The next comparison should use GitHub deployment automation on an isolated
+research deployment and measure actual cold starts, sustained load, response
+failures and billed usage before replacing the production container.
+
+The HTTP prototype and raw measurements remain outside the normal checkout in
+the research workspace. No production code, allocation or deployment changed.
 
 ## Measure your deployment
 
