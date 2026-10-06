@@ -155,6 +155,7 @@ export class TransformCoordinator {
         cacheStatus: "R2",
       };
     }
+    if (!stored?.sourceValidator) await stored?.body.cancel();
     let sourceBody: ReadableStream<Uint8Array> | undefined;
     let invalidation: Promise<void> | undefined;
     try {
