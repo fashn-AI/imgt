@@ -36,6 +36,37 @@ change is needed to restore the references.
 Complete the [R2 lifecycle setup](#storage-cleanup) before using the deployment
 in production. The bucket is provisioned automatically; image expiration is not.
 
+## Branch checks and staging
+
+imgt uses `durable_object` Container scheduling. Wrangler 4.145.0 and 4.147.0
+reject this policy inside `previews.containers`, so `npx wrangler preview` cannot
+deploy this image service. General Durable Object and Container preview support
+does not include this scheduling mode. Use a separate staging Worker to retain
+the same runtime. See the
+[Wrangler validation](https://github.com/cloudflare/workers-sdk/blob/wrangler%404.147.0/packages/workers-utils/src/config/validation.ts#L3680).
+
+For the production Worker's non-production branch command, use
+`npx wrangler deploy --dry-run`. It checks the Worker and Docker build without
+publishing a preview or changing production. Do not set that command to a full
+staging deployment: Workers Builds can override the configured Worker name with
+the Worker connected to the build.
+
+For live tests, connect a separate `imgt-staging` Worker to this repository,
+select the candidate branch as its production branch, and set its deploy command
+to `npx wrangler deploy --env staging`. Create and connect it through Cloudflare's
+GitHub import flow. Configure that Worker's non-production branch command as
+`npx wrangler deploy --env staging --dry-run`.
+The checked-in `env.staging` keeps its Durable Object namespace, named Container
+app, R2 bucket and rate-limit namespace separate from production. Preview URLs
+are not used. See
+[Workers Builds environments](https://developers.cloudflare.com/workers/ci-cd/builds/advanced-setups/#wrangler-environments).
+
+Staging hosts default to `images.unsplash.com` for the demo and `media.fashn.ai`
+for the FASHN test corpus. Change `env.staging.vars.ALLOWED_HOSTS` for other test
+origins. The private `imgt-staging` R2 bucket needs the same 30-day `derivatives/`
+deletion lifecycle rule as production. Staging can incur separate resource
+charges. Keep production resource names and dashboard variables unchanged.
+
 ## Deployment names
 
 Names are scoped to the Cloudflare account. A new account can use the defaults.
