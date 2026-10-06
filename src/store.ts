@@ -1,5 +1,6 @@
 import { config } from "../imgt.config";
 import { cacheControl } from "./cache";
+import { parseSourceValidator, type SourceValidator } from "./source";
 
 // Service tests supply a small bucket without emulating the Cloudflare runtime.
 export interface DerivativeBucket {
@@ -15,6 +16,7 @@ export interface StoredDerivative {
   etag: string;
   freshUntil: number;
   staleUntil: number;
+  sourceValidator?: SourceValidator;
 }
 
 export async function contentEtag(body: ArrayBuffer): Promise<string> {
@@ -43,7 +45,11 @@ export class DerivativeStore {
       await object.body.cancel();
       return null;
     }
-    return { body: object.body, etag, freshUntil, staleUntil };
+    const sourceValidator = parseSourceValidator(
+      metadata?.sourceEtag ?? null,
+      metadata?.sourceCacheControl ?? null,
+    );
+    return { body: object.body, etag, freshUntil, staleUntil, sourceValidator };
   }
 
   async put(
@@ -51,6 +57,7 @@ export class DerivativeStore {
     body: ArrayBuffer,
     etag: string,
     freshUntil: number,
+    sourceValidator?: SourceValidator,
   ): Promise<void> {
     await this.bucket.put(key, body, {
       httpMetadata: {
@@ -61,6 +68,14 @@ export class DerivativeStore {
         etag,
         freshUntil: String(freshUntil),
         staleUntil: String(freshUntil + config.cache.maxStaleSeconds * 1000),
+        ...(sourceValidator
+          ? {
+              sourceEtag: sourceValidator.etag,
+              ...(sourceValidator.cacheControl === null
+                ? {}
+                : { sourceCacheControl: sourceValidator.cacheControl }),
+            }
+          : {}),
       },
     });
   }

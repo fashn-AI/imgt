@@ -19,6 +19,10 @@ cache hits do not start a container.
 - **Late ICC conversion:** eligible RGB inputs resize before conversion to
   sRGB. Other color and depth cases use the original conversion order. Regression
   tests cover supported formats, EXIF orientation, profiles and transparency.
+- **Conditional source refreshes:** unchanged direct sources with strong ETags
+  renew retained derivatives without downloading the original or starting Sharp.
+  This reduces repeated work after cache expiry; it does not speed up an image's
+  first transform. Source changes and unvalidated sources still encode normally.
 - **Quality 77, WebP effort 4:** standard Sharp WebP effort matched the
   evaluated Vercel outputs at the same client quality. This replaces the earlier
   effort-2 throughput tradeoff. Renderer v4 isolates the new output from older
@@ -29,6 +33,84 @@ cache hits do not start a container.
 - **Build-time type stripping:** the container loads JavaScript to reduce
   runtime module initialization. Local startup measurements do not establish
   a Cloudflare cold-start improvement.
+
+## Encoder scheduling and live timing, October 6, 2026
+
+Three alternating local trials compared encoder and libvips thread counts on
+two shards, each limited to two CPUs and 3 GiB without swap. The memory limit
+is a Docker test cap, not an available two-CPU Cloudflare custom allocation.
+Every configuration processed 100 fresh derivatives at width 640/quality 98
+and another 100 at width 1024/quality 77, with effort 4 unchanged. The gateway,
+coordinator, HTTP container and delayed R2 double followed the earlier replay
+method. All 3,000 fresh outputs succeeded and matched the control bytes. R2
+readbacks and 50-caller deduplication passed in every configuration and round.
+No build ran concurrently.
+
+| Encoders / libvips threads per image | 640px burst p95 | 1024px burst p95 | CPU seconds per 100 1024px images |
+| --- | ---: | ---: | ---: |
+| 2 / 1, current | 3.264 s | 4.156 s | 17.16 |
+| 2 / 2 | 3.345 s | 4.188 s | 17.18 |
+| 2 / 4 | 3.335 s | 4.199 s | 17.35 |
+| 4 / 1 | 3.358 s | 4.259 s | 17.51 |
+| 1 / 2 | 5.722 s | 7.469 s | 16.82 |
+
+Values are medians of three trials. More encoders or native threads did not
+improve these bursts. Retain two encoders and one native thread per image for
+the current two-CPU allocation. This does not establish optimal settings for
+other image distributions or CPU sizes.
+
+A separate live probe sent 60 fresh requests through Node fetch and another
+60 through curl HTTP/2 at three requests/second, width 640 and quality 98.
+All 120 requests succeeded and the 60 paired outputs matched exactly. Node
+complete-response median/p95 was 743/1,176 ms; curl was 736/984 ms. The Node
+median measured origin headers at 131 ms, upload at 43 ms, Sharp at 106 ms,
+and the coordinator job at 359 ms, with no median queue wait. These overlapping
+spans cannot be added. One first request included 855 ms of container startup.
+Maximum full-response time was 1.559 s. No historical long body stall recurred
+in this small probe; it does not establish that those failures are resolved.
+The allocation and runtime remained unchanged.
+
+## Avoiding unchanged-source encoding, October 6, 2026
+
+Direct origins with strong ETags now retain a source validator in R2 metadata.
+Once the derivative expires, an origin `304` renews the existing WebP bytes
+without starting compute. Changed sources, weak or absent validators, redirects
+and older cache entries use the regular transform path. Source cache-policy
+changes still invalidate storage; deadlines and single-flight persistence
+remain enforced. Renderer v4 is unchanged because no encoding options or pixels
+change. The evaluated FASHN media origin supports a strong ETag and returned
+HTTP 304 to a conditional GET.
+
+Three alternating local replays compared unconditional renewal with conditional
+renewal. Each profile generated 100 distinct derivatives, expired their stored
+freshness and stale deadlines, then requested those derivatives together. Width
+640/quality 98 and width 1024/quality 77 were both evaluated. Two HTTP Sharp
+containers each had two CPUs, two encoders, one native thread and a 3-GiB local
+cap. Origin bodies were replayed in memory; R2 writes were delayed 300 ms and
+remained outside the response dependency chain. No build ran concurrently.
+
+| Expired, unchanged-source burst | Unconditional refresh | Conditional refresh |
+| --- | ---: | ---: |
+| 100 images, 640px/quality 98, median trial p95 | 3.311 s | 40 ms |
+| 100 images, 1024px/quality 77, median trial p95 | 4.167 s | 27 ms |
+| Source bytes per 100 renewals | 317.4 MB | 0 |
+| Encoder calls per 100 renewals | 100 | 0 |
+| Container preparation calls per 100 renewals | 100 | 0 |
+
+All 2,400 initial and renewal responses succeeded and matched the control bytes.
+All 600 conditional renewals avoided download, preparation and encoding. Every
+result was read back from R2 without another encoder call; 50 callers continued
+sharing one uncached job through delayed persistence. A separate real HTTP
+origin/container integration test covers unchanged and changed source pixels,
+client 304 responses, source removal and decoding. Regression checks also cover
+redirects, inherited/updated cache policy, metadata limits, legacy entries,
+private/no-store/no-cache transitions and cancellation of a stalled R2 read.
+
+These local refresh timings exclude real origin, R2 and Cloudflare latency.
+First-transform performance is unchanged. Refreshes still incur an origin
+request, derivative read and R2 write. Savings depend on how often requested
+derivatives expire while their originals remain unchanged; monthly savings
+cannot be inferred from the total transformation count alone.
 
 ## Rust with libvips investigation, October 2026
 

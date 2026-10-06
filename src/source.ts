@@ -11,6 +11,26 @@ const ALLOWED_SOURCE_TYPES = new Set([
 ]);
 export type SourceFetch = (url: string, init: RequestInit) => Promise<Response>;
 
+export interface SourceValidator {
+  etag: string;
+  cacheControl: string | null;
+}
+
+// Keep R2 metadata small and use strong validators for exact source identity.
+export function parseSourceValidator(
+  etag: string | null,
+  cacheControl: string | null,
+): SourceValidator | undefined {
+  if (
+    etag &&
+    new TextEncoder().encode(etag).byteLength <= 512 &&
+    /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(etag) &&
+    (cacheControl === null ||
+      new TextEncoder().encode(cacheControl).byteLength <= 512)
+  )
+    return { etag, cacheControl };
+}
+
 // Retry only the origin GET, before its body is uploaded. Share the job's
 // deadline and retry budget across redirects; never replay container work.
 async function requestSource(
@@ -18,6 +38,7 @@ async function requestSource(
   signal: AbortSignal,
   fetcher: SourceFetch,
   retry: { available: boolean },
+  validator?: SourceValidator,
 ): Promise<Response> {
   for (;;) {
     signal.throwIfAborted();
@@ -26,7 +47,10 @@ async function requestSource(
       response = await fetcher(url, {
         redirect: "manual",
         signal,
-        headers: { accept: "image/avif,image/webp,image/png,image/jpeg" },
+        headers: {
+          accept: "image/avif,image/webp,image/png,image/jpeg",
+          ...(validator ? { "if-none-match": validator.etag } : {}),
+        },
       });
     } catch (cause) {
       if (!retry.available || signal.aborted) throw cause;
@@ -64,13 +88,24 @@ export async function fetchSource(
   signal: AbortSignal,
   allowedHosts: readonly string[],
   fetcher: SourceFetch = fetch,
-): Promise<{ body: ReadableStream<Uint8Array>; maxAge: number }> {
+  validator?: SourceValidator,
+): Promise<{
+  body: ReadableStream<Uint8Array> | null;
+  maxAge: number;
+  validator?: SourceValidator;
+}> {
   let currentUrl = normalizeSourceUrl(sourceUrl, allowedHosts);
   const retry = { available: true };
   for (let redirects = 0; redirects <= MAX_SOURCE_REDIRECTS; redirects += 1) {
     let response: Response;
     try {
-      response = await requestSource(currentUrl, signal, fetcher, retry);
+      response = await requestSource(
+        currentUrl,
+        signal,
+        fetcher,
+        retry,
+        redirects === 0 ? validator : undefined,
+      );
     } catch {
       throw new ImageError(
         signal.aborted
@@ -80,6 +115,30 @@ export async function fetchSource(
       );
     }
     try {
+      if (response.status === 304) {
+        if (!validator || redirects !== 0)
+          throw new ImageError("source returned an unexpected HTTP 304", 502);
+        const cacheControl =
+          response.headers.get("cache-control") ?? validator.cacheControl;
+        const maxAge = sourceMaxAge(
+          cacheControl,
+          Number(response.headers.get("age")),
+        );
+        if (maxAge === null)
+          throw new ImageError(
+            "source image does not allow public caching",
+            403,
+          );
+        await response.body?.cancel();
+        return {
+          body: null,
+          maxAge,
+          validator: parseSourceValidator(
+            response.headers.get("etag") ?? validator.etag,
+            cacheControl,
+          ),
+        };
+      }
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         if (!location)
@@ -124,7 +183,19 @@ export async function fetchSource(
         throw new ImageError("unsupported source image type", 415);
       if (!response.body)
         throw new ImageError("source image has an empty body", 502);
-      return { body: response.body, maxAge };
+      return {
+        body: response.body,
+        maxAge,
+        // Redirect targets can change independently of their ETag. Revalidate
+        // direct sources only; redirects retain the unconditional path.
+        validator:
+          redirects === 0
+            ? parseSourceValidator(
+                response.headers.get("etag"),
+                response.headers.get("cache-control"),
+              )
+            : undefined,
+      };
     } catch (cause) {
       await response.body?.cancel();
       throw cause;

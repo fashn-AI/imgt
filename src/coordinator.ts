@@ -145,14 +145,16 @@ export class TransformCoordinator {
     const stored = await this.deps.store.get(job.outputKey);
     if (stored && remainingSeconds(stored.freshUntil) > 0) {
       return {
-        body: await new Response(stored.body).arrayBuffer(),
+        body: await new Response(
+          stored.body.pipeThrough(new TransformStream(), {
+            signal: controller.signal,
+          }),
+        ).arrayBuffer(),
         etag: stored.etag,
         freshUntil: stored.freshUntil,
         cacheStatus: "R2",
       };
     }
-    await stored?.body.cancel();
-
     let sourceBody: ReadableStream<Uint8Array> | undefined;
     let invalidation: Promise<void> | undefined;
     try {
@@ -160,15 +162,21 @@ export class TransformCoordinator {
       let originMs = 0;
       let startupMs = 0;
       let freshUntil = 0;
-      // Boot only after a validated cache miss, overlapping the origin request.
+      const prepare = async () => {
+        await this.deps.prepare?.(controller.signal);
+        startupMs = performance.now() - originStarted;
+      };
+      // New sources overlap origin and startup. A conditional refresh waits
+      // for the origin first, so unchanged images never start compute.
       const [source] = await Promise.all([
         fetchSource(
           job.sourceUrl,
           controller.signal,
           this.deps.allowedHosts,
           this.deps.sourceFetch,
+          stored?.sourceValidator,
         ).then(async (source) => {
-          sourceBody = source.body;
+          sourceBody = source.body ?? undefined;
           originMs = performance.now() - originStarted;
           if (source.maxAge === 0) {
             // A new origin policy invalidates retained data even if startup or
@@ -177,48 +185,63 @@ export class TransformCoordinator {
             this.deps.waitUntil(invalidation);
           }
           if (controller.signal.aborted) {
-            await sourceBody.cancel().catch(() => {});
+            await sourceBody?.cancel().catch(() => {});
             controller.signal.throwIfAborted();
           }
           freshUntil =
             source.maxAge > 0 ? Date.now() + source.maxAge * 1000 : 0;
           return source;
         }),
-        Promise.resolve()
-          .then(() => this.deps.prepare?.(controller.signal))
-          .then(() => {
-            startupMs = performance.now() - originStarted;
-          }),
+        stored?.sourceValidator ? undefined : Promise.resolve().then(prepare),
       ]);
-      const response = await this.deps.transform(
-        source.body,
-        job,
-        controller.signal,
-        deadline,
-      );
-      if (!response.ok)
-        throw new ImageError(
-          (await response.text()) || "image transformation failed",
-          response.status,
-          response.headers.get("retry-after") ?? undefined,
+      let body: ArrayBuffer;
+      let nativeTiming: string | null = null;
+      if (source.body === null) {
+        body = await new Response(
+          stored!.body.pipeThrough(new TransformStream(), {
+            signal: controller.signal,
+          }),
+        ).arrayBuffer();
+      } else {
+        await stored?.body.cancel();
+        if (stored?.sourceValidator) await prepare();
+        const response = await this.deps.transform(
+          source.body,
+          job,
+          controller.signal,
+          deadline,
         );
-      // Worker code can activate before the container finishes rolling out.
-      // Never persist old renderer bytes under the new derivative namespace.
-      if (
-        this.deps.rendererVersion &&
-        response.headers.get("x-imgt-renderer") !== this.deps.rendererVersion
-      ) {
-        await response.body?.cancel();
-        throw new ImageError("image renderer is updating", 503, "5");
+        if (!response.ok)
+          throw new ImageError(
+            (await response.text()) || "image transformation failed",
+            response.status,
+            response.headers.get("retry-after") ?? undefined,
+          );
+        // Never persist old renderer bytes under the new derivative namespace.
+        if (
+          this.deps.rendererVersion &&
+          response.headers.get("x-imgt-renderer") !== this.deps.rendererVersion
+        ) {
+          await response.body?.cancel();
+          throw new ImageError("image renderer is updating", 503, "5");
+        }
+        nativeTiming = response.headers.get("server-timing");
+        body = await response.arrayBuffer();
       }
-      const body = await response.arrayBuffer();
       if (controller.signal.aborted)
         throw new ImageError("image transformation timed out", 504);
-      const etag = await contentEtag(body);
+      const etag =
+        source.body === null ? stored!.etag : await contentEtag(body);
       const persistenceStarted = performance.now();
       const persistence = (
         remainingSeconds(freshUntil) > 0
-          ? this.deps.store.put(job.outputKey, body, etag, freshUntil)
+          ? this.deps.store.put(
+              job.outputKey,
+              body,
+              etag,
+              freshUntil,
+              source.validator,
+            )
           : (invalidation ?? this.deps.store.delete(job.outputKey))
       )
         .then(() => {
@@ -237,8 +260,10 @@ export class TransformCoordinator {
       const serverTiming = [
         `admission;dur=${admissionMs.toFixed(1)}`,
         `origin_headers;dur=${originMs.toFixed(1)}`,
-        this.deps.prepare ? `startup;dur=${startupMs.toFixed(1)}` : undefined,
-        response.headers.get("server-timing"),
+        this.deps.prepare && source.body
+          ? `startup;dur=${startupMs.toFixed(1)}`
+          : undefined,
+        nativeTiming,
         `job;dur=${(performance.now() - started).toFixed(1)}`,
       ]
         .filter(Boolean)
@@ -247,7 +272,7 @@ export class TransformCoordinator {
         body,
         etag,
         freshUntil,
-        cacheStatus: "MISS",
+        cacheStatus: source.body === null ? "R2" : "MISS",
         serverTiming,
         persistence,
       };
@@ -271,6 +296,8 @@ export class TransformCoordinator {
       controller.abort();
       if (sourceBody && !sourceBody.locked)
         await sourceBody.cancel().catch(() => {});
+      if (stored && !stored.body.locked)
+        await stored.body.cancel().catch(() => {});
     }
   }
 }

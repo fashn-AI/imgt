@@ -93,6 +93,9 @@ Edit `imgt.config.ts` to change these settings:
 
 Freshness follows source `s-maxage` or `max-age`, with the configured minimum;
 upstream `Age` is subtracted. The stale interval starts after freshness expires.
+Direct origins with strong ETags use conditional refreshes: unchanged originals
+renew the existing derivative without container work. Changed sources, redirects
+and sources without strong validators follow the regular transform path.
 R2 object expiration uses separate [storage cleanup](deployment.md#storage-cleanup).
 Idle time must be a positive integer number of milliseconds, up to 21,600,000
 (6 hours). Requests accept integer widths from 1 to 3840 pixels and integer

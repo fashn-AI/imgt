@@ -32,13 +32,25 @@ output bytes. Absolute freshness and stale deadlines are stored in R2 metadata.
 | --- | --- | --- |
 | Workers Cache hit | `EDGE` | None |
 | Fresh R2 derivative | `R2` | None |
-| R2 within its stale window | `STALE`, cached for up to 60 seconds | Background refresh |
-| Missing or beyond the stale window | `MISS` | Caller waits for a transform |
+| R2 within its stale window | `STALE`, cached for up to 60 seconds | Background revalidation or transform |
+| Expired R2 derivative, source unchanged | `R2` | None |
+| Missing or expired derivative, source changed | `MISS` | Caller waits for a transform |
 
 Source `s-maxage` or `max-age` controls freshness, with a configurable four-hour
 minimum and upstream `Age` subtracted. Durations are bounded to 2,147,483,647
 seconds so millisecond deadlines remain safe. The stale window defaults to
 24 hours; stale response lifetimes cannot extend beyond its deadline.
+
+Direct source responses with a strong ETag retain that validator and cache
+policy alongside the derivative. On expiry, imgt sends `If-None-Match` to the
+origin. A `304` renews freshness and persists the existing WebP bytes without
+starting a container, downloading the original or encoding again. The client
+ETag stays unchanged. Updated `304` cache directives take precedence; absent
+directives retain the previous origin policy. Source validators and policy
+metadata are each limited to 512 UTF-8 bytes. Weak ETags, redirects and existing
+objects without a source validator use the unconditional transform path.
+New images still fetch the origin and start compute concurrently. A changed
+conditional source starts compute after its origin response arrives.
 
 `private` and `no-store` sources return `403`. `no-cache` images are transformed
 with `Cache-Control: no-store` and are not retained. Those policy transitions,

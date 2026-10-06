@@ -1,10 +1,99 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchSource } from "../src/source";
+import { fetchSource, parseSourceValidator } from "../src/source";
 import { ImageError } from "../src/http";
 import { MAX_SOURCE_BYTES } from "../src/constants";
 
 const source = "https://images.unsplash.com/photo.jpg";
+
+test("source validators require bounded strong ETags and bounded cache metadata", () => {
+  for (const etag of [
+    null,
+    "unquoted",
+    'W/"weak"',
+    '"bad\nvalue"',
+    `"${"a".repeat(512)}"`,
+    `"${"é".repeat(256)}"`,
+  ]) {
+    assert.equal(parseSourceValidator(etag, null), undefined);
+  }
+  assert.equal(parseSourceValidator('"valid"', "é".repeat(257)), undefined);
+  assert.deepEqual(parseSourceValidator('"valid"', null), {
+    etag: '"valid"',
+    cacheControl: null,
+  });
+});
+
+test("changed redirect targets never persist a validator from their final URL", async () => {
+  let calls = 0;
+  const result = await fetchSource(
+    source,
+    new AbortController().signal,
+    ["images.unsplash.com"],
+    async () =>
+      ++calls === 1
+        ? new Response(null, {
+            status: 302,
+            headers: { location: "/other.jpg" },
+          })
+        : new Response("image", {
+            headers: { "content-type": "image/jpeg", etag: '"other"' },
+          }),
+  );
+  assert.equal(await new Response(result.body).text(), "image");
+  assert.equal(result.validator, undefined);
+});
+
+test("strong ETags revalidate direct origins and inherit absent 304 cache policy", async () => {
+  const result = await fetchSource(
+    source,
+    new AbortController().signal,
+    ["images.unsplash.com"],
+    async (_url, init) => {
+      assert.equal(
+        new Headers(init.headers).get("if-none-match"),
+        '"original"',
+      );
+      return new Response(null, { status: 304, headers: { age: "60" } });
+    },
+    { etag: '"original"', cacheControl: "public, max-age=86400" },
+  );
+  assert.equal(result.body, null);
+  assert.equal(result.maxAge, 86340);
+  assert.deepEqual(result.validator, {
+    etag: '"original"',
+    cacheControl: "public, max-age=86400",
+  });
+});
+
+test("redirects drop source validators and unexpected 304 responses fail", async () => {
+  for (const conditional of [false, true]) {
+    let calls = 0;
+    await assert.rejects(
+      fetchSource(
+        source,
+        new AbortController().signal,
+        ["images.unsplash.com"],
+        async (_url, init) => {
+          calls++;
+          const condition = new Headers(init.headers).get("if-none-match");
+          if (conditional && calls === 1) {
+            assert.equal(condition, '"original"');
+            return new Response(null, {
+              status: 302,
+              headers: { location: "/other.jpg" },
+            });
+          }
+          assert.equal(condition, null);
+          return new Response(null, { status: 304 });
+        },
+        conditional ? { etag: '"original"', cacheControl: null } : undefined,
+      ),
+      (cause) => cause instanceof ImageError && cause.status === 502,
+    );
+    assert.equal(calls, conditional ? 2 : 1);
+  }
+});
 
 test("redirects validate every destination and cancel discarded bodies", async () => {
   let calls = 0;

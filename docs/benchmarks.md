@@ -4,6 +4,11 @@ The [benchmark page](https://imgt.fashn.ai/benchmarks) provides live latency
 charts, smaller local allocations, and an interactive monthly cost model.
 Measurements and rates were checked on October 5, 2026.
 
+An October 6 local cache-refresh replay verified that unchanged direct origins
+with strong ETags reuse their existing WebP derivative without starting compute.
+This avoids repeated encoding after expiration. It does not change first-image
+latency or the live fresh-image charts below. See [refresh measurements](performance.md#avoiding-unchanged-source-encoding-october-6-2026).
+
 ## Live comparison
 
 Same 50 PNG sources, width 640, quality 98 and WebP effort 4. One client entered

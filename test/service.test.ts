@@ -15,6 +15,202 @@ function expire(harness: ReturnType<typeof createHarness>, staleMs = 60_000) {
   }
 }
 
+test("unchanged expired images revalidate once without compute, including arrivals during R2 persistence", async () => {
+  let starts = 0;
+  const h = createHarness({
+    prepare: async () => {
+      starts++;
+    },
+    sourceFetch: async (_url, init) => {
+      const condition = new Headers(init.headers).get("if-none-match");
+      return condition
+        ? new Response(null, {
+            status: 304,
+            headers: { "cache-control": "max-age=86400" },
+          })
+        : new Response("source", {
+            headers: { "content-type": "image/jpeg", etag: '"original"' },
+          });
+    },
+  });
+  const original = await h.gateway(imageRequest());
+  const body = await original.text();
+  const etag = original.headers.get("etag");
+  await h.drain();
+  expire(h, -1000);
+  const persistence = deferred();
+  h.bucket.putGate = persistence.promise;
+  const responses = await Promise.all(
+    Array.from({ length: 50 }, () => h.gateway(imageRequest())),
+  );
+  const late = await h.gateway(imageRequest());
+  for (const response of [...responses, late]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-imgt-cache"), "R2");
+    assert.equal(response.headers.get("etag"), etag);
+    assert.equal(await response.text(), body);
+  }
+  assert.equal(h.downloads, 2);
+  assert.equal(h.transforms, 1);
+  assert.equal(starts, 1);
+  persistence.resolve();
+  await h.drain();
+  assert.equal(
+    (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+    "R2",
+  );
+  assert.equal(h.downloads, 2);
+  assert.equal(h.bucket.puts, 2);
+});
+
+test("a conditional refresh with changed pixels encodes and replaces its source validator", async () => {
+  let revision = 1;
+  const conditions: (string | null)[] = [];
+  const h = createHarness({
+    sourceFetch: async (_url, init) => {
+      conditions.push(new Headers(init.headers).get("if-none-match"));
+      return new Response(`source-${revision}`, {
+        headers: { "content-type": "image/jpeg", etag: `"source-${revision}"` },
+      });
+    },
+  });
+  const first = await h.gateway(imageRequest());
+  await h.drain();
+  expire(h, -1000);
+  revision++;
+  const changed = await h.gateway(imageRequest());
+  await h.drain();
+  assert.notEqual(changed.headers.get("etag"), first.headers.get("etag"));
+  assert.equal(changed.headers.get("x-imgt-cache"), "MISS");
+  assert.equal(h.transforms, 2);
+  assert.deepEqual(conditions, [null, '"source-1"']);
+  assert.equal(
+    [...h.bucket.objects.values()][0].customMetadata.sourceEtag,
+    '"source-2"',
+  );
+});
+
+test("legacy derivatives and malformed stored source validators use unconditional refreshes", async () => {
+  for (const sourceEtag of [undefined, 'W/"weak"', '"bad\nvalue"']) {
+    const conditions: (string | null)[] = [];
+    const h = createHarness({
+      sourceFetch: async (_url, init) => {
+        conditions.push(new Headers(init.headers).get("if-none-match"));
+        return new Response("source", {
+          headers: { "content-type": "image/jpeg" },
+        });
+      },
+    });
+    await h.gateway(imageRequest());
+    await h.drain();
+    expire(h, -1000);
+    if (sourceEtag)
+      [...h.bucket.objects.values()][0].customMetadata.sourceEtag = sourceEtag;
+    assert.equal((await h.gateway(imageRequest())).status, 200);
+    await h.drain();
+    assert.deepEqual(conditions, [null, null]);
+    assert.equal(h.transforms, 2);
+  }
+});
+
+test("an expired-image revalidation cancels a stalled R2 read at its deadline", async () => {
+  let canceled = 0;
+  const h = createHarness({
+    timeoutMs: 30,
+    sourceFetch: async (_url, init) =>
+      new Headers(init.headers).has("if-none-match")
+        ? new Response(null, { status: 304 })
+        : new Response("source", {
+            headers: { "content-type": "image/jpeg", etag: '"original"' },
+          }),
+  });
+  await h.gateway(imageRequest());
+  await h.drain();
+  expire(h, -1000);
+  const get = h.bucket.get.bind(h.bucket);
+  h.bucket.get = async (key) => {
+    const object = await get(key);
+    return (
+      object && {
+        ...object,
+        body: new ReadableStream({
+          cancel() {
+            canceled++;
+          },
+        }),
+      }
+    );
+  };
+  const response = await h.gateway(imageRequest());
+  assert.equal(response.status, 504);
+  assert.equal(h.transforms, 1);
+  assert.equal(canceled, 2);
+});
+
+for (const policy of ["private", "no-store", "no-cache"]) {
+  test(`304 ${policy} invalidates the retained derivative without starting compute`, async () => {
+    const h = createHarness({
+      sourceFetch: async (_url, init) =>
+        new Headers(init.headers).has("if-none-match")
+          ? new Response(null, {
+              status: 304,
+              headers: { "cache-control": policy },
+            })
+          : new Response("source", {
+              headers: { "content-type": "image/jpeg", etag: '"original"' },
+            }),
+    });
+    await h.gateway(imageRequest());
+    await h.drain();
+    expire(h, -1000);
+    const response = await h.gateway(imageRequest());
+    assert.equal(response.status, policy === "no-cache" ? 200 : 403);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    await h.drain();
+    assert.equal(h.bucket.objects.size, 0);
+    assert.equal(h.transforms, 1);
+  });
+}
+
+test("temporary conditional refresh errors retain stale data and cancel the unused R2 body", async () => {
+  const h = createHarness({
+    sourceFetch: async (_url, init) =>
+      new Headers(init.headers).has("if-none-match")
+        ? new Response("temporarily unavailable", {
+            status: 503,
+            headers: { "retry-after": "1" },
+          })
+        : new Response("source", {
+            headers: { "content-type": "image/jpeg", etag: '"original"' },
+          }),
+  });
+  await h.gateway(imageRequest());
+  await h.drain();
+  expire(h);
+  let canceled = 0;
+  const get = h.bucket.get.bind(h.bucket);
+  h.bucket.get = async (key) => {
+    const value = await get(key);
+    return (
+      value && {
+        ...value,
+        body: new ReadableStream({
+          cancel() {
+            canceled++;
+          },
+        }),
+      }
+    );
+  };
+  const response = await h.gateway(imageRequest());
+  assert.equal(response.headers.get("x-imgt-cache"), "STALE");
+  await response.body?.cancel();
+  await h.drain();
+  assert.equal(h.bucket.objects.size, 1);
+  assert.equal(h.transforms, 1);
+  assert.equal(canceled, 2);
+});
+
 test("miss persists once, fresh R2 skips transformation, and content validators survive storage", async () => {
   const h = createHarness();
   const first = await h.gateway(imageRequest());
