@@ -1,10 +1,10 @@
 import { ImageError } from "./http";
 import { TRANSFORM_TIMEOUT_MS } from "./constants";
 
-// Custom resources keep two independent encoders on two CPUs.
+// Temporary one-CPU allocation for the supported-capacity comparison.
 export const CONTAINER_RESOURCES = {
-  vcpu: 2,
-  memoryMib: 6144,
+  vcpu: 1,
+  memoryMib: 3072,
   diskMb: 2000,
 };
 export const MAX_CONTAINER_SHARDS = 8;
