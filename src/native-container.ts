@@ -1,10 +1,10 @@
 import { ImageError } from "./http";
 import { TRANSFORM_TIMEOUT_MS } from "./constants";
 
-// Temporary one-CPU allocation for the supported-capacity comparison.
+// Cloudflare custom allocations require at least 3 GiB per CPU.
 export const CONTAINER_RESOURCES = {
-  vcpu: 1,
-  memoryMib: 3072,
+  vcpu: 2,
+  memoryMib: 6144,
   diskMb: 2000,
 };
 export const MAX_CONTAINER_SHARDS = 8;
