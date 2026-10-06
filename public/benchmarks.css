@@ -22,24 +22,6 @@ nav [aria-current="page"] {
 .section-heading {
   margin-bottom: 20px;
 }
-.benchmark-recommendation {
-  margin: 0 32px;
-  padding: 24px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 8px;
-  background: var(--surface);
-}
-.benchmark-recommendation h2 {
-  font-size: 24px;
-  letter-spacing: -0.5px;
-}
-.benchmark-recommendation p:last-child {
-  max-width: 760px;
-  margin-bottom: 0;
-  color: var(--muted);
-  font-size: 14px;
-}
 .benchmark-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -125,10 +107,6 @@ nav [aria-current="page"] {
   max-width: 800px;
 }
 @media (max-width: 760px) {
-  .benchmark-recommendation {
-    margin: 0 20px;
-    padding: 20px;
-  }
   .chart-row {
     grid-template-columns: 120px minmax(0, 1fr) 90px;
     gap: 10px;
@@ -138,10 +116,6 @@ nav [aria-current="page"] {
 @media (max-width: 480px) {
   .content-section {
     padding: 28px 16px;
-  }
-  .benchmark-recommendation {
-    margin: 0 16px;
-    padding: 16px;
   }
   .chart-row {
     grid-template-columns: 98px minmax(0, 1fr) 82px;

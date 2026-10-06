@@ -41,9 +41,9 @@ budget option at the observed average peak, but its longer 20/s run exhausted
 admission capacity and returned seven HTTP 429 responses. Four 1-CPU shards passed
 3,600 fresh arrivals at 20/s and improved the 200-image burst. The longer two-2-CPU
 confirmation also passed 3,600 arrivals, with p95 1.282 s versus 1.046 s for four
-1-CPU shards. The horizontal allocation costs only $0.72/month more in the model, so
-use it for FASHN. These are separate bounded runs, not proof of a universal latency
-winner.
+1-CPU shards. The horizontal allocation costs only $0.72/month more in the model
+and is the default configuration. These are separate bounded runs, not proof of a
+universal latency winner.
 
 | Allocation | 50 together | 3/s | 10/s | 20/s | 200 together |
 | --- | ---: | ---: | ---: | ---: | ---: |

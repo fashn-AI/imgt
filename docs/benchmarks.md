@@ -3,12 +3,12 @@
 The [benchmark page](https://imgt.fashn.ai/benchmarks) contains response-time and
 estimated-cost charts. These measurements were collected on October 6, 2026.
 
-## Production choice
+## Default configuration
 
-Four containers, one CPU each. About $122/month at 2.25M fresh images, or $130/month
-at the recent 101K/day rate, using the same assumptions. Faster measured 200-image
-bursts and sustained load at almost the same cost as two 2-CPU containers. The cheaper
-two-1-CPU pair overloaded during stress testing.
+The default is four containers, one CPU each. This configuration handled the tested
+200-image bursts and sustained load at almost the same modeled cost as two 2-CPU
+containers. The cheaper two-1-CPU pair overloaded during stress testing. Choose a
+configuration for your workload using the measurements and pricing assumptions below.
 
 The target includes all FASHN projects: approximately 2.25M monthly transformations
 and a busiest observed 15-minute interval of about 2.9/s. We test 3/s, 10/s and 20/s,

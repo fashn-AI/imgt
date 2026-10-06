@@ -23,7 +23,7 @@ test("built benchmark charts work without scripts and both JSON-LD blocks satisf
     }
     assert.doesNotMatch(
       page,
-      /<!-- (?:SETUP_PROMPT|LATENCY_CHART|LATENCY_NOTE|COST_CHART|RECOMMENDATION_TITLE|RECOMMENDATION_COPY) -->/,
+      /<!-- (?:SETUP_PROMPT|LATENCY_CHART|LATENCY_NOTE|COST_CHART) -->/,
     );
     assert.doesNotMatch(page, /\u2014/);
   }

@@ -5,7 +5,6 @@ import { allocations, estimateCosts } from "../public/benchmark-costs.js";
 import {
   profiles,
   recommendedProfile,
-  recommendation,
   costScenario,
   latencyRows,
   latencyNote,
@@ -79,8 +78,6 @@ costs.push({
 });
 let benchmarks = await readFile(new URL("benchmarks.html", assets), "utf8");
 benchmarks = benchmarks
-  .replace("<!-- RECOMMENDATION_TITLE -->", recommendation.title)
-  .replace("<!-- RECOMMENDATION_COPY -->", recommendation.copy)
   .replace(
     "<!-- LATENCY_CHART -->",
     chart(

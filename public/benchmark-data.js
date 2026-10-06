@@ -18,11 +18,6 @@ export const profiles = [
 ];
 
 export const recommendedProfile = "four-1cpu";
-export const recommendation = {
-  title: "Four containers, one CPU each.",
-  copy: "3 GiB RAM each. Passed 3,600 fresh images at 20/second without errors. About $122/month, or $130/month at the recent 101K/day rate, under the stated assumptions.",
-};
-
 export const costScenario = {
   transforms: 2_250_000,
   requests: 10_000_000,
