@@ -5,6 +5,7 @@ import { once } from "node:events";
 import test, { type TestContext } from "node:test";
 import sharp from "sharp";
 import { createTransformServer, type ServerOptions } from "../container/app";
+import { RENDERER_VERSION } from "../container/renderer";
 import { encodeImage } from "../container/transform";
 import { createHarness, deferred, imageRequest } from "./helpers";
 
@@ -114,7 +115,7 @@ test("a complete image encodes while an earlier upload is stalled", async (t) =>
   await until(async () => (await app.health()).uploading === 1);
   const fast = await app.post(input);
   assert.equal(fast.status, 200);
-  assert.equal(fast.headers.get("x-imgt-renderer"), "v4");
+  assert.equal(fast.headers.get("x-imgt-renderer"), RENDERER_VERSION);
   assert.match(fast.headers.get("server-timing")!, /queue;dur=/);
   const metadata = await sharp(
     Buffer.from(await fast.arrayBuffer()),

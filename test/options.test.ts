@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DERIVATIVE_PREFIX } from "../src/constants";
 
 import {
   canonicalCacheRequest,
@@ -236,7 +237,7 @@ test("canonicalizes Workers Cache keys to normalized public parameters", () => {
       ["w", "640"],
       ["q", "75"],
       ["e", "4"],
-      ["v", "derivatives/v4"],
+      ["v", DERIVATIVE_PREFIX],
     ],
   );
 });

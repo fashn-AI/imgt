@@ -43,7 +43,7 @@
       "class_name": "ImgtNativeImageTransformer",
       "scheduling_policy": "durable_object",
       "images": {
-        "sharp": { "dockerfile": "./container/Dockerfile" }
+        "transformer": { "dockerfile": "./container/Dockerfile" }
       },
       "observability": { "logs": { "enabled": true } }
     }

@@ -1,38 +1,55 @@
 # Performance
 
-imgt uses Sharp/libvips with two container shards, each allocated 2 vCPUs,
+imgt uses Rust/libvips with two container shards, each allocated 2 vCPUs,
 6 GiB RAM and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so
 cache hits do not start a container.
 
 ## Current decisions
 
-- **Sharp/libvips in production:** the Rust/libvips HTTP prototype now passes
-  local compatibility and lifecycle tests with a much smaller runtime footprint.
-  Burst latency and sustained medians are similar, with a slower Rust p95 in
-  the final sustained repeat. Native AMD64 performance and a Cloudflare trial
-  remain necessary before a production replacement.
+- **Rust/libvips runtime:** identical native library and codec versions retain
+  the evaluated Sharp output, while reducing the runtime footprint. Controlled
+  local repeats show similar rendering speed, lower memory use and modest CPU
+  savings. Cloudflare rollout checks and load measurements follow packaging.
 - **Two CPUs and two encoders per shard:** the effort-4 allocation comparison
   below measures horizontal and vertical scaling with eight total CPUs. Each
   shard still admits eight active jobs and at most 128 distinct jobs; ready
-  inputs use two encoder slots. Sharp uses one libvips thread per image.
+  inputs use two encoder slots. libvips uses one thread per image.
   Canceled native work retains its slot until processing settles.
 - **Late ICC conversion:** eligible RGB inputs resize before conversion to
   sRGB. Other color and depth cases use the original conversion order. Regression
   tests cover supported formats, EXIF orientation, profiles and transparency.
 - **Conditional source refreshes:** unchanged direct sources with strong ETags
-  renew retained derivatives without downloading the original or starting Sharp.
+  renew retained derivatives without downloading the original or starting compute.
   This reduces repeated work after cache expiry; it does not speed up an image's
   first transform. Source changes and unvalidated sources still encode normally.
 - **Quality 77, WebP effort 4:** standard Sharp WebP effort matched the
   evaluated Vercel outputs at the same client quality. This replaces the earlier
-  effort-2 throughput tradeoff. Renderer v4 isolates the new output from older
+  effort-2 throughput tradeoff. Renderer v5 isolates the Rust output from older
   cached images and running containers. Client quality values stay unchanged.
 - **Two shards, two idle minutes:** stable routing deduplicates work for each
   derivative. The idle alarm waits for foreground requests and background
   refreshes to finish, balancing awake time against cold starts.
-- **Build-time type stripping:** the container loads JavaScript to reduce
-  runtime module initialization. Local startup measurements do not establish
-  a Cloudflare cold-start improvement.
+- **Owned native buffers:** the Rust HTTP body owns the encoded allocation
+  directly. Input buffers outlive every lazy image depending on their bytes;
+  native work retains its permits until completion, including after cancellation.
+
+## Packaged Rust release, October 6, 2026
+
+The default Dockerfile now builds the qualified Rust service against the same
+Sharp-bundled libvips 8.18.6 and WebP 1.6.0. Node and the Sharp addon are absent
+from the runtime image. The former Sharp service and Dockerfile remain a
+compatibility reference. Renderer v5 separates Rust derivatives from v4; runtime
+v12 starts fresh containers. The two 2-CPU/6-GiB shards and encoding defaults are
+unchanged so the language migration can be evaluated independently of capacity.
+
+The release checks run the Worker transform/cache tests against the actual HTTP
+Container, validate upload bounds, queued and active cancellation, deadlines,
+admission and SIGTERM draining, and compare supported formats, all eight EXIF
+orientations, ICC color, alpha and integer quality output against Sharp.
+Both ARM64 and emulated AMD64 packages passed. These are correctness checks;
+emulated AMD64 timing is not a production performance measurement.
+`npm run test:container` reproduces the checks in Docker. Its delayed encoder
+fixture is compiled only into a separate test image, never the production image.
 
 ## Encoder scheduling and live timing, October 6, 2026
 
@@ -77,7 +94,7 @@ Once the derivative expires, an origin `304` renews the existing WebP bytes
 without starting compute. Changed sources, weak or absent validators, redirects
 and older cache entries use the regular transform path. Source cache-policy
 changes still invalidate storage; deadlines and single-flight persistence
-remain enforced. Renderer v4 is unchanged because no encoding options or pixels
+remain enforced. This refresh change retained renderer v4 because no encoding options or pixels
 change. The evaluated FASHN media origin supports a strong ETag and returned
 HTTP 304 to a conditional GET.
 
@@ -193,7 +210,7 @@ Tokio, bounded uploads, independent upload and encoder admission, deadlines,
 disconnection handling and graceful shutdown. Native work retains its admission
 and encoder permits until it settles, even when the caller leaves. Cancellation
 signals libvips through its progress/kill API. These are research implementations;
-production still uses Sharp.
+production used Sharp during these tests.
 
 The initial color mismatches came from operation order. Matching Sharp's
 shrink-on-load, resizing, ICC conversion, autorotation and alpha handling fixed
@@ -286,6 +303,131 @@ failures and billed usage before replacing the production container.
 
 The HTTP prototype and raw measurements remain outside the normal checkout in
 the research workspace. No production code, allocation or deployment changed.
+
+## Controlled Sharp and Rust repeats, October 6, 2026
+
+The earlier 433 ms Rust versus 285 ms Sharp p95 result placed too much weight
+on one sustained run. Reexamining its request timings showed native processing
+medians of 136.1 and 136.2 ms, respectively. A cluster of Rust upload and queue
+delays produced most of the tail difference. This does not identify the cause
+of those delays or establish that Sharp renders faster.
+
+The Rust HTTP prototype was revised to pass the encoded libvips allocation
+directly to the HTTP body through an immutable owned buffer, rather than copying
+it into another allocation. The owner frees native memory after its last body
+reference is released. It also enables TCP_NODELAY, cleans up libvips thread
+state after each job, uses one Tokio event-loop thread and limits blocking native
+threads to the encoder count. Admission, native cancellation and input-buffer
+lifetimes are retained. These are research changes, not new production settings.
+Sharp already returns its native encoded buffer without that extra copy and
+cleans up libvips thread state. See the [Sharp native pipeline](https://github.com/lovell/sharp/blob/v0.35.4/src/pipeline.cc),
+[Axum socket configuration](https://docs.rs/axum/0.8.9/axum/serve/trait.ListenerExt.html)
+and [Bytes ownership API](https://docs.rs/bytes/latest/bytes/struct.Bytes.html#method.from_owner).
+
+Both engines still use identical libvips 8.18.6, WebP 1.6.0, jemalloc, effort 4,
+SIMD, one libvips thread per image and disabled operation caching. The same
+native ARM64 Docker host ran each engine sequentially, without concurrent builds
+or repository checks. Client arrival delay, event-loop delay and cgroup CPU
+throttling were recorded. Origins were replayed from memory and R2 writes used
+a 300 ms delay; these are controlled doubles, not actual Cloudflare services.
+Full HTTP response bodies were read and hashed.
+
+Six rounds compared Sharp, the previous Rust HTTP revision and the optimized
+Rust revision. Each engine occupied every order position twice. Two shards each
+had 2 CPUs, 6 GiB memory, two encoders and no swap. Every round sent 300 fresh
+640-pixel, quality-98 derivatives at 20/s, followed by a simultaneous 100-image
+1024-pixel, quality-77 burst. All 7,200 responses succeeded. Every corresponding
+Rust output matched Sharp, including 4,800 comparisons across the two Rust
+revisions. Every derivative was retrieved from R2 without another transform,
+and 50 callers for one uncached derivative produced one transform per trial.
+
+The following latency values are the median of six trial p95 values, rather
+than a pooled p95 that can be dominated by one noisy trial. CPU and peak memory
+values are also medians across trials. Each memory result is the higher of the
+two shard peaks, including charged filesystem cache, rather than process RSS.
+
+| Measurement, two 2-CPU shards | Sharp | Previous Rust | Optimized Rust |
+| --- | ---: | ---: | ---: |
+| 20/s sustained delivery p95 | 271 ms | 261 ms | 260 ms |
+| Sustained native processing median | 136.6 ms | 135.2 ms | 134.4 ms |
+| CPU seconds per 300 sustained images, both shards | 39.54 s | 39.01 s | 38.08 s |
+| Sustained peak memory per shard | 325 MiB | 250 MiB | 222 MiB |
+| 100-image burst delivery p95 | 4.164 s | 4.082 s | 4.091 s |
+| CPU seconds per burst, both shards | 17.12 s | 16.85 s | 16.83 s |
+| Burst peak memory per shard | 339 MiB | 310 MiB | 269 MiB |
+
+There were still noisy tails. Sustained trial p95 ranged from 264 to 728 ms for
+Sharp, 243 to 640 ms for the previous Rust revision, and 238 to 409 ms for the
+optimized revision. Pooled p95 was 348, 276 and 272 ms, respectively. No trial
+or outlier was removed. The repeats do not support the earlier claim of a
+consistent Rust tail penalty, but neither do they prove that a particular socket
+or ownership change caused the improvement. The single-run ablation screen
+cannot establish that causal relationship. The optimized revision reduced
+observed sustained CPU use by about 4%; native rendering and burst times stayed
+close. Rust's native evaluation accounted for almost all its native processing
+time; median task dispatch was 0.033 ms and pipeline preparation was 0.370 ms.
+The native evaluation includes decoding, resizing and encoding, not only WebP.
+
+### Smaller allocation comparison
+
+Four balanced Sharp/Rust rounds used two shards each with 1 CPU, 3 GiB memory,
+one encoder and no swap. Each engine received 120 fresh derivatives at 6/s at
+640 pixels and quality 98, another 120 at 1024 pixels and quality 77, and a
+simultaneous 100-image burst at 1028 pixels and quality 77. All 2,720 responses
+succeeded and all 1,360 Rust/Sharp output pairs matched. R2 readback and
+single-flight checks passed for every trial. Values below are medians of four
+trial measurements; latency remains the median trial p95.
+
+| Measurement, two 1-CPU shards | Sharp | Optimized Rust |
+| --- | ---: | ---: |
+| 6/s, 640 pixels, quality 98, delivery p95 | 197 ms | 192 ms |
+| CPU seconds per 120 images, both shards | 14.70 s | 14.03 s |
+| Peak memory per shard in that phase | 234 MiB | 123 MiB |
+| 6/s, 1024 pixels, quality 77, delivery p95 | 280 ms | 275 ms |
+| CPU seconds per 120 images, both shards | 18.88 s | 18.40 s |
+| Peak memory per shard in that phase | 251 MiB | 139 MiB |
+| 100-image burst delivery p95 | 8.559 s | 8.306 s |
+| Burst time until last complete response | 9.475 s | 9.223 s |
+| Burst peak memory per shard | 255 MiB | 172 MiB |
+
+The smaller allocation is viable for this local steady workload in either
+language. Its slower burst drain follows reduced CPU allocation; lower Rust
+memory did not recover two-CPU burst performance. The 6/s and 20/s phases have
+different offered loads, so their latencies are not a direct allocation-speed
+comparison. Fifteen-minute Vercel averages cannot establish shorter peak loads.
+Cloudflare startup, response-body delivery, real origins, R2 and billing still
+need measurement before changing the production allocation. Cloudflare charges
+for provisioned memory; lower observed use does not by itself lower that charge.
+
+### Optimized prototype qualification and decision
+
+The optimized revision repeated all 832 format comparisons: all 800 successful
+outputs matched exactly, and both engines rejected the same 32 invalid-input cases.
+All thirteen HTTP contract scenarios passed for both engines, including active
+and queued cancellation, real native deadlines, upload limits and SIGTERM drain.
+A separate resource screen used the one-CPU, 3-GiB allocation with no swap.
+Every source body was padded to the 25-MiB input limit, and the corpus included
+one 50-megapixel RGBA source. An eight-request burst at requested width 3840 and
+quality 98, followed by 40 requests at width 640 and quality 98, completed all
+48 requests for each engine. All 48 output pairs, cache readbacks and delayed-write
+single-flight checks passed. Peak charged memory was 862 MiB for Sharp and
+834 MiB for Rust in that screen. Large native image buffers narrowed the memory
+advantage substantially; regular-gallery memory is insufficient for sizing the
+maximum permitted inputs. This single resource screen is not a throughput
+comparison or an out-of-memory guarantee.
+
+**Comparison decision:** Rust remains a viable smaller runtime, with similar
+rendering performance and modest measured CPU savings. The controlled tests
+correct the earlier emphasis on one slower Rust tail result. Rust did not provide
+a large encoding-speed gain: both engines already execute the same native image
+library. Either engine supported the evaluated smaller steady workload, while
+large bursts required longer waiting at the reduced CPU allocation. Native AMD64
+performance, actual Cloudflare provisioning and delivery, and billed usage remain
+unmeasured for the Rust service. Production used Sharp during this investigation; it
+did not change the deployed runtime, allocation, image quality or cache version.
+
+The prototype and raw results remain outside the normal checkout in the
+October 6 research workspace. The qualified service now lives in `container/rust/`.
 
 ## Smaller available container sizes, October 2026
 

@@ -1,0 +1,17 @@
+[package]
+name = "imgt-container"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[features]
+test-delay = []
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
+serde_json = "1"
+http-body-util = "0.1"
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -75,7 +75,7 @@ test("a cold stale refresh defers idle alarms while active and schedules shutdow
     get running() {
       return running;
     },
-    images: { sharp: "registry.cloudflare.com/test/sharp@sha256:fixed" },
+    images: { transformer: "registry.cloudflare.com/test/sharp@sha256:fixed" },
     start() {
       starts += 1;
       running = true;

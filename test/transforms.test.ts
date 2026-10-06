@@ -18,19 +18,22 @@ async function serve(t: TestContext, failFirstSource = false) {
   })
     .png()
     .toBuffer();
-  const server = createTransformServer({
-    maxInputBytes: 1024 * 1024,
-    maxInFlight: 4,
-    timeoutMs: 2000,
-    effort: config.transforms.webpEffort,
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  });
-  const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  let endpoint = process.env.IMGT_CONTAINER_URL;
+  if (!endpoint) {
+    const server = createTransformServer({
+      maxInputBytes: 1024 * 1024,
+      maxInFlight: 4,
+      timeoutMs: 2000,
+      effort: config.transforms.webpEffort,
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    t.after(async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  }
   const h = createHarness({
     rendererVersion: RENDERER_VERSION,
     sourceFetch: async () =>
@@ -63,7 +66,7 @@ async function serve(t: TestContext, failFirstSource = false) {
   return { h, input, request };
 }
 
-test("integer qualities reach Sharp unchanged and retain separate, reusable derivatives", async (t) => {
+test("integer qualities reach the encoder unchanged and retain separate, reusable derivatives", async (t) => {
   const { h, input, request } = await serve(t);
   let defaultBytes: Buffer | undefined;
   let defaultEtag: string | null = null;

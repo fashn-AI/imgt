@@ -1,6 +1,6 @@
 # Architecture
 
-imgt runs Sharp in a Cloudflare Container and caches generated WebP images in
+imgt runs Rust/libvips in a Cloudflare Container and caches generated WebP images in
 Workers Cache and a private R2 bucket. Originals are streamed to the container
 and never stored. The static demo uses plain HTML, CSS, and JavaScript.
 `npm run build:site` copies assets and documentation to `dist/public/` and
@@ -14,7 +14,7 @@ GET /image?url=…&w=640&q=77
   → Durable Object shard: R2 lookup
       → fresh: return derivative
       → stale: return derivative, refresh in background
-      → missing: fetch source → Sharp → return and persist derivative
+      → missing: fetch source → libvips → return and persist derivative
 ```
 
 The gateway is uncached so equivalent public URLs share one canonical image
@@ -24,7 +24,7 @@ never replaces the full image in Workers Cache. Static assets bypass the Worker.
 
 ## Cache policy
 
-Only derivatives are stored, under `derivatives/v4/<hash>.webp`. The key includes
+Only derivatives are stored, under `derivatives/v5/<hash>.webp`. The key includes
 source URL, width, quality, output format, and encoder effort. ETags hash the
 output bytes. Absolute freshness and stale deadlines are stored in R2 metadata.
 
@@ -80,7 +80,7 @@ WebP.
 The configured deterministic shards each accept up to 128 distinct jobs. At most eight
 jobs per shard download sources, start the container, upload, or encode at once;
 the others wait without downloading originals. Within a container, uploads run
-independently and ready inputs enter a queue with two active Sharp encoders. A
+independently and ready inputs enter a queue with two active native encoders. A
 stalled upload does not block ready images. Completed results keep their
 single-flight entry during R2 writes but release active capacity immediately.
 Requests beyond the bounded admission limit return retryable `429`.
@@ -166,15 +166,17 @@ existing installation's old namespace.
 - `src/source.ts`, `options.ts`, `settings.ts`: source and configuration validation.
 - `src/cache.ts`, `store.ts`, `http.ts`: cache policy, storage, response helpers.
 - `src/native-container.ts`, `native-idle.ts`: startup and compute lifecycle.
-- `container/`: HTTP uploads, ready queue, Sharp, and build-time type stripping.
+- `container/`: Rust HTTP uploads, bounded native jobs and libvips; the former Sharp
+  service is retained as a comparison reference.
 
 Worker logs cover transform failures, persistence, and container starts/stops.
-MISS timing reports admission waiting, job, origin headers, startup, upload, queue, and Sharp
+MISS timing reports admission waiting, job, origin headers, startup, upload, queue, and native encoding
 work; spans overlap. Container boot labels identify real restarts. Its private
 health endpoint reports active, queued, uploading, and in-flight jobs.
 
 `npm run check` exercises the request flow with controlled origins and storage,
-plus real HTTP uploads and Sharp encoding. `npx wrangler deploy --dry-run`
+plus real HTTP uploads and the Sharp compatibility reference.
+`npm run test:container` builds and tests the Rust HTTP service in Docker. `npx wrangler deploy --dry-run`
 checks the bundle and Docker image. Cloudflare's tiered cache and provisioning
 require a live [deployment smoke test](deployment.md#updates).
 See [performance decisions](performance.md) for the current defaults.

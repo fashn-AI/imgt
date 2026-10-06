@@ -1,7 +1,7 @@
 ![imgt](public/logo.svg)
 
 Self-hosted image optimization on Cloudflare. Serve resized WebP images from
-your own account using Sharp, Workers Cache, and a private R2 bucket.
+your own account using Rust/libvips, Workers Cache, and a private R2 bucket.
 
 Maintained by [FASHN AI](https://github.com/fashn-AI).
 

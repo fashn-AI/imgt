@@ -116,9 +116,9 @@ These limits keep the service bounded; they are not additional deployment knobs:
 - Three source redirects and a 1,024-character source URL.
 - A 60-second deadline per job attempt for admission, fetch, startup, upload, queueing and encoding.
 - Up to 128 distinct jobs per shard, with eight active downloads/uploads/transforms.
-- Two active Sharp encoders per container; waiting jobs share the 60-second deadline.
+- Two active native encoders per container; waiting jobs share the 60-second deadline.
 
-Sharp/libvips concurrency is fixed at one thread per image.
+libvips concurrency is fixed at one thread per image.
 Read [request recovery behavior](architecture.md#slow-requests-and-errors) for
 bounded source retries, Durable Object resets and errors.
 

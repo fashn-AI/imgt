@@ -22,11 +22,11 @@ function harness(
     get running() {
       return running;
     },
-    images: { sharp: "registry.cloudflare.com/test/sharp@sha256:fixed" },
+    images: { transformer: "registry.cloudflare.com/test/sharp@sha256:fixed" },
     start(options?: ContainerStartupOptions) {
       assert.deepEqual(options?.instance, CONTAINER_RESOURCES);
       assert.equal(options?.enableInternet, false);
-      assert.equal(options?.image, api.images.sharp);
+      assert.equal(options?.image, api.images.transformer);
       starts += 1;
       labels = options?.labels ?? {};
       running = true;
@@ -37,7 +37,7 @@ function harness(
       return monitor.promise;
     },
     async inspect() {
-      return running ? { image: api.images.sharp, labels } : null;
+      return running ? { image: api.images.transformer, labels } : null;
     },
     async setInactivityTimeout(ms: number | bigint) {
       timeouts.push(Number(ms));

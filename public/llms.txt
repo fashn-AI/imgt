@@ -1,6 +1,6 @@
 # imgt
 
-> A small, self-hosted image optimizer on Cloudflare. Sharp resizes public images to WebP; Workers Cache and a private R2 bucket cache derivatives. Original images are never stored.
+> A small, self-hosted image optimizer on Cloudflare. Rust/libvips resizes public images to WebP; Workers Cache and a private R2 bucket cache derivatives. Original images are never stored.
 
 Maintained by [FASHN AI](https://github.com/fashn-AI).
 Source repository: [fashn-AI/imgt](https://github.com/fashn-AI/imgt).

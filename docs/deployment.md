@@ -160,7 +160,7 @@ not establish container readiness.
 Cloudflare's [application-wide rolling deployments](https://developers.cloudflare.com/containers/configuration/rollouts/)
 apply to the `default` scheduling policy. With `durable_object`, a running
 container keeps its image until it stops; its next start selects the named
-`sharp` image from the deployed Worker. The two-minute idle alarm waits for
+`transformer` image from the deployed Worker. The two-minute idle alarm waits for
 foreground requests and background image refreshes to finish before
 stopping. Readiness checks wait for the private container health endpoint before
 uploading an image. Fresh allocation can still exceed the public 60-second

@@ -7,12 +7,14 @@ imgt is a small, self-hosted image optimizer on Cloudflare. Keep it simple.
 - Use Prettier's default settings: `npm run format`.
 - Use Node.js 24. Run `npm run check` before committing and
   `npx wrangler deploy --dry-run` before merging. Docker is needed for the latter.
+- Format Rust with `cargo fmt --manifest-path container/rust/Cargo.toml`.
+  Run `npm run test:container` before releasing Container changes.
 - Keep regression tests for changes to caching, validation, image output,
   cancellation, or concurrency.
 - Keep experiments and raw benchmark results out of the normal checkout.
   Use research branches and summarize useful findings in `docs/performance.md`.
 
-The Worker lives in `src/`, the Sharp service in `container/`, the static demo
+The Worker lives in `src/`, the image service in `container/`, the static demo
 in `public/`, and checks in `test/` and `scripts/`.
 Read `docs/architecture.md` before changing request flow.
 Preserve source-host validation, resource limits, deadlines, and deduplication.

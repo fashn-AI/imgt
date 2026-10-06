@@ -8,3 +8,5 @@ dist/
 .dev.vars*
 .env*
 !.env.example
+
+container/rust/target/

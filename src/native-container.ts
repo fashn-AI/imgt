@@ -167,13 +167,15 @@ export class NativeContainerTransport {
             JSON.stringify({
               event: "native_container_start",
               imageDigest:
-                this.container.images.sharp.match(/sha256:[a-f0-9]{64}/)?.[0],
+                this.container.images.transformer.match(
+                  /sha256:[a-f0-9]{64}/,
+                )?.[0],
               resources: CONTAINER_RESOURCES,
               bootId: this.#bootId,
             }),
           );
           this.container.start({
-            image: this.container.images.sharp,
+            image: this.container.images.transformer,
             instance: CONTAINER_RESOURCES,
             enableInternet: false,
             env: this.options.env,
