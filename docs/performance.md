@@ -205,6 +205,92 @@ failures and billed usage before replacing the production container.
 The HTTP prototype and raw measurements remain outside the normal checkout in
 the research workspace. No production code, allocation or deployment changed.
 
+## Smaller available container sizes, October 2026
+
+A follow-up local screen used CPU and memory quotas matching available
+Cloudflare sizes: two custom 2-CPU/6-GiB containers, two custom 1-CPU/3-GiB
+containers, two basic containers (0.25 CPU/1 GiB each), and four basic containers.
+Both Sharp and the final Rust HTTP revision were tested with two shards; the
+four-basic profile used Rust. Two encoders per shard were used for the 2-CPU
+control and one for the smaller sizes. Each shard still admitted eight active
+jobs, with the existing bounded Worker queue and 60-second deadline unchanged.
+Disk capacity did not affect the workload and was modeled only for pricing.
+
+[Cloudflare's instance constraints](https://developers.cloudflare.com/containers/platform/limits/)
+require at least 3 GiB per CPU for custom instances. Lower CPU fractions require
+predefined sizes. This screen therefore tests deployable allocations, rather
+than assuming a 2-CPU container can be reduced to 1 GiB because its RSS fits.
+The standard-1 preset has 0.5 CPU and 4 GiB, offering less CPU and more RAM than
+the evaluated custom 1-CPU/3-GiB size. Lite's 0.0625 CPU and 256 MiB were not
+tested; that CPU capacity is below the measured work required for this load.
+
+Each engine/profile completed two 100-image bursts, at width 640/quality 98 and
+width 1024/quality 77; two 60-second runs of 180 fresh images at 3/second using
+the same output settings; and a 30-second run of 180 fresh images at 6/second,
+width 640/quality 98. There were 5,180 successful fresh responses across seven
+engine/profile combinations. All successful output hashes matched the Sharp
+control. R2 readbacks avoided additional transforms, and 50 callers shared one
+transform in every engine/profile. No memory-limit or OOM events were recorded.
+The origin replay, Worker modules and delayed R2 double were the same as the
+HTTP qualification above. Runs were sequential without a concurrent build.
+These are single local screens, not native AMD64 or Cloudflare measurements.
+
+The table uses the more expensive 1024-pixel workload for the 3/second and burst
+columns. Smaller 640-pixel outputs also passed. At 3/second the 1-CPU setup's p95
+was 200 ms for Sharp and 206 ms for Rust at width 640, versus 202 ms and 198 ms
+respectively for the baseline. At 6/second its p95 was 194 ms and 193 ms,
+versus 190 ms and 192 ms for the baseline. The lower sustained rate corresponds
+to roughly the busiest reported 15-minute average; it does not reveal the
+instantaneous traffic spikes inside that interval.
+
+| Allocation | Engine | Total provisioned RAM | 3 fresh images/s p95 | 100-image burst p95 | Monthly memory + disk at 720 awake hours/shard |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Two × 2 CPU / 6 GiB | Sharp | 12 GiB | 253 ms | 4.13 s | $78.49 |
+| Two × 2 CPU / 6 GiB | Rust | 12 GiB | 264 ms | 4.03 s | $78.49 |
+| Two × 1 CPU / 3 GiB | Sharp | 6 GiB | 260 ms | 7.78 s | $39.61 |
+| Two × 1 CPU / 3 GiB | Rust | 6 GiB | 268 ms | 7.71 s | $39.61 |
+| Two × basic: 0.25 CPU / 1 GiB | Sharp | 2 GiB | 10.32 s | 38.56 s | $14.41 |
+| Two × basic: 0.25 CPU / 1 GiB | Rust | 2 GiB | 8.11 s | 33.74 s | $14.41 |
+| Four × basic: 0.25 CPU / 1 GiB | Rust | 4 GiB | 2.07 s | 18.72 s | $28.82 |
+
+Two basic containers accumulated substantial queues: the 6/second run took
+57 seconds to finish for Sharp and 50 seconds for Rust, despite arrivals ending
+after 30 seconds. Successful completion of this finite run does not establish
+sustainable throughput. Four basic containers improve throughput but retain
+substantially higher per-request latency. Increasing shard count also changes
+other service charges, which the memory/disk column does not include.
+
+An additional resource check sent eight simultaneous padded 25-MiB uploads to
+one shard, including a synthetic uniform 50-megapixel RGBA PNG requested at
+width 3840/quality 98, alongside seven gallery images. All 48 responses across
+two engines and three sizes succeeded and matched the control, with healthy
+containers and no OOM events. On the 1-CPU/3-GiB allocation, peak cgroup memory
+was 984 MiB for Sharp and 901 MiB for Rust. The large image took 4.11 and 4.29
+seconds respectively, versus 3.69 and 3.58 seconds on the baseline. Basic took
+20.30 and 23.34 seconds. This checks the evaluated synthetic input, not the
+maximum CPU or memory demands of every permitted 50-megapixel image.
+
+Costs use [Cloudflare's published rates](https://developers.cloudflare.com/containers/platform/pricing/):
+$0.0000025/GiB-second for provisioned memory and $0.00000007/GB-second for
+provisioned disk. Custom sizes use 2 GB disk per shard and basic uses 4 GB.
+The table assumes every shard remains awake for 720 hours, before included
+usage; CPU, Workers, Durable Objects, R2, logs, egress, the plan fee and taxes
+are additional. These are allocation costs, not total service bills. Sleeping
+reduces billed time. Lower CPU allocation does not halve active CPU charges
+when the same number of CPU seconds is needed to encode the images.
+
+**Local recommendation:** two custom 1-CPU/3-GiB containers with one encoder
+per shard are the best candidate for a workload around 3 fresh images/second.
+They retain comparable latency at that rate and in the 6/second screen while
+halving provisioned RAM. Both engines qualify in this screen, so downsizing
+can be evaluated separately from the Rust migration. Large simultaneous bursts
+still take about twice as long; this is not equivalent peak capacity. Keep the
+current production allocation until a native AMD64 and isolated Cloudflare
+confirmation checks origin latency, cold starts, queues and actual billed usage.
+
+Raw measurements and the allocation harness remain in the research workspace.
+No production configuration or deployment changed.
+
 ## Measure your deployment
 
 Use `npm run smoke -- YOUR_ENDPOINT YOUR_SOURCE_URL --fresh` for a fresh
