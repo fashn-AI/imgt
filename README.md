@@ -56,6 +56,15 @@ GitHub integration. Docker is only needed for local development or CLI deploys.
 Each deploy runs typecheck and tests before uploading the Worker.
 `keep_vars: true` preserves dashboard variables across code deployments.
 
+Durable Object deployment configuration lives in `wrangler.jsonc`'s `exports`
+map, including the retired class and the native Container attachment. Existing
+Workers that use legacy `migrations` can keep that flow until they move to
+Durable Object `exports`; Cloudflare does not support switching back afterward.
+If a rebuild reports missing provisioned classes, align this configuration with
+the Worker's deployed lifecycle declarations before retrying. A documentation-only
+push reruns deployment but cannot fix that mismatch. See
+[native image updates](docs/deployment.md#native-image-updates).
+
 For multiple deployments in one account, choose distinct Worker, container and
 bucket names and a separate rate-limit namespace ID. See [deployment names](docs/deployment.md#deployment-names).
 
