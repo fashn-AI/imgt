@@ -173,9 +173,13 @@ IDs and the renderer handshake to prevent old encoder output from being stored
 under the new cache keys. Review the version whenever output pixels or encoding
 defaults change.
 
-Keep the existing `v1` and `v2-native-container` migration history and namespace
-names. The retired `ImgtImageTransformer` export returns `410` and preserves
-its historical namespace without a production binding or Container entry.
+Keep both existing namespace names declared as SQLite Durable Objects in
+`wrangler.jsonc`'s `exports` map. The native class explicitly attaches
+`container: "imgt-transformer"`. These declarative lifecycle entries replace the
+old `v1` and `v2-native-container` migrations; Wrangler rejects combining the two
+formats. Declaring the existing classes preserves their namespaces. The retired
+`ImgtImageTransformer` export returns `410` and preserves its historical namespace
+without a production binding or Container entry.
 Removing an entry from this file does not delete an existing Cloudflare Container
 application; retire the unused application separately without deleting namespace
 data. Changing an existing application's scheduling policy is unsupported. See
@@ -235,6 +239,7 @@ during temporary background refresh failures.
 | Source host is not allowed                   | Add the original image's host to the dashboard `ALLOWED_HOSTS` Text variable and select Deploy; see [source host rules](configuration.md#allowed-source-hosts). |
 | Health succeeds but images fail after deploy | Check Workers Builds and container readiness logs; an existing native container uses the new image on its next start.                                           |
 | Images return 503 after changing dashboard variables | Run a production GitHub build to restore native Container image metadata; dashboard variable deployments can omit it. |
+| Deployment fails with `provisioned_class_missing_from_config` | Declare every existing Durable Object class in `exports`, including the retired class, and retain the native Container attachment. |
 | Smoke test has no `EDGE` hit                 | The source must permit caching. Check its cache headers and the Worker cache configuration.                                                                     |
 | Source returns 403/404/410                   | The source must be publicly accessible. imgt does not forward client credentials.                                                                               |
 | HTTP 429                                     | The IP rate limiter or shard admission limit was reached; honor `Retry-After`.                                                                                  |

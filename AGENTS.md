@@ -24,3 +24,8 @@ output or encoding defaults so incompatible results cannot share cache entries.
 Deployment uses Cloudflare's GitHub integration. A push to the production branch
 deploys automatically and runs `npm run check` before upload. Verify a finished
 deployment with `npm run smoke -- YOUR_ENDPOINT YOUR_SOURCE_URL`.
+
+Declare Durable Object lifecycle in `wrangler.jsonc`'s `exports` map, including
+the retired `ImgtImageTransformer` namespace. Do not combine these declarations
+with `migrations`, delete either namespace, or omit the native class's
+`container: "imgt-transformer"` attachment.

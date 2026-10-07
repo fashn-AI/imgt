@@ -20,6 +20,15 @@
     "ImgtImageCache": {
       "type": "worker",
       "cache": { "enabled": true }
+    },
+    "ImgtImageTransformer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "ImgtNativeImageTransformer": {
+      "type": "durable-object",
+      "storage": "sqlite",
+      "container": "imgt-transformer"
     }
   },
   "observability": {
@@ -56,16 +65,6 @@
       }
     ]
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["ImgtImageTransformer"]
-    },
-    {
-      "tag": "v2-native-container",
-      "new_sqlite_classes": ["ImgtNativeImageTransformer"]
-    }
-  ],
   "r2_buckets": [
     {
       "binding": "DERIVATIVES",

@@ -56,6 +56,10 @@ GitHub integration. Docker is only needed for local development or CLI deploys.
 Each deploy runs typecheck and tests before uploading the Worker.
 `keep_vars: true` preserves dashboard variables across code deployments.
 
+Cloudflare runs `npx wrangler deploy` on pushes to `main`. The repository's
+`wrangler.jsonc` declares both Durable Object namespaces and the native Container
+attachment; no custom dashboard deployment command is needed.
+
 For multiple deployments in one account, choose distinct Worker, container and
 bucket names and a separate rate-limit namespace ID. See [deployment names](docs/deployment.md#deployment-names).
 
