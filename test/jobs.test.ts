@@ -7,7 +7,11 @@ import {
   SingleFlight,
   fetchResizeJob,
 } from "../src/jobs";
-import { CONTAINER_RUNTIME_VERSION, DERIVATIVE_PREFIX } from "../src/constants";
+import {
+  CONTAINER_RUNTIME_VERSION,
+  DERIVATIVE_PREFIX,
+  MAX_SOURCE_BYTES,
+} from "../src/constants";
 import { RENDERER_VERSION } from "../container/renderer";
 import { derivativeKey } from "../src/options";
 
@@ -88,7 +92,7 @@ test("internal jobs accept arbitrary bounded widths and reject invalid JSON widt
 test("routes a derivative key to a stable container shard", () => {
   const key = "derivatives/v1/abcdef.webp";
   assert.equal(containerNameForKey(key, 4), containerNameForKey(key, 4));
-  const prefix = `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}`;
+  const prefix = `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}-${MAX_SOURCE_BYTES}`;
   assert.match(containerNameForKey(key, 4), new RegExp(`^${prefix}-[0-3]$`));
 
   const shards = new Set(

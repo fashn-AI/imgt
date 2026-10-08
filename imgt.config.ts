@@ -4,6 +4,7 @@ export interface ImgtConfig {
   transforms: {
     defaultQuality: number;
     webpEffort: WebpEffort;
+    maxSourceBytes: number;
   };
   containers: {
     shards: number;
@@ -22,6 +23,8 @@ export const config = {
     // Bump the renderer version when changing effort so running containers and
     // the new cache keys cannot use different encoder settings.
     webpEffort: 4,
+    // Original-file limit, shared by the Worker and container (100 MiB).
+    maxSourceBytes: 100 * 1024 * 1024,
   },
   containers: {
     // Routing count. Up to eight configured shards; see docs/performance.md.

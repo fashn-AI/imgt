@@ -5,6 +5,7 @@ const run = promisify(execFile);
 import test from "node:test";
 import http from "node:http";
 import sharp from "sharp";
+import { config } from "../imgt.config.ts";
 let serial = 0;
 const docker = (...args) =>
   execFileSync("docker", args, { encoding: "utf8" }).trim();
@@ -44,6 +45,7 @@ async function start(engine, env = {}) {
   for (const [k, v] of Object.entries({
     TRANSFORM_CONCURRENCY: 2,
     MAX_IN_FLIGHT: 8,
+    MAX_INPUT_BYTES: config.transforms.maxSourceBytes,
     TRANSFORM_TIMEOUT_MS: 3000,
     ...env,
   }))
@@ -158,6 +160,46 @@ const tests = [
       x.request.write(Buffer.alloc(9));
       x.request.end();
       assert.equal(await x.response, 413);
+    },
+  ],
+  [
+    "large originals and the configured byte boundary",
+    { TRANSFORM_TIMEOUT_MS: 60000 },
+    async (s) => {
+      const original = await sharp(pixels, {
+        raw: { width: 3000, height: 3000, channels: 3 },
+      })
+        .png({ compressionLevel: 0 })
+        .toBuffer();
+      assert.ok(original.length > 25 * 1024 * 1024);
+      const resized = await s.post(original, Date.now() + 60000, "w=640&q=98");
+      assert.equal(resized.status, 200);
+      assert.equal(
+        (await sharp(Buffer.from(await resized.arrayBuffer())).metadata())
+          .width,
+        640,
+      );
+
+      // Valid PNG padded to the configured limit: both upload modes accept
+      // the boundary, and the streamed byte check rejects one extra byte.
+      const boundary = Buffer.alloc(config.transforms.maxSourceBytes);
+      input.copy(boundary);
+      const declared = await s.post(boundary, Date.now() + 60000);
+      assert.equal(declared.status, 200);
+      await declared.arrayBuffer();
+      const chunked = stream(s, Date.now() + 60000);
+      chunked.request.end(boundary);
+      assert.equal(await chunked.response, 200);
+      const oversized = stream(s, Date.now() + 60000);
+      await new Promise((resolve, reject) =>
+        oversized.request.write(boundary, (error) =>
+          error ? reject(error) : resolve(),
+        ),
+      );
+      oversized.request.end(Buffer.from([0]));
+      assert.equal(await oversized.response, 413);
+      await until(async () => (await s.health()).inFlight === 0, 3000);
+      assert.equal((await s.post()).status, 200);
     },
   ],
   [

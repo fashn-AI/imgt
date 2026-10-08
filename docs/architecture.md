@@ -71,11 +71,14 @@ source, parameters, and key before calling the coordinator directly. Every
 origin redirect is checked against the same `ALLOWED_HOSTS` allowlist.
 
 Sources must use HTTPS without credentials or a custom port. Inputs are JPEG,
-PNG, WebP, or AVIF, limited to 25 MiB and 50 megapixels. Width accepts any integer
+PNG, WebP, or AVIF, limited to 100 MiB by default and 50 megapixels. Width accepts any integer
 from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to
 77. Each width and quality combination has a separate cache entry. Output
 preserves orientation and aspect ratio, never enlarges a small source, and uses
-WebP.
+WebP. `transforms.maxSourceBytes` in `imgt.config.ts` configures the original-file
+byte limit. Declared oversized sources are rejected before upload; the Rust
+service also enforces the limit on actual bytes, including chunked uploads.
+Oversized inputs return `413` without being cached.
 
 The configured deterministic shards each accept up to 128 distinct jobs. At most eight
 jobs per shard download sources, start the container, upload, or encode at once;
@@ -150,7 +153,9 @@ Pending I/O, `waitUntil()` work, and monitoring can prevent eviction for up to
 our shorter container idle timeout independently of object eviction.
 
 Renderer versions isolate R2 keys, edge keys, and shard IDs. A separate runtime
-version rotates shard IDs when container settings change, keeping compatible
+version rotates shard IDs when container settings change. The configured source
+byte limit is also included in shard IDs, so its changes automatically replace
+containers that retain the previous startup environment, keeping compatible
 derivatives in R2. The Worker checks
 the container's renderer header before persisting bytes during rollout. Review
 `RENDERER_VERSION` whenever pixels or encoding defaults change, including WebP

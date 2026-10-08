@@ -3,7 +3,7 @@ import { registerHooks } from "node:module";
 import test from "node:test";
 import { RENDERER_VERSION } from "../container/renderer";
 import { config } from "../imgt.config";
-import { DERIVATIVE_PREFIX } from "../src/constants";
+import { DERIVATIVE_PREFIX, MAX_SOURCE_BYTES } from "../src/constants";
 import { containerNameForKey, jobRequest } from "../src/jobs";
 import { derivativeKey, parseImageOptions } from "../src/options";
 import { DerivativeStore } from "../src/store";
@@ -76,7 +76,8 @@ test("a cold stale refresh defers idle alarms while active and schedules shutdow
       return running;
     },
     images: { transformer: "registry.cloudflare.com/test/sharp@sha256:fixed" },
-    start() {
+    start(options?: ContainerStartupOptions) {
+      assert.equal(options?.env?.MAX_INPUT_BYTES, String(MAX_SOURCE_BYTES));
       starts += 1;
       running = true;
     },

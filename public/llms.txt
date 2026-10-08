@@ -23,7 +23,9 @@ The frontend belongs here only if it serves originals. Exact entries allow
 only that host; `*.example.com` allows subdomains but excludes `example.com`.
 An empty list denies all sources; every redirect is checked against the list.
 Sources must be public HTTPS URLs. Inputs: JPEG, PNG, WebP or AVIF, up to
-25 MiB and 50 megapixels. Small images are not enlarged.
+100 MiB by default and 50 megapixels. Configure the original-file limit with
+`transforms.maxSourceBytes` in `imgt.config.ts`. Limit changes automatically start
+new containers while keeping compatible derivatives. Small images are not enlarged.
 
 For Next.js, use the TypeScript custom loader in the guide below. Set
 `images.qualities` to the values your components use; the custom loader forwards

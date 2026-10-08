@@ -1,5 +1,9 @@
 import { RENDERER_VERSION } from "../container/renderer";
-import { CONTAINER_RUNTIME_VERSION, DERIVATIVE_PREFIX } from "./constants";
+import {
+  CONTAINER_RUNTIME_VERSION,
+  DERIVATIVE_PREFIX,
+  MAX_SOURCE_BYTES,
+} from "./constants";
 import {
   derivativeKey,
   normalizeSourceUrl,
@@ -103,9 +107,10 @@ export class SingleFlight<T> {
   }
 }
 
-// Rotate containers when renderer or runtime settings change; reuse compatible R2 images.
+// Rotate on input-limit changes too: running containers retain their startup env.
+// Compatible R2 images keep their existing keys.
 export function containerNameForShard(shard: number): string {
-  return `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}-${shard}`;
+  return `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}-${MAX_SOURCE_BYTES}-${shard}`;
 }
 
 export function containerNameForKey(key: string, shardCount: number): string {

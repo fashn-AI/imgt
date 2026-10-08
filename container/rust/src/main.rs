@@ -204,7 +204,7 @@ async fn run() {
         queued: Arc::new(AtomicUsize::new(0)),
         active: Arc::new(AtomicUsize::new(0)),
         max_inflight,
-        max_bytes: setting("MAX_INPUT_BYTES", 25 * 1024 * 1024),
+        max_bytes: setting("MAX_INPUT_BYTES", 100 * 1024 * 1024),
         timeout_ms,
         effort: effort as i32,
     });

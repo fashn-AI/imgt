@@ -179,6 +179,51 @@ test("rejects oversized and unsupported responses before invoking the encoder", 
   }
 });
 
+test("accepts declared inputs above the former limit through the configured boundary", async () => {
+  for (const bytes of [25 * 1024 * 1024 + 1, MAX_SOURCE_BYTES]) {
+    const result = await fetchSource(
+      source,
+      new AbortController().signal,
+      ["images.unsplash.com"],
+      async () =>
+        new Response("image", {
+          headers: {
+            "content-type": "image/png",
+            "content-length": String(bytes),
+          },
+        }),
+    );
+    await result.body?.cancel();
+  }
+});
+
+test("an oversized declared source returns 413 and cancels its body", async () => {
+  let canceled = false;
+  await assert.rejects(
+    fetchSource(
+      source,
+      new AbortController().signal,
+      ["images.unsplash.com"],
+      async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              canceled = true;
+            },
+          }),
+          {
+            headers: {
+              "content-type": "image/png",
+              "content-length": String(MAX_SOURCE_BYTES + 1),
+            },
+          },
+        ),
+    ),
+    (cause) => cause instanceof ImageError && cause.status === 413,
+  );
+  assert.equal(canceled, true);
+});
+
 for (const status of [500, 502, 503, 504, "network"] as const) {
   test(`retries a temporary source ${status} once before returning the body`, async () => {
     let calls = 0;

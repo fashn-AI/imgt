@@ -518,6 +518,12 @@ export default function Page() {
             or ports. An empty list denies every source. Images must be public
             HTTPS URLs; every redirect must also lead to an allowed host.
           </p>
+          <p>
+            Originals can be up to 100 MiB and 50 megapixels. Change the file
+            limit with <code>transforms.maxSourceBytes</code> in
+            <code>imgt.config.ts</code>. It applies before resizing, including
+            when you request a small thumbnail.
+          </p>
         </aside>
         <div class="guide-links">
           <a href="/docs/configuration.md"

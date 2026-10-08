@@ -172,8 +172,20 @@ export async function fetchSource(
       );
       if (maxAge === null)
         throw new ImageError("source image does not allow public caching", 403);
-      if (Number(response.headers.get("content-length")) > MAX_SOURCE_BYTES)
-        throw new ImageError("source image is too large", 413);
+      const sourceBytes = Number(response.headers.get("content-length"));
+      if (sourceBytes > MAX_SOURCE_BYTES) {
+        console.warn(
+          JSON.stringify({
+            event: "source_too_large",
+            sourceBytes,
+            maxSourceBytes: MAX_SOURCE_BYTES,
+          }),
+        );
+        throw new ImageError(
+          `source image exceeds the ${MAX_SOURCE_BYTES}-byte limit`,
+          413,
+        );
+      }
       const type = response.headers
         .get("content-type")
         ?.split(";", 1)[0]

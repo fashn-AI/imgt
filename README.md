@@ -87,7 +87,9 @@ Each width and quality combination has its own cached derivative.
 
 Output is WebP, with orientation corrected and aspect ratio preserved. Small
 sources are not enlarged. Supported inputs: JPEG, PNG, WebP, and AVIF, up to
-25 MiB and 50 megapixels. Animated images are not preserved as animations.
+100 MiB by default and 50 megapixels. Set `transforms.maxSourceBytes` in
+`imgt.config.ts` to change the source-file limit. Animated images are not
+preserved as animations.
 
 `ALLOWED_HOSTS` contains the original image's host. Include your frontend domain
 if it serves the originals.

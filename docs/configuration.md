@@ -8,7 +8,7 @@ settings in your repository.
 | Cloudflare dashboard    | Production `ALLOWED_HOSTS` text variable and R2 lifecycle cleanup rule.            |
 | `.env`                  | Local source hosts; copy `.env.example` to get started.                           |
 | `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`. |
-| `imgt.config.ts`        | Encoding defaults, shard count, idle time and cache lifetimes.                   |
+| `imgt.config.ts`        | Encoding defaults, source-file size limit, shard count, idle time and cache lifetimes.                   |
 | `src/` and `container/` | Fixed resource and safety limits; these are implementation constraints.           |
 
 ## Allowed source hosts
@@ -85,8 +85,9 @@ Edit `imgt.config.ts` to change these settings:
 | Setting                     | Default                                                                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `transforms.defaultQuality` | 77; must be an integer from 1 to 100.                                                                         |
+| `transforms.maxSourceBytes` | 104,857,600 bytes (100 MiB); must be a positive safe integer. |
 | `transforms.webpEffort`     | 4; accepted range 0–6.                                                                                        |
-| `containers.shards`         | 2; supported range 1–8.                                                                                       |
+| `containers.shards`         | 4; supported range 1–8.                                                                                       |
 | `containers.idleTimeoutMs`  | 120,000 milliseconds (2 minutes); compute stops after foreground requests and background refreshes finish and the idle interval passes. |
 | `cache.minFreshSeconds`     | 14,400 seconds (4 hours).                                                                                     |
 | `cache.maxStaleSeconds`     | 86,400 seconds (24 hours).                                                                                    |
@@ -107,22 +108,45 @@ encoding defaults change. Changing WebP effort requires a version bump so
 running containers cannot write old encoder output under new keys. Changing
 shards alters routing during rollout; see [capacity and rollout](deployment.md#capacity).
 
+## Source image size
+
+`transforms.maxSourceBytes` limits the original file downloaded from your image
+host, before resizing. A small requested width does not reduce that input size.
+To change the limit, edit `imgt.config.ts` and push through your GitHub deployment:
+
+```ts
+maxSourceBytes: 100 * 1024 * 1024, // 100 MiB per original image
+```
+
+This is a repository setting, not a dashboard environment variable. The Worker
+checks declared source sizes and the container checks actual uploaded bytes,
+including chunked inputs without `Content-Length`. Exceeding the limit returns
+HTTP `413` with `Cache-Control: no-store`; the browser may show a broken image.
+Declared-size rejections log `source_too_large` with the source and configured
+byte counts, without logging the source URL.
+
+Changing this setting automatically routes misses to new containers with the
+updated limit. Existing derivatives retain their cache keys. Up to eight inputs
+per shard may be in memory at once, in addition to decoded pixels and encoder
+memory. Raise the limit only after checking capacity with your largest images.
+The separate 50-megapixel limit and 60-second job deadline still apply.
+
 ## Fixed limits
 
 These limits keep the service bounded; they are not additional deployment knobs:
 
-- JPEG, PNG, WebP and AVIF inputs; WebP output; 25 MiB and 50 megapixels per input.
+- JPEG, PNG, WebP and AVIF inputs; WebP output; 50 megapixels per input.
 - Output width up to 3840 pixels; smaller sources are not enlarged.
 - Three source redirects and a 1,024-character source URL.
 - A 60-second deadline per job attempt for admission, fetch, startup, upload, queueing and encoding.
 - Up to 128 distinct jobs per shard, with eight active downloads/uploads/transforms.
-- Two active native encoders per container; waiting jobs share the 60-second deadline.
+- One active native encoder per container; waiting jobs share the 60-second deadline.
 
 libvips concurrency is fixed at one thread per image.
 Read [request recovery behavior](architecture.md#slow-requests-and-errors) for
 bounded source retries, Durable Object resets and errors.
 
-`CONTAINER_RESOURCES` in `src/native-container.ts` allocates 2 vCPUs, 6 GiB RAM
+`CONTAINER_RESOURCES` in `src/native-container.ts` allocates 1 vCPU, 3 GiB RAM
 and 2,000 MB disk per shard. The smaller `basic` and `lite` profiles did not pass
 the large-image workload; keep this allocation unless you validate a replacement.
 See [performance decisions](performance.md) and [deployment costs](deployment.md#costs).

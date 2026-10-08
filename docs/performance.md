@@ -1174,3 +1174,31 @@ for traffic within the tested workload. Its 20/s capacity is unverified, and
 long response-body waits and historical startup failures remain unresolved.
 More encoders can shorten large fresh bursts, but the measurements do not
 establish that more memory fixes those delivery outliers.
+
+## Configurable source-file limit (October 8, 2026)
+
+Production traffic included HTTP `413` image responses under the former 25-MiB
+input limit. `transforms.maxSourceBytes` now configures the limit in
+`imgt.config.ts`, with a 100-MiB default shared by the Worker and Rust service.
+Limit changes rotate container shard IDs automatically without invalidating
+compatible derivatives. The 50-megapixel limit, eight active inputs per shard,
+one encoder and 60-second deadline remain unchanged.
+
+Local tests used the production allocation: one CPU, 3 GiB RAM, swap disabled.
+The actual gateway, coordinator and streaming HTTP path sent eight distinct
+100-MiB inputs together to one Rust container at width 3840 and quality 98.
+Valid PNGs were padded to the byte limit; storage and the origin were simulated.
+
+| Synthetic workload | Completed | Peak container memory | Slowest response |
+| --- | --- | --- | --- |
+| One 50-MP RGBA source plus seven 1280×1920 sources | 8/8 | 2,109 MiB | 7.48 s |
+| Eight 50-MP RGBA sources | 8/8 | 2,422 MiB | 14.27 s |
+
+Every output decoded successfully, and neither container was OOM-killed.
+The Rust regression suite also resized a real uncompressed PNG above 25 MiB,
+accepted declared and chunked uploads exactly at 100 MiB, rejected an extra
+streamed byte, and processed the next valid request. Existing cancellation,
+deadline, pixel-limit, format and output-comparison checks passed.
+These bounded local checks support the new default on the current allocation;
+they are not a guarantee for arbitrary images, smaller containers or live
+network latency. Large originals still cost more to download and decode.
