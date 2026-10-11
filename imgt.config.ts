@@ -28,7 +28,7 @@ export const config = {
   },
   containers: {
     // Routing count. Up to eight configured shards; see docs/performance.md.
-    shards: 4,
+    shards: 1,
     idleTimeoutMs: 120_000,
   },
   cache: {
