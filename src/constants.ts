@@ -2,10 +2,10 @@
 import { RENDERER_VERSION } from "../container/renderer";
 import { config } from "../imgt.config";
 export const DERIVATIVE_PREFIX = `derivatives/${RENDERER_VERSION}`;
-export const MAX_DISTINCT_JOBS_PER_SHARD = 256;
+export const MAX_DISTINCT_JOBS_PER_SHARD = 128;
 export const MAX_ACTIVE_JOBS_PER_SHARD = 8;
 // Runtime and allocation changes need fresh containers, retaining cached images.
-export const CONTAINER_RUNTIME_VERSION = "v18";
+export const CONTAINER_RUNTIME_VERSION = "v16";
 export const MAX_SOURCE_BYTES = config.transforms.maxSourceBytes;
 if (!Number.isSafeInteger(MAX_SOURCE_BYTES) || MAX_SOURCE_BYTES < 1)
   throw new Error("transforms.maxSourceBytes must be a positive safe integer");
