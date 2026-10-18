@@ -160,6 +160,12 @@ const tests = [
       x.request.write(Buffer.alloc(9));
       x.request.end();
       assert.equal(await x.response, 413);
+      const partial = stream(s, Date.now() + 3000);
+      partial.request.write(Buffer.alloc(4));
+      await until(async () => (await s.health()).uploading === 1);
+      partial.request.end(Buffer.alloc(5));
+      assert.equal(await partial.response, 413);
+      await until(async () => (await s.health()).inFlight === 0);
     },
   ],
   [
