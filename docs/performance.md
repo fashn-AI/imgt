@@ -4,6 +4,129 @@ imgt uses Rust/libvips with four container shards, each allocated 1 vCPU, 3 GiB 
 and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so cache hits do not
 start a container.
 
+## Local engine and upload experiments, October 18, 2026
+
+These experiments stayed local. Production resources and deployment configuration
+were unchanged. One CPU, rather than allocated RAM, limits encoding throughput
+for ordinary gallery images.
+
+### Replacing the image engine
+
+Each row used the same 50 original PNGs, 200 fresh transforms per column, four
+HTTP callers, one encoder, one ARM64 Docker CPU and three GiB without swap.
+Reference generation and output validation ran outside timed phases. These are
+single screening runs, not repeatability estimates or Cloudflare measurements.
+The gallery corpus is opaque RGB8/sRGB PNG without ICC or EXIF; it does not
+represent every production format or content type.
+
+| Engine or upload strategy | 256px / quality 85 | 384px / quality 75 | 640px / quality 98 |
+| --- | ---: | ---: | ---: |
+| Existing Rust/libvips | 13.70/s | 11.76/s | 8.35/s |
+| Same engine, contiguous upload buffer | 13.72/s | 11.77/s | 8.42/s |
+| Same engine, disk-spooled uploads | 13.05/s | 11.25/s | 8.14/s |
+| Zune PNG decoder, existing libvips resize/WebP | 13.30/s | 11.53/s | 8.67/s |
+| Rust PNG + SIMD Lanczos3 + direct libwebp | 9.57/s | 8.58/s | 5.71/s |
+| Same SIMD engine, nearest prepass | 20.36/s | 14.12/s | 6.79/s |
+| Same SIMD engine, Box prefilter | 14.02/s | 10.05/s | 5.72/s |
+
+The upload and Zune candidates preserved reference bytes in all 600 timed
+responses each. Zune's small, mixed result did not justify adding a separate
+PNG path. The SIMD engines removed libvips, used libwebp 1.6.0 at effort 4,
+and passed decode/dimension checks, but changed image pixels and supported fewer
+formats and metadata cases. They are not drop-in replacements.
+
+Each SIMD variant also received a separate 150-image quality screen. The fast
+nearest prepass reduced pooled RGB PSNR against the common resize reference from
+39.91 to 38.01 dB at 256px, and from 45.24 to 43.21 dB at 640px. Mean output size
+ratios increased by 4.3% and 2.8%. This reference uses the current Sharp Lanczos3
+resize, so it favors that sampling algorithm; the scores are not a perceptual
+quality verdict. Matching crops were inspected separately. The Box prefilter
+avoided nearest sampling but did not establish a useful throughput advantage.
+
+A profiler materialized resized pixels before WebP encoding. At 256px, mean
+decode/resize/color work took 63.6 ms and WebP took 9.4 ms. At 640px/quality 98,
+those stages took 53.9 and 65.8 ms. All 600 profiler outputs matched reference
+bytes and throughput stayed close to baseline. The original native encoding
+timer includes lazy decoding and resizing, not just compression. Changing the
+HTTP wrapper language alone does not remove this native work.
+
+### Removing retained upload copies
+
+The useful local change keeps the existing engine. Previously, collecting body
+frames and combining them into contiguous bytes could temporarily retain both
+copies, followed by allocator retention. The new collector reserves one bounded
+vector, copies and releases each frame, then transfers ownership to `Bytes`.
+There are no new dependencies, files or encoding changes. Configurable limits,
+admission, deadlines and cancellation remain intact.
+
+The maximum-input fixture sends eight simultaneous 100-MiB originals, each a
+valid solid-color 50-MP RGBA PNG padded after IEND. Outputs use 3840px/quality 98
+and must match Sharp hashes and decoded dimensions.
+
+| Local allocation and implementation | Result | Peak charged memory | Last response |
+| --- | --- | ---: | ---: |
+| 1 CPU / 3 GiB, original collector | 8/8 correct | 2,456 MiB | 14.19 s |
+| 0.5 CPU / 1.5 GiB, original collector | OOM-killed, exit 137 | unavailable after kill | failed |
+| 0.5 CPU / 1.5 GiB, contiguous prototype | 8/8 correct | 1,035 MiB | 24.73 s |
+| 1 CPU / 1.5 GiB, final local collector | 8/8 correct | 1,035 MiB | 13.70 s |
+| 0.5 CPU / 1.5 GiB, disk-spooled prototype | 8/8 correct | 1,059 MiB | 25.36 s |
+
+The final collector reduced peak charged memory by about 58% in this fixture.
+Ordinary-corpus screening peaked at 136 MiB, compared with 175 MiB for baseline.
+Disk spooling offered no memory advantage here and added I/O and dependencies;
+its charged memory included 800 MiB of filesystem cache.
+
+A separate run admitted sixteen of the same maximum-size inputs on one CPU and
+three GiB, still with one encoder. All sixteen outputs matched, peak charged
+memory was 1,850 MiB, and the last response completed in 27.24 seconds. This is
+an upload/admission stress result, not sixteen encoders or a changed default.
+
+Reservation is an allocator operation, not a portable promise of free physical
+memory. Small inputs retain maximum vector capacity until processing finishes.
+Allocation failures return 503, but later kernel OOM cannot be caught this way.
+The measured Linux/jemalloc behavior and synthetic fixture do not establish a
+universal bound for all codecs, content, output sizes or larger configurations.
+
+The final local image passed four pipeline and fifteen native Docker regression
+checks, including exact source-size boundaries, incremental chunked overflow,
+upload recovery, deadlines, cancellation, shutdown, formats, color and alpha.
+Formatting, typechecking and all 145 tests passed. Raw images, prototypes,
+scripts and results remain outside the checkout.
+
+### Worker/WebAssembly alternative
+
+A separate jSquash prototype ran PNG decoding, Lanczos3 resizing and WebP encoding
+inside local workerd, without a container image service. It accepted only plain
+RGB8 PNGs up to eight MiB and 4,194,304 pixels. Unsupported inputs returned an
+explicit container-required rejection; a fallback service was not implemented.
+
+The paired comparison used the same 46 eligible originals plus four documented
+repeats for both engines, with 200 transforms per column and four callers under
+the same one-CPU/three-GiB Docker quota. This cohort differs from the table above.
+
+| Matched eligible cohort | 256px / quality 85 | 640px / quality 98 |
+| --- | ---: | ---: |
+| Native Rust/libvips | 15.01/s | 8.83/s |
+| Worker/jSquash | 9.12/s | 5.40/s |
+
+All 400 Wasm responses decoded to the expected dimensions; none matched reference
+bytes. Different codecs and sampling require separate fidelity qualification.
+The local cgroup includes Miniflare/Node transport overhead, so these timings
+are not production Workers CPU billing or performance measurements.
+
+The three persistent Wasm linear memories grew to 132.8 MiB together, before
+JavaScript and request buffers. This prototype therefore does not fit the
+[documented Workers memory budget](https://developers.cloudflare.com/workers/platform/limits/#memory).
+Its successful Docker run does not qualify a production Worker. No dual-engine
+request path was added to imgt.
+
+The retained local improvement is the upload collector. Production still uses
+four one-CPU/three-GiB shards and eight active inputs per shard. Cloudflare
+[custom instance limits](https://developers.cloudflare.com/containers/platform/limits/)
+currently require at least three GiB per CPU, so the Docker 1.5-GiB result creates
+headroom rather than proving an available cheaper one-CPU Cloudflare allocation.
+No production downsize or deployment was performed during these experiments.
+
 ## Current decisions
 
 - **Rust/libvips runtime:** identical native library and codec versions retain

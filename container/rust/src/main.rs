@@ -1,13 +1,14 @@
 mod native;
 const RENDERER_VERSION: &str = env!("IMGT_RENDERER_VERSION");
 use axum::{
-    body::{to_bytes, Body},
+    body::{Body, Bytes},
     extract::{Request, State},
     response::{IntoResponse, Response},
     routing::{get, post},
     serve::ListenerExt,
     Router,
 };
+use http_body_util::BodyExt;
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -74,6 +75,29 @@ fn error(status: u16, message: impl Into<String>) -> Response {
 async fn health(State(s): State<Arc<App>>) -> Response {
     axum::Json(serde_json::json!({"ok":true,"active":s.active.load(Ordering::SeqCst)>0,"queued":s.queued.load(Ordering::SeqCst),"uploading":s.uploading.load(Ordering::SeqCst),"inFlight":s.max_inflight-s.admission.available_permits(),"activeCount":s.active.load(Ordering::SeqCst)})).into_response()
 }
+async fn collect_contiguous(mut body: Body, max_bytes: usize) -> Result<Bytes, (u16, String)> {
+    let mut input = Vec::<u8>::new();
+    // Reserve once, including for chunked uploads, rather than retaining all
+    // frames and allocating another full original when combining them.
+    input
+        .try_reserve_exact(max_bytes)
+        .map_err(|e| (503, format!("input allocation unavailable: {e}")))?;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| (400, e.to_string()))?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        if data.len() > max_bytes - input.len() {
+            return Err((413, "input too large".into()));
+        }
+        input.extend_from_slice(&data);
+        // `data` is released each iteration. No second full original is built.
+    }
+    if input.is_empty() {
+        return Err((400, "empty input".into()));
+    }
+    Ok(Bytes::from(input))
+}
 async fn transform(State(s): State<Arc<App>>, request: Request) -> Response {
     let query: std::collections::HashMap<String, String> =
         match axum::extract::Query::try_from_uri(request.uri()) {
@@ -120,14 +144,10 @@ async fn transform(State(s): State<Arc<App>>, request: Request) -> Response {
     let _cancel = CancelOnDrop(control.clone());
     let upload_start = Instant::now();
     let uploading = Counter::new(s.uploading.clone());
-    let input = match timeout_at(until, to_bytes(request.into_body(), s.max_bytes)).await {
-        Ok(Ok(b)) if !b.is_empty() => b,
-        Ok(Ok(_)) => return error(400, "empty input"),
-        Ok(Err(e)) => {
-            let too_large = std::error::Error::source(&e)
-                .is_some_and(|e| e.is::<http_body_util::LengthLimitError>());
-            return error(if too_large { 413 } else { 400 }, e.to_string());
-        }
+    let input = match timeout_at(until, collect_contiguous(request.into_body(), s.max_bytes)).await
+    {
+        Ok(Ok(input)) => input,
+        Ok(Err((status, message))) => return error(status, message),
         Err(_) => return error(504, "image transformation timed out"),
     };
     drop(uploading);
