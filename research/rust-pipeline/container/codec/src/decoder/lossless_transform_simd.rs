@@ -1,0 +1,1655 @@
+//! SIMD implementations of VP8L inverse transforms.
+//!
+//! SSE2 implementations ported from libwebp's `src/dsp/lossless_sse2.c`, adapted
+//! for our [R, G, B, A] byte layout (libwebp uses ARGB u32, which is [B, G, R, A]
+//! in little-endian bytes).
+//!
+//! Portable implementations use magetypes for cross-platform SIMD (SSE2/NEON/WASM128).
+//!
+//! Uses archmage's `#[rite]` for inner functions (inlined into the single `#[arcane]`
+//! entry point), eliminating per-call target_feature boundary overhead.
+
+use archmage::prelude::*;
+use core::ops::Range;
+use magetypes::simd::generic::{u8x16, u8x32};
+
+#[cfg(target_arch = "x86")]
+use archmage::intrinsics::x86 as simd_mem;
+#[cfg(target_arch = "x86_64")]
+use archmage::intrinsics::x86_64 as simd_mem;
+
+/// Helper: get a mutable reference to a 16-byte array from a slice.
+#[inline(always)]
+fn chunk16(data: &mut [u8], offset: usize) -> &mut [u8; 16] {
+    data[offset..].first_chunk_mut::<16>().unwrap()
+}
+
+/// Helper: get an immutable reference to a 16-byte array from a slice.
+#[inline(always)]
+fn chunk16_ref(data: &[u8], offset: usize) -> &[u8; 16] {
+    data[offset..].first_chunk::<16>().unwrap()
+}
+
+// =============================================================================
+// Subtract-green inverse transform (AddGreenToBlueAndRed)
+// =============================================================================
+
+/// SSE2 subtract-green inverse: adds green channel to red and blue.
+///
+/// Our pixel layout: [R, G, B, A] at byte offsets [0, 1, 2, 3].
+/// For each pixel: R += G, B += G (wrapping byte addition).
+///
+/// Entry point with #[arcane] — called from scalar dispatch code.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+pub(crate) fn add_green_to_blue_and_red_sse2_entry(_token: X64V1Token, image_data: &mut [u8]) {
+    add_green_to_blue_and_red_sse2(_token, image_data);
+}
+
+/// Inner SSE2 subtract-green inverse.
+///
+/// 4 pixels in 16 bytes: R0 G0 B0 A0 | R1 G1 B1 A1 | R2 G2 B2 A2 | R3 G3 B3 A3
+///
+/// As u16 words (little-endian): G0:R0, A0:B0, G1:R1, A1:B1, ...
+///
+/// Strategy matching libwebp's AddGreenToBlueAndRed_SSE2:
+/// 1. Shift right 8 in u16: get green (and alpha) in low bytes
+/// 2. Shuffle to replicate green to both 16-bit halves of each pixel
+/// 3. Add as bytes: R += G, G += 0, B += G, A += 0
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn add_green_to_blue_and_red_sse2(_token: X64V1Token, image_data: &mut [u8]) {
+    let len = image_data.len();
+    let simd_len = len & !15;
+
+    let mut i = 0;
+    while i < simd_len {
+        let chunk = chunk16(image_data, i);
+        let inp = simd_mem::_mm_loadu_si128(chunk);
+
+        // Shift right 8 in u16: [0:G0, 0:A0, 0:G1, 0:A1, ...]
+        let shifted = _mm_srli_epi16(inp, 8);
+
+        // Replicate green to both halves: [0:G0, 0:G0, 0:G1, 0:G1, 0:G2, 0:G2, 0:G3, 0:G3]
+        let b = _mm_shufflelo_epi16(shifted, 0xA0); // _MM_SHUFFLE(2,2,0,0)
+        let c = _mm_shufflehi_epi16(b, 0xA0);
+
+        // R += G, G += 0, B += G, A += 0
+        let out = _mm_add_epi8(inp, c);
+        simd_mem::_mm_storeu_si128(chunk16(image_data, i), out);
+
+        i += 16;
+    }
+
+    // Scalar fallback for remaining pixels
+    for pixel in image_data[simd_len..].as_chunks_mut::<4>().0 {
+        pixel[0] = pixel[0].wrapping_add(pixel[1]);
+        pixel[2] = pixel[2].wrapping_add(pixel[1]);
+    }
+}
+
+// =============================================================================
+// Color transform inverse (TransformColorInverse)
+// =============================================================================
+
+/// SSE2 color transform inverse — entry point.
+///
+/// For each pixel, undoes the cross-color prediction:
+///   R' = R + ColorTransformDelta(green_to_red, G)
+///   B' = B + ColorTransformDelta(green_to_blue, G) + ColorTransformDelta(red_to_blue, R')
+///
+/// where ColorTransformDelta(t, c) = (t * c) >> 5  (signed fixed-point)
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+pub(crate) fn transform_color_inverse_sse2_entry(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    width: usize,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    let block_xsize = super::lossless_transform::block_xsize(width as u16, size_bits);
+
+    for (y, row) in image_data.chunks_exact_mut(width * 4).enumerate() {
+        let row_transform_data_start = (y >> size_bits) * block_xsize * 4;
+        let row_tf_data = &transform_data[row_transform_data_start..];
+
+        for (block, transform) in row
+            .chunks_mut(4 << size_bits)
+            .zip(row_tf_data.as_chunks::<4>().0)
+        {
+            transform_color_inverse_block_sse2(
+                _token,
+                block,
+                transform[2], // green_to_red
+                transform[1], // green_to_blue
+                transform[0], // red_to_blue
+            );
+        }
+    }
+}
+
+/// SSE2 color transform inverse for a single block of pixels.
+///
+/// Our pixel layout: [R, G, B, A] at byte offsets [0, 1, 2, 3].
+/// As u16 words (little-endian): word0 = G:R (G high, R low), word1 = A:B (A high, B low).
+///
+/// The _mm_mulhi_epi16 trick for ColorTransformDelta:
+///   Given signed 8-bit multiplier `t` and signed 8-bit value `c`:
+///     ColorTransformDelta(t, c) = (t * c) >> 5
+///
+///   If we have `c` in the HIGH byte of a u16 word (i.e., c << 8) and
+///   pre-compute `cst = sign_extend(t) << 3`, then:
+///     _mm_mulhi_epi16(c << 8, cst) = ((c << 8) * (t << 3)) >> 16 = (c * t) >> 5
+///
+///   The result lands in the LOW byte of each u16 word — exactly where R and B live.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn transform_color_inverse_block_sse2(
+    _token: X64V1Token,
+    block: &mut [u8],
+    green_to_red: u8,
+    green_to_blue: u8,
+    red_to_blue: u8,
+) {
+    // Pre-compute sign-extended, left-shifted-by-3 multipliers.
+    let cst_g2r = ((green_to_red as i8 as i16) << 3) as u16;
+    let cst_g2b = ((green_to_blue as i8 as i16) << 3) as u16;
+    let cst_r2b = ((red_to_blue as i8 as i16) << 3) as u16;
+
+    // mults_rb: per 32-bit lane:
+    //   low word (word0, G:R position) = cst_g2r -> delta for R
+    //   high word (word1, A:B position) = cst_g2b -> delta for B (green contribution)
+    let mults_rb = _mm_set1_epi32(((cst_g2b as i32) << 16) | (cst_g2r as u32 as i32 & 0xFFFF));
+
+    // mults_b2: per 32-bit lane:
+    //   low word (word0, G:R position) = cst_r2b -> delta_B2 from R'
+    //   high word = 0
+    // After mulhi, delta_B2 lands in word0; we slli_epi32 by 16 to move to word1 (B position).
+    let mults_b2 = _mm_set1_epi32(cst_r2b as u32 as i32);
+
+    // Mask for green and alpha bytes: 0xFF00FF00 per 32-bit lane
+    // Selects bytes at offsets 1,3 (G,A) in each pixel.
+    let mask_ga = _mm_set1_epi32(0xFF00FF00u32 as i32);
+
+    let len = block.len();
+    let simd_len = len & !15;
+
+    let mut i = 0;
+    while i < simd_len {
+        let inp = simd_mem::_mm_loadu_si128(chunk16_ref(block, i));
+
+        // Extract G and A bytes (high bytes of each u16 word): [0:G0, 0:A0, 0:G1, 0:A1, ...]
+        // Wait, mask_ga selects the high bytes, giving [G0:00, A0:00, G1:00, A1:00, ...].
+        // That puts G in the HIGH byte of word0, A in the HIGH byte of word1.
+        let a = _mm_and_si128(inp, mask_ga);
+
+        // Replicate green to both halves of each pixel's 32-bit lane.
+        // shufflelo(2,2,0,0): duplicate word0 and word2 in low 64 bits
+        // shufflehi(2,2,0,0): duplicate word4 and word6 in high 64 bits
+        // Result: [G0:00, G0:00, G1:00, G1:00, G2:00, G2:00, G3:00, G3:00]
+        let b = _mm_shufflelo_epi16(a, 0xA0);
+        let c = _mm_shufflehi_epi16(b, 0xA0);
+
+        // mulhi_epi16: ((G << 8) * cst) >> 16 = (G * multiplier) >> 5
+        // For word0 (G:R slot): delta_R = (G * g2r) >> 5
+        // For word1 (A:B slot): delta_B1 = (G * g2b) >> 5
+        let d = _mm_mulhi_epi16(c, mults_rb);
+
+        // Add deltas to input bytes: R += delta_R, B += delta_B1
+        // G and A also get junk added from high bytes of delta — fix below.
+        let e = _mm_add_epi8(inp, d);
+
+        // Now compute red-to-blue: delta_B2 = (R' * r2b) >> 5
+        // R' is in byte 0 of each pixel = low byte of word0 in e.
+        // Shift left 8 in u16: puts R' in high byte of word0.
+        let f = _mm_slli_epi16(e, 8);
+
+        // mulhi with mults_b2: delta_B2 = (R'<<8 * cst_r2b) >> 16 = (R' * r2b) >> 5
+        // Result in word0 (G:R slot) of each 32-bit lane; word1 (A:B slot) = 0.
+        let g = _mm_mulhi_epi16(f, mults_b2);
+
+        // Move delta_B2 from word0 (G:R slot) to word1 (A:B slot) within each 32-bit lane.
+        // slli_epi32 by 16 shifts the whole 32-bit lane left by 16 bits.
+        // This moves the value from bytes 0-1 to bytes 2-3.
+        let h = _mm_slli_epi32(g, 16);
+
+        // Add delta_B2 to the partially corrected pixel.
+        let corrected = _mm_add_epi8(e, h);
+
+        // Reconstruct: keep R and B from corrected, G and A from original.
+        let rb = _mm_andnot_si128(mask_ga, corrected);
+        let ga = _mm_and_si128(inp, mask_ga);
+        let out = _mm_or_si128(rb, ga);
+
+        simd_mem::_mm_storeu_si128(chunk16(block, i), out);
+        i += 16;
+    }
+
+    // Scalar fallback
+    for pixel in block[simd_len..].as_chunks_mut::<4>().0 {
+        let green = pixel[1];
+        let mut temp_red = u32::from(pixel[0]);
+        let mut temp_blue = u32::from(pixel[2]);
+
+        temp_red +=
+            super::lossless_transform::color_transform_delta(green_to_red as i8, green as i8);
+        temp_blue +=
+            super::lossless_transform::color_transform_delta(green_to_blue as i8, green as i8);
+        temp_blue +=
+            super::lossless_transform::color_transform_delta(red_to_blue as i8, temp_red as i8);
+
+        pixel[0] = (temp_red & 0xff) as u8;
+        pixel[2] = (temp_blue & 0xff) as u8;
+    }
+}
+
+// =============================================================================
+// Predictor transforms with SSE2 batch operations
+// =============================================================================
+
+/// SSE2 predictor 1 (left): prefix-sum within 4 pixels.
+///
+/// Port of libwebp's PredictorAdd1_SSE2. Uses parallel prefix sum:
+///   src = [a, b, c, d] (residuals)
+///   sum = [a, a+b, a+b+c, a+b+c+d] (prefix sum)
+///   result = sum + broadcast(prev_pixel)
+///
+/// The trick is that wrapping byte addition is associative, so the prefix
+/// sum can be computed without serial dependency within the 4-pixel group.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_1_sse2(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    range: core::ops::Range<usize>,
+    _width: usize,
+) {
+    let start = range.start;
+    let end = range.end;
+    let simd_end = start + ((end - start) & !15);
+
+    // Load previous pixel (the left neighbor of the first pixel in range).
+    // Broadcast to all 4 pixel positions.
+    let prev_bytes = image_data[start - 4..].first_chunk::<4>().unwrap();
+    let prev_pixel = _mm_cvtsi32_si128(i32::from_le_bytes(*prev_bytes));
+    let mut prev = _mm_shuffle_epi32(prev_pixel, 0x00); // broadcast lane 0 to all 4 lanes
+
+    let mut i = start;
+    while i < simd_end {
+        // Load 4 residual pixels
+        let src = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i));
+
+        // Parallel prefix sum (byte-wise wrapping add):
+        // Step 1: shift left by 1 pixel (4 bytes) and add
+        //   [a, b, c, d] + [0, a, b, c] = [a, a+b, b+c, c+d]
+        let shift0 = _mm_slli_si128(src, 4);
+        let sum0 = _mm_add_epi8(src, shift0);
+
+        // Step 2: shift left by 2 pixels (8 bytes) and add
+        //   [a, a+b, b+c, c+d] + [0, 0, a, a+b] = [a, a+b, a+b+c, a+b+c+d]
+        let shift1 = _mm_slli_si128(sum0, 8);
+        let sum1 = _mm_add_epi8(sum0, shift1);
+
+        // Add previous pixel value (broadcast to all lanes)
+        let res = _mm_add_epi8(sum1, prev);
+        simd_mem::_mm_storeu_si128(chunk16(image_data, i), res);
+
+        // Broadcast the last pixel (lane 3) for the next iteration
+        prev = _mm_shuffle_epi32(res, 0xFF); // _MM_SHUFFLE(3,3,3,3)
+
+        i += 16;
+    }
+
+    // Scalar remainder
+    while i < end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - 4]);
+        i += 1;
+    }
+}
+
+/// SSE2 predictor 2 (top): out[i] += upper[i], 4 pixels at a time.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_2_sse2(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    range: core::ops::Range<usize>,
+    width: usize,
+) {
+    let stride = width * 4;
+    let start = range.start;
+    let end = range.end;
+    let simd_end = start + ((end - start) & !15);
+
+    let mut i = start;
+    while i < simd_end {
+        let pred = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i - stride));
+        let src = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i));
+        let res = _mm_add_epi8(src, pred);
+        simd_mem::_mm_storeu_si128(chunk16(image_data, i), res);
+        i += 16;
+    }
+
+    while i < end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - stride]);
+        i += 1;
+    }
+}
+
+/// SSE2 predictor 3 (top-right): out[i] += upper[i+1]
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_3_sse2(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    range: core::ops::Range<usize>,
+    width: usize,
+) {
+    let stride = width * 4;
+    let start = range.start;
+    let end = range.end;
+    let simd_end = start + ((end - start) & !15);
+
+    let mut i = start;
+    while i < simd_end {
+        let pred = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i - stride + 4));
+        let src = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i));
+        let res = _mm_add_epi8(src, pred);
+        simd_mem::_mm_storeu_si128(chunk16(image_data, i), res);
+        i += 16;
+    }
+
+    while i < end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - stride + 4]);
+        i += 1;
+    }
+}
+
+/// SSE2 predictor 4 (top-left): out[i] += upper[i-1]
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_4_sse2(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    range: core::ops::Range<usize>,
+    width: usize,
+) {
+    let stride = width * 4;
+    let start = range.start;
+    let end = range.end;
+    let simd_end = start + ((end - start) & !15);
+
+    let mut i = start;
+    while i < simd_end {
+        let pred = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i - stride - 4));
+        let src = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i));
+        let res = _mm_add_epi8(src, pred);
+        simd_mem::_mm_storeu_si128(chunk16(image_data, i), res);
+        i += 16;
+    }
+
+    while i < end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - stride - 4]);
+        i += 1;
+    }
+}
+
+/// SSE2 predictor 8 (average TL, T): avg(upper[i-1], upper[i])
+///
+/// Uses floor average: avg(a,b) = avg_epu8(a,b) - ((a^b)&1)
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_8_sse2(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    range: core::ops::Range<usize>,
+    width: usize,
+) {
+    let stride = width * 4;
+    let start = range.start;
+    let end = range.end;
+    let simd_end = start + ((end - start) & !15);
+
+    let ones = _mm_set1_epi8(1);
+    let mut i = start;
+    while i < simd_end {
+        let t = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i - stride));
+        let tl = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i - stride - 4));
+
+        let avg1 = _mm_avg_epu8(t, tl);
+        let one = _mm_and_si128(_mm_xor_si128(t, tl), ones);
+        let avg = _mm_sub_epi8(avg1, one);
+
+        let src = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i));
+        let res = _mm_add_epi8(src, avg);
+        simd_mem::_mm_storeu_si128(chunk16(image_data, i), res);
+
+        i += 16;
+    }
+
+    while i < end {
+        image_data[i] = image_data[i].wrapping_add(super::lossless_transform::average2(
+            image_data[i - stride - 4],
+            image_data[i - stride],
+        ));
+        i += 1;
+    }
+}
+
+/// SSE2 predictor 9 (average T, TR): avg(upper[i], upper[i+1])
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_9_sse2(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    range: core::ops::Range<usize>,
+    width: usize,
+) {
+    let stride = width * 4;
+    let start = range.start;
+    let end = range.end;
+    let simd_end = start + ((end - start) & !15);
+
+    let ones = _mm_set1_epi8(1);
+    let mut i = start;
+    while i < simd_end {
+        let t = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i - stride));
+        let tr = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i - stride + 4));
+
+        let avg1 = _mm_avg_epu8(t, tr);
+        let one = _mm_and_si128(_mm_xor_si128(t, tr), ones);
+        let avg = _mm_sub_epi8(avg1, one);
+
+        let src = simd_mem::_mm_loadu_si128(chunk16_ref(image_data, i));
+        let res = _mm_add_epi8(src, avg);
+        simd_mem::_mm_storeu_si128(chunk16(image_data, i), res);
+
+        i += 16;
+    }
+
+    while i < end {
+        image_data[i] = image_data[i].wrapping_add(super::lossless_transform::average2(
+            image_data[i - stride],
+            image_data[i - stride + 4],
+        ));
+        i += 1;
+    }
+}
+
+// =============================================================================
+// Dispatch: single #[arcane] entry for all predictor transforms
+// =============================================================================
+
+/// Dispatch a single predictor over a byte range, using SSE2 where available.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn dispatch_predictor_sse2(
+    _token: X64V1Token,
+    predictor: u8,
+    image_data: &mut [u8],
+    start: usize,
+    end: usize,
+    width: usize,
+) {
+    let range = start..end;
+    if range.is_empty() {
+        return;
+    }
+    match predictor {
+        0 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_0(image_data, range, width);
+        }
+        1 => apply_predictor_1_sse2(_token, image_data, range, width),
+        2 => apply_predictor_2_sse2(_token, image_data, range, width),
+        3 => apply_predictor_3_sse2(_token, image_data, range, width),
+        4 => apply_predictor_4_sse2(_token, image_data, range, width),
+        5 => super::lossless_transform::apply_predictor_transform_5(image_data, range, width),
+        6 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_6(image_data, range, width);
+        }
+        7 => super::lossless_transform::apply_predictor_transform_7(image_data, range, width),
+        8 => apply_predictor_8_sse2(_token, image_data, range, width),
+        9 => apply_predictor_9_sse2(_token, image_data, range, width),
+        10 => super::lossless_transform::apply_predictor_transform_10(image_data, range, width),
+        11 => super::lossless_transform::apply_predictor_transform_11(image_data, range, width),
+        12 => super::lossless_transform::apply_predictor_transform_12(image_data, range, width),
+        13 => super::lossless_transform::apply_predictor_transform_13(image_data, range, width),
+        _ => {}
+    }
+}
+
+/// Apply the predictor transform using SSE2 where beneficial.
+///
+/// Predictors 2, 3, 4, 8, 9 have batch SSE2 implementations (no data dependency
+/// on previous output pixel). The rest fall through to scalar.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+pub(crate) fn apply_predictor_transform_sse2_entry(
+    _token: X64V1Token,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) {
+    let block_xsize = super::lossless_transform::block_xsize(width, size_bits);
+    let width = usize::from(width);
+    let height = usize::from(height);
+
+    let _ = super::lossless_transform::predictor_transform_borders(image_data, width, height);
+
+    // Coalesce adjacent blocks with the same predictor mode into a single
+    // range, reducing per-block dispatch overhead and giving SIMD loops
+    // longer runs.
+    for y in 1..height {
+        let row_block_base = (y >> size_bits) * block_xsize;
+        let mut run_start = 0usize;
+        let mut run_end = 0usize;
+        let mut run_pred = 255u8;
+
+        for block_x in 0..block_xsize {
+            let predictor = predictor_data[(row_block_base + block_x) * 4 + 1];
+            let start_index = (y * width + (block_x << size_bits).max(1)) * 4;
+            let end_index = (y * width + ((block_x + 1) << size_bits).min(width)) * 4;
+
+            if predictor == run_pred && start_index == run_end {
+                run_end = end_index;
+            } else {
+                if run_start < run_end {
+                    dispatch_predictor_sse2(
+                        _token, run_pred, image_data, run_start, run_end, width,
+                    );
+                }
+                run_pred = predictor;
+                run_start = start_index;
+                run_end = end_index;
+            }
+        }
+        if run_start < run_end {
+            dispatch_predictor_sse2(_token, run_pred, image_data, run_start, run_end, width);
+        }
+    }
+}
+
+// =============================================================================
+// Portable color transform inverse (NEON/WASM128 — autovectorization-friendly)
+// =============================================================================
+
+/// Generic color transform inverse with 4-pixel unrolling for autovectorization.
+///
+/// Two-phase approach per block enables cross-pixel SIMD:
+///   Phase 1: R += (green_to_red * G) >> 5  — all 4 pixels independent
+///   Phase 2: B += (green_to_blue * G + red_to_blue * R') >> 5  — uses corrected R
+///
+/// Takes a `U8x16Backend` token for type consistency with the archmage dispatch
+/// pattern, though the implementation uses scalar 4-pixel unrolling (magetypes
+/// lacks widening i8→i16 multiply needed for the mulhi trick).
+#[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+#[inline]
+pub(crate) fn transform_color_inverse_generic<T: magetypes::simd::backends::U8x16Backend>(
+    _token: T,
+    image_data: &mut [u8],
+    width: usize,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    let block_xsize = usize::from(super::lossless::subsample_size(width as u16, size_bits));
+
+    for (y, row) in image_data.chunks_exact_mut(width * 4).enumerate() {
+        let row_transform_data_start = (y >> size_bits) * block_xsize * 4;
+        let row_tf_data = &transform_data[row_transform_data_start..];
+
+        for (block, transform) in row
+            .chunks_mut(4 << size_bits)
+            .zip(row_tf_data.as_chunks::<4>().0)
+        {
+            let g2r = transform[2] as i8 as i32;
+            let g2b = transform[1] as i8 as i32;
+            let r2b = transform[0] as i8 as i32;
+
+            // Process 4 pixels (16 bytes) at a time for autovectorization
+            let (chunks, remainder) = block.as_chunks_mut::<16>();
+            for chunk in chunks {
+                // Phase 1: correct R channel for all 4 pixels (independent)
+                let g0 = chunk[1] as i8 as i32;
+                let g1 = chunk[5] as i8 as i32;
+                let g2 = chunk[9] as i8 as i32;
+                let g3 = chunk[13] as i8 as i32;
+
+                chunk[0] = chunk[0].wrapping_add(((g2r * g0) >> 5) as u8);
+                chunk[4] = chunk[4].wrapping_add(((g2r * g1) >> 5) as u8);
+                chunk[8] = chunk[8].wrapping_add(((g2r * g2) >> 5) as u8);
+                chunk[12] = chunk[12].wrapping_add(((g2r * g3) >> 5) as u8);
+
+                // Phase 2: correct B using green AND corrected R (independent across pixels)
+                let r0 = chunk[0] as i8 as i32;
+                let r1 = chunk[4] as i8 as i32;
+                let r2 = chunk[8] as i8 as i32;
+                let r3 = chunk[12] as i8 as i32;
+
+                chunk[2] = chunk[2]
+                    .wrapping_add(((g2b * g0) >> 5) as u8)
+                    .wrapping_add(((r2b * r0) >> 5) as u8);
+                chunk[6] = chunk[6]
+                    .wrapping_add(((g2b * g1) >> 5) as u8)
+                    .wrapping_add(((r2b * r1) >> 5) as u8);
+                chunk[10] = chunk[10]
+                    .wrapping_add(((g2b * g2) >> 5) as u8)
+                    .wrapping_add(((r2b * r2) >> 5) as u8);
+                chunk[14] = chunk[14]
+                    .wrapping_add(((g2b * g3) >> 5) as u8)
+                    .wrapping_add(((r2b * r3) >> 5) as u8);
+            }
+
+            // Scalar tail for remaining pixels
+            for pixel in remainder.as_chunks_mut::<4>().0 {
+                let green = pixel[1] as i8 as i32;
+                pixel[0] = pixel[0].wrapping_add(((g2r * green) >> 5) as u8);
+                let red = pixel[0] as i8 as i32;
+                pixel[2] = pixel[2]
+                    .wrapping_add(((g2b * green) >> 5) as u8)
+                    .wrapping_add(((r2b * red) >> 5) as u8);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Portable SIMD predictor implementations (magetypes — works on all archs)
+// =============================================================================
+
+// --- Portable add-green using magetypes ---
+
+/// Portable add-green inverse: R += G, B += G for each RGBA pixel.
+///
+/// Add green to red and blue with wrapping byte arithmetic.
+/// The fixed-array mask puts green in the red/blue lanes and zero in the
+/// green/alpha lanes. Both channels are updated in one vector addition.
+#[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+#[inline(always)]
+pub(crate) fn add_green_portable<
+    T: magetypes::simd::backends::U8x16Backend + magetypes::simd::backends::U8x32Backend,
+>(
+    token: T,
+    image_data: &mut [u8],
+) {
+    let (chunks, remainder) = image_data.as_chunks_mut::<32>();
+    for chunk in chunks {
+        let input = u8x32::load(token, chunk);
+        let bytes = input.to_array();
+        let green = u8x32::from_array(
+            token,
+            core::array::from_fn(|i| if i % 2 == 0 { bytes[(i & !3) + 1] } else { 0 }),
+        );
+        (input + green).store(chunk);
+    }
+    let (chunks, remainder) = remainder.as_chunks_mut::<16>();
+    for chunk in chunks {
+        let input = u8x16::load(token, chunk);
+        let bytes = input.to_array();
+        let [g0, g1, g2, g3] = [bytes[1], bytes[5], bytes[9], bytes[13]];
+        let green = u8x16::from_array(
+            token,
+            [g0, 0, g0, 0, g1, 0, g1, 0, g2, 0, g2, 0, g3, 0, g3, 0],
+        );
+        (input + green).store(chunk);
+    }
+    for pixel in remainder.as_chunks_mut::<4>().0 {
+        pixel[0] = pixel[0].wrapping_add(pixel[1]);
+        pixel[2] = pixel[2].wrapping_add(pixel[1]);
+    }
+}
+
+// --- Portable predictor helpers using magetypes ---
+
+/// Generic add-from-offset predictor body. Works with any token that supports u8x16.
+pub(crate) fn predictor_add_body<T: magetypes::simd::backends::U8x16Backend>(
+    token: T,
+    image_data: &mut [u8],
+    range: &Range<usize>,
+    offset: usize,
+) {
+    let len = range.end - range.start;
+    let simd_len = len & !15;
+    let mut i = range.start;
+    while i < range.start + simd_len {
+        let cur = u8x16::load(token, chunk16_ref(image_data, i));
+        let src = u8x16::load(token, chunk16_ref(image_data, i - offset));
+        (cur + src).store(chunk16(image_data, i));
+        i += 16;
+    }
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - offset]);
+        i += 1;
+    }
+}
+
+/// Generic floor-average predictor body: out[i] += floor_avg(a[i], b[i]).
+pub(crate) fn predictor_avg_body<T: magetypes::simd::backends::U8x16Backend>(
+    token: T,
+    image_data: &mut [u8],
+    range: &Range<usize>,
+    offset_a: usize,
+    offset_b: usize,
+) {
+    let len = range.end - range.start;
+    let simd_len = len & !15;
+    let mut i = range.start;
+    while i < range.start + simd_len {
+        let cur = u8x16::load(token, chunk16_ref(image_data, i));
+        let a = u8x16::load(token, chunk16_ref(image_data, i - offset_a));
+        let b = u8x16::load(token, chunk16_ref(image_data, i - offset_b));
+        // Floor average: (a & b) + ((a ^ b) >> 1)
+        let avg = (a & b) + u8x16::shr_logical_const::<1>(a ^ b);
+        (cur + avg).store(chunk16(image_data, i));
+        i += 16;
+    }
+    while i < range.end {
+        let a_val = image_data[i - offset_a];
+        let b_val = image_data[i - offset_b];
+        let avg = (a_val & b_val) + ((a_val ^ b_val) >> 1);
+        image_data[i] = image_data[i].wrapping_add(avg);
+        i += 1;
+    }
+}
+
+/// Helper: get a mutable reference to a 32-byte array from a slice.
+///
+/// Only the `u8x32` (256-bit) predictor bodies use these, and those run on the
+/// x86_64/AVX2 width path (aarch64/wasm use the native-128-bit `u8x16` bodies),
+/// so the helpers are gated to match their callers.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn chunk32(data: &mut [u8], offset: usize) -> &mut [u8; 32] {
+    data[offset..].first_chunk_mut::<32>().unwrap()
+}
+
+/// Helper: get an immutable reference to a 32-byte array from a slice.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn chunk32_ref(data: &[u8], offset: usize) -> &[u8; 32] {
+    data[offset..].first_chunk::<32>().unwrap()
+}
+
+/// Wide (32-byte) add-from-offset predictor body using u8x32.
+///
+/// Only dispatched on x86_64 (AVX2-native 256-bit); aarch64/wasm use the
+/// native-128-bit `predictor_add_body` (`u8x16`) instead, so this is gated to
+/// match — otherwise it (and its `chunk32` helpers) are dead code there.
+#[cfg(target_arch = "x86_64")]
+fn predictor_add_body_wide<
+    T: magetypes::simd::backends::U8x32Backend + magetypes::simd::backends::U8x16Backend,
+>(
+    token: T,
+    image_data: &mut [u8],
+    range: &Range<usize>,
+    offset: usize,
+) {
+    let len = range.end - range.start;
+    let simd32_len = len & !31;
+    let mut i = range.start;
+    while i < range.start + simd32_len {
+        let cur = u8x32::load(token, chunk32_ref(image_data, i));
+        let src = u8x32::load(token, chunk32_ref(image_data, i - offset));
+        (cur + src).store(chunk32(image_data, i));
+        i += 32;
+    }
+    // 16-byte tail
+    while i + 16 <= range.end {
+        let cur = u8x16::load(token, chunk16_ref(image_data, i));
+        let src = u8x16::load(token, chunk16_ref(image_data, i - offset));
+        (cur + src).store(chunk16(image_data, i));
+        i += 16;
+    }
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - offset]);
+        i += 1;
+    }
+}
+
+/// Wide (32-byte) floor-average predictor body using u8x32.
+///
+/// Only dispatched on x86_64 (AVX2-native 256-bit); aarch64/wasm use the
+/// native-128-bit `predictor_avg_body` (`u8x16`) instead, so this is gated to
+/// match its `apply_predictor_*_v3` callers — otherwise it (and its `chunk32`
+/// helpers) are out of scope on non-x86_64 targets. Mirrors the gate on the
+/// sibling `predictor_add_body_wide`.
+#[cfg(target_arch = "x86_64")]
+fn predictor_avg_body_wide<
+    T: magetypes::simd::backends::U8x32Backend + magetypes::simd::backends::U8x16Backend,
+>(
+    token: T,
+    image_data: &mut [u8],
+    range: &Range<usize>,
+    offset_a: usize,
+    offset_b: usize,
+) {
+    let len = range.end - range.start;
+    let simd32_len = len & !31;
+    let mut i = range.start;
+    while i < range.start + simd32_len {
+        let cur = u8x32::load(token, chunk32_ref(image_data, i));
+        let a = u8x32::load(token, chunk32_ref(image_data, i - offset_a));
+        let b = u8x32::load(token, chunk32_ref(image_data, i - offset_b));
+        let avg = (a & b) + u8x32::shr_logical_const::<1>(a ^ b);
+        (cur + avg).store(chunk32(image_data, i));
+        i += 32;
+    }
+    // 16-byte tail
+    while i + 16 <= range.end {
+        let cur = u8x16::load(token, chunk16_ref(image_data, i));
+        let a = u8x16::load(token, chunk16_ref(image_data, i - offset_a));
+        let b = u8x16::load(token, chunk16_ref(image_data, i - offset_b));
+        let avg = (a & b) + u8x16::shr_logical_const::<1>(a ^ b);
+        (cur + avg).store(chunk16(image_data, i));
+        i += 16;
+    }
+    while i < range.end {
+        let a_val = image_data[i - offset_a];
+        let b_val = image_data[i - offset_b];
+        let avg = (a_val & b_val) + ((a_val ^ b_val) >> 1);
+        image_data[i] = image_data[i].wrapping_add(avg);
+        i += 1;
+    }
+}
+
+// --- x86_64 V3 (AVX2) predictor wrappers using u8x32 ---
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_2_v3(
+    token: X64V3Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body_wide(token, image_data, &range, width * 4);
+}
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_3_v3(
+    token: X64V3Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body_wide(token, image_data, &range, width * 4 - 4);
+}
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_4_v3(
+    token: X64V3Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body_wide(token, image_data, &range, width * 4 + 4);
+}
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_8_v3(
+    token: X64V3Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_avg_body_wide(token, image_data, &range, width * 4 + 4, width * 4);
+}
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_predictor_9_v3(
+    token: X64V3Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_avg_body_wide(token, image_data, &range, width * 4, width * 4 - 4);
+}
+
+// --- V3 #[rite] wrappers for scalar predictors (same file = inlines into #[arcane]) ---
+
+/// Macro to generate a V3 #[rite] wrapper that delegates to a scalar predictor.
+/// Being #[rite] in the same file as the #[arcane] entry lets LLVM inline them
+/// with AVX2 target_feature, enabling autovectorization of the scalar loops.
+macro_rules! v3_scalar_pred {
+    ($name:ident, $pred_fn:path) => {
+        #[cfg(target_arch = "x86_64")]
+        #[rite]
+        fn $name(_token: X64V3Token, image_data: &mut [u8], range: Range<usize>, width: usize) {
+            let _ = $pred_fn(image_data, range, width);
+        }
+    };
+}
+
+v3_scalar_pred!(
+    pred_0_v3,
+    super::lossless_transform::apply_predictor_transform_0
+);
+v3_scalar_pred!(
+    pred_5_v3,
+    super::lossless_transform::apply_predictor_transform_5
+);
+v3_scalar_pred!(
+    pred_6_v3,
+    super::lossless_transform::apply_predictor_transform_6
+);
+v3_scalar_pred!(
+    pred_7_v3,
+    super::lossless_transform::apply_predictor_transform_7
+);
+v3_scalar_pred!(
+    pred_10_v3,
+    super::lossless_transform::apply_predictor_transform_10
+);
+v3_scalar_pred!(
+    pred_11_v3,
+    super::lossless_transform::apply_predictor_transform_11
+);
+v3_scalar_pred!(
+    pred_12_v3,
+    super::lossless_transform::apply_predictor_transform_12
+);
+v3_scalar_pred!(
+    pred_13_v3,
+    super::lossless_transform::apply_predictor_transform_13
+);
+
+/// AVX2 predictor transform — monolithic #[arcane] with all predictors as #[rite].
+///
+/// All predictor functions (both SIMD u8x32 and scalar wrappers) are #[rite] in this
+/// file, so LLVM inlines them into this single target_feature region. The scalar
+/// predictor loops (5, 7, 10-13) get AVX2 autovectorization for free.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+pub(crate) fn apply_predictor_transform_v3_entry(
+    _token: X64V3Token,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) {
+    let block_xsize = super::lossless_transform::block_xsize(width, size_bits);
+    let width = usize::from(width);
+    let height = usize::from(height);
+
+    let _ = super::lossless_transform::predictor_transform_borders(image_data, width, height);
+
+    for y in 1..height {
+        for block_x in 0..block_xsize {
+            let block_index = (y >> size_bits) * block_xsize + block_x;
+            let predictor = predictor_data[block_index * 4 + 1];
+            let start_index = (y * width + (block_x << size_bits).max(1)) * 4;
+            let end_index = (y * width + ((block_x + 1) << size_bits).min(width)) * 4;
+            let range = start_index..end_index;
+
+            if range.is_empty() {
+                continue;
+            }
+
+            match predictor {
+                0 => pred_0_v3(_token, image_data, range, width),
+                1 => apply_predictor_1_sse2(_token.v1(), image_data, range, width),
+                2 => apply_predictor_2_v3(_token, image_data, range, width),
+                3 => apply_predictor_3_v3(_token, image_data, range, width),
+                4 => apply_predictor_4_v3(_token, image_data, range, width),
+                5 => pred_5_v3(_token, image_data, range, width),
+                6 => pred_6_v3(_token, image_data, range, width),
+                7 => pred_7_v3(_token, image_data, range, width),
+                8 => apply_predictor_8_v3(_token, image_data, range, width),
+                9 => apply_predictor_9_v3(_token, image_data, range, width),
+                10 => pred_10_v3(_token, image_data, range, width),
+                11 => pred_11_v3(_token, image_data, range, width),
+                12 => pred_12_v3(_token, image_data, range, width),
+                13 => pred_13_v3(_token, image_data, range, width),
+                _ => {}
+            }
+        }
+    }
+}
+
+// --- aarch64 NEON predictor wrappers ---
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn apply_predictor_2_neon(
+    token: NeonToken,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body(token, image_data, &range, width * 4);
+}
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn apply_predictor_3_neon(
+    token: NeonToken,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body(token, image_data, &range, width * 4 - 4);
+}
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn apply_predictor_4_neon(
+    token: NeonToken,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body(token, image_data, &range, width * 4 + 4);
+}
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn apply_predictor_8_neon(
+    token: NeonToken,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_avg_body(token, image_data, &range, width * 4 + 4, width * 4);
+}
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn apply_predictor_9_neon(
+    token: NeonToken,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_avg_body(token, image_data, &range, width * 4, width * 4 - 4);
+}
+
+// --- wasm32 SIMD128 predictor wrappers ---
+
+#[cfg(target_arch = "wasm32")]
+#[rite]
+fn apply_predictor_2_wasm128(
+    token: Wasm128Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body(token, image_data, &range, width * 4);
+}
+#[cfg(target_arch = "wasm32")]
+#[rite]
+fn apply_predictor_3_wasm128(
+    token: Wasm128Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body(token, image_data, &range, width * 4 - 4);
+}
+#[cfg(target_arch = "wasm32")]
+#[rite]
+fn apply_predictor_4_wasm128(
+    token: Wasm128Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_add_body(token, image_data, &range, width * 4 + 4);
+}
+#[cfg(target_arch = "wasm32")]
+#[rite]
+fn apply_predictor_8_wasm128(
+    token: Wasm128Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_avg_body(token, image_data, &range, width * 4 + 4, width * 4);
+}
+#[cfg(target_arch = "wasm32")]
+#[rite]
+fn apply_predictor_9_wasm128(
+    token: Wasm128Token,
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) {
+    predictor_avg_body(token, image_data, &range, width * 4, width * 4 - 4);
+}
+
+// =============================================================================
+// NEON dispatch and entry point
+// =============================================================================
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn dispatch_predictor_neon(
+    _token: NeonToken,
+    predictor: u8,
+    image_data: &mut [u8],
+    start: usize,
+    end: usize,
+    width: usize,
+) {
+    let range = start..end;
+    if range.is_empty() {
+        return;
+    }
+    match predictor {
+        0 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_0(image_data, range, width);
+        }
+        // Predictor 1 (prefix-sum) falls back to scalar — serial dependency
+        1 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_1(image_data, range, width);
+        }
+        2 => apply_predictor_2_neon(_token, image_data, range, width),
+        3 => apply_predictor_3_neon(_token, image_data, range, width),
+        4 => apply_predictor_4_neon(_token, image_data, range, width),
+        5 => super::lossless_transform::apply_predictor_transform_5(image_data, range, width),
+        6 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_6(image_data, range, width);
+        }
+        7 => super::lossless_transform::apply_predictor_transform_7(image_data, range, width),
+        8 => apply_predictor_8_neon(_token, image_data, range, width),
+        9 => apply_predictor_9_neon(_token, image_data, range, width),
+        10 => super::lossless_transform::apply_predictor_transform_10(image_data, range, width),
+        11 => super::lossless_transform::apply_predictor_transform_11(image_data, range, width),
+        12 => super::lossless_transform::apply_predictor_transform_12(image_data, range, width),
+        13 => super::lossless_transform::apply_predictor_transform_13(image_data, range, width),
+        _ => {}
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+pub(crate) fn apply_predictor_transform_neon_entry(
+    _token: NeonToken,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) {
+    let block_xsize = super::lossless_transform::block_xsize(width, size_bits);
+    let width = usize::from(width);
+    let height = usize::from(height);
+
+    let _ = super::lossless_transform::predictor_transform_borders(image_data, width, height);
+
+    for y in 1..height {
+        let row_block_base = (y >> size_bits) * block_xsize;
+        let mut run_start = 0usize;
+        let mut run_end = 0usize;
+        let mut run_pred = 255u8;
+
+        for block_x in 0..block_xsize {
+            let predictor = predictor_data[(row_block_base + block_x) * 4 + 1];
+            let start_index = (y * width + (block_x << size_bits).max(1)) * 4;
+            let end_index = (y * width + ((block_x + 1) << size_bits).min(width)) * 4;
+
+            if predictor == run_pred && start_index == run_end {
+                run_end = end_index;
+            } else {
+                if run_start < run_end {
+                    dispatch_predictor_neon(
+                        _token, run_pred, image_data, run_start, run_end, width,
+                    );
+                }
+                run_pred = predictor;
+                run_start = start_index;
+                run_end = end_index;
+            }
+        }
+        if run_start < run_end {
+            dispatch_predictor_neon(_token, run_pred, image_data, run_start, run_end, width);
+        }
+    }
+}
+
+// =============================================================================
+// WASM128 dispatch and entry point
+// =============================================================================
+
+#[cfg(target_arch = "wasm32")]
+#[rite]
+fn dispatch_predictor_wasm128(
+    _token: Wasm128Token,
+    predictor: u8,
+    image_data: &mut [u8],
+    start: usize,
+    end: usize,
+    width: usize,
+) {
+    let range = start..end;
+    if range.is_empty() {
+        return;
+    }
+    match predictor {
+        0 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_0(image_data, range, width);
+        }
+        1 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_1(image_data, range, width);
+        }
+        2 => apply_predictor_2_wasm128(_token, image_data, range, width),
+        3 => apply_predictor_3_wasm128(_token, image_data, range, width),
+        4 => apply_predictor_4_wasm128(_token, image_data, range, width),
+        5 => super::lossless_transform::apply_predictor_transform_5(image_data, range, width),
+        6 => {
+            let _ =
+                super::lossless_transform::apply_predictor_transform_6(image_data, range, width);
+        }
+        7 => super::lossless_transform::apply_predictor_transform_7(image_data, range, width),
+        8 => apply_predictor_8_wasm128(_token, image_data, range, width),
+        9 => apply_predictor_9_wasm128(_token, image_data, range, width),
+        10 => super::lossless_transform::apply_predictor_transform_10(image_data, range, width),
+        11 => super::lossless_transform::apply_predictor_transform_11(image_data, range, width),
+        12 => super::lossless_transform::apply_predictor_transform_12(image_data, range, width),
+        13 => super::lossless_transform::apply_predictor_transform_13(image_data, range, width),
+        _ => {}
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[arcane]
+pub(crate) fn apply_predictor_transform_wasm128_entry(
+    _token: Wasm128Token,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) {
+    let block_xsize = super::lossless_transform::block_xsize(width, size_bits);
+    let width = usize::from(width);
+    let height = usize::from(height);
+
+    let _ = super::lossless_transform::predictor_transform_borders(image_data, width, height);
+
+    for y in 1..height {
+        let row_block_base = (y >> size_bits) * block_xsize;
+        let mut run_start = 0usize;
+        let mut run_end = 0usize;
+        let mut run_pred = 255u8;
+
+        for block_x in 0..block_xsize {
+            let predictor = predictor_data[(row_block_base + block_x) * 4 + 1];
+            let start_index = (y * width + (block_x << size_bits).max(1)) * 4;
+            let end_index = (y * width + ((block_x + 1) << size_bits).min(width)) * 4;
+
+            if predictor == run_pred && start_index == run_end {
+                run_end = end_index;
+            } else {
+                if run_start < run_end {
+                    dispatch_predictor_wasm128(
+                        _token, run_pred, image_data, run_start, run_end, width,
+                    );
+                }
+                run_pred = predictor;
+                run_start = start_index;
+                run_end = end_index;
+            }
+        }
+        if run_start < run_end {
+            dispatch_predictor_wasm128(_token, run_pred, image_data, run_start, run_end, width);
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use alloc::vec;
+    #[cfg(target_arch = "x86_64")]
+    use archmage::prelude::*;
+
+    #[test]
+    #[cfg(any(
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
+    fn portable_add_green_matches_byte_oracle() {
+        use archmage::{ScalarToken, SimdToken};
+        #[cfg(target_arch = "aarch64")]
+        let token = archmage::NeonToken::summon().expect("NEON is baseline on aarch64");
+        #[cfg(target_arch = "wasm32")]
+        let token = archmage::Wasm128Token::summon().expect("test requires SIMD128");
+        let check = |input: &[u8]| {
+            let mut expected = input.to_vec();
+            for pixel in expected.as_chunks_mut::<4>().0 {
+                pixel[0] = pixel[0].wrapping_add(pixel[1]);
+                pixel[2] = pixel[2].wrapping_add(pixel[1]);
+            }
+            let mut actual = input.to_vec();
+            super::add_green_portable(token, &mut actual);
+            assert_eq!(actual, expected);
+            let mut generic_scalar = input.to_vec();
+            super::add_green_portable(ScalarToken, &mut generic_scalar);
+            assert_eq!(generic_scalar, expected);
+        };
+
+        // Every (channel, green) pair, including wrapping addition, in both
+        // updated channels. Green and alpha must remain unchanged.
+        let mut all_pairs = vec![];
+        for green in 0..=255u8 {
+            for channel in 0..=255u8 {
+                all_pairs.extend_from_slice(&[channel, green, !channel, channel ^ green]);
+            }
+        }
+        check(&all_pairs);
+
+        // Unaligned starts, every vector tail, and incomplete trailing pixels.
+        for offset in 0..16 {
+            for len in 0..=131 {
+                let mut actual: alloc::vec::Vec<u8> = (0..offset + len + 16)
+                    .map(|i| (i as u8).wrapping_mul(73))
+                    .collect();
+                let mut expected = actual.clone();
+                for pixel in expected[offset..offset + len].as_chunks_mut::<4>().0 {
+                    pixel[0] = pixel[0].wrapping_add(pixel[1]);
+                    pixel[2] = pixel[2].wrapping_add(pixel[1]);
+                }
+                super::add_green_portable(token, &mut actual[offset..offset + len]);
+                assert_eq!(actual, expected, "offset={offset}, len={len}");
+            }
+        }
+
+        // The primitive operates on one row at a time; cropped rows retain
+        // their parent's stride and padding outside the supplied row slice.
+        for width in [1, 3, 4, 5, 15, 16, 17, 65] {
+            let stride = width * 4 + 19;
+            let mut actual = vec![197u8; stride * 7];
+            let mut expected = actual.clone();
+            for row in expected.chunks_exact_mut(stride) {
+                for pixel in row[3..3 + width * 4].as_chunks_mut::<4>().0 {
+                    pixel[0] = pixel[0].wrapping_add(pixel[1]);
+                    pixel[2] = pixel[2].wrapping_add(pixel[1]);
+                }
+            }
+            for row in actual.chunks_exact_mut(stride) {
+                super::add_green_portable(token, &mut row[3..3 + width * 4]);
+            }
+            assert_eq!(actual, expected, "width={width}, stride={stride}");
+        }
+    }
+
+    /// Test that SSE2 subtract-green matches scalar.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_add_green_sse2_matches_scalar() {
+        let Some(token) = X64V1Token::summon() else {
+            std::eprintln!("SSE2 not available, skipping test");
+            return;
+        };
+
+        let mut scalar_data = vec![0u8; 256];
+        let mut simd_data = vec![0u8; 256];
+
+        for i in 0..256 {
+            scalar_data[i] = i as u8;
+            simd_data[i] = i as u8;
+        }
+
+        super::super::lossless_transform::apply_subtract_green_transform(&mut scalar_data);
+        super::add_green_to_blue_and_red_sse2_entry(token, &mut simd_data);
+
+        assert_eq!(
+            scalar_data, simd_data,
+            "SSE2 subtract-green doesn't match scalar"
+        );
+    }
+
+    /// Test subtract-green with non-aligned length (not multiple of 16).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_add_green_sse2_odd_length() {
+        let Some(token) = X64V1Token::summon() else {
+            return;
+        };
+
+        // 7 pixels = 28 bytes
+        let mut scalar_data = vec![0u8; 28];
+        let mut simd_data = vec![0u8; 28];
+        for i in 0..28 {
+            scalar_data[i] = (i * 37 + 13) as u8;
+            simd_data[i] = (i * 37 + 13) as u8;
+        }
+
+        super::super::lossless_transform::apply_subtract_green_transform(&mut scalar_data);
+        super::add_green_to_blue_and_red_sse2_entry(token, &mut simd_data);
+
+        assert_eq!(scalar_data, simd_data);
+    }
+
+    /// Test color transform inverse SSE2 matches scalar.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_color_transform_sse2_matches_scalar() {
+        let Some(token) = X64V1Token::summon() else {
+            return;
+        };
+
+        let width: usize = 32;
+        let height: usize = 4;
+        let size_bits: u8 = 2;
+        let block_xsize = super::super::lossless_transform::block_xsize(width as u16, size_bits);
+
+        let mut scalar_data = vec![0u8; width * height * 4];
+        let mut simd_data = vec![0u8; width * height * 4];
+
+        for i in 0..scalar_data.len() {
+            scalar_data[i] = ((i * 97 + 31) % 256) as u8;
+            simd_data[i] = ((i * 97 + 31) % 256) as u8;
+        }
+
+        let mut tf_data = vec![0u8; block_xsize * ((height >> size_bits) + 1) * 4];
+        for chunk in tf_data.as_chunks_mut::<4>().0 {
+            chunk[0] = 23; // red_to_blue
+            chunk[1] = 170; // green_to_blue (negative as i8)
+            chunk[2] = 50; // green_to_red
+        }
+
+        super::super::lossless_transform::apply_color_transform(
+            &mut scalar_data,
+            width as u16,
+            size_bits,
+            &tf_data,
+        );
+
+        super::transform_color_inverse_sse2_entry(
+            token,
+            &mut simd_data,
+            width,
+            size_bits,
+            &tf_data,
+        );
+
+        assert_eq!(
+            scalar_data, simd_data,
+            "SSE2 color transform doesn't match scalar"
+        );
+    }
+
+    /// Test color transform with varied multiplier signs.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_color_transform_sse2_all_multiplier_signs() {
+        let Some(token) = X64V1Token::summon() else {
+            return;
+        };
+
+        let multiplier_sets: &[(u8, u8, u8)] = &[
+            (0, 0, 0),
+            (1, 1, 1),
+            (127, 127, 127),
+            (128, 128, 128),
+            (255, 255, 255),
+            (50, 170, 200),
+        ];
+
+        for &(r2b, g2b, g2r) in multiplier_sets {
+            let width: usize = 8;
+            let height: usize = 1;
+            let size_bits: u8 = 3;
+
+            let block_xsize =
+                super::super::lossless_transform::block_xsize(width as u16, size_bits);
+            let mut scalar_data = vec![0u8; width * height * 4];
+            let mut simd_data = vec![0u8; width * height * 4];
+
+            for i in 0..scalar_data.len() {
+                scalar_data[i] = (i * 73 + 17) as u8;
+                simd_data[i] = (i * 73 + 17) as u8;
+            }
+
+            let mut tf_data = vec![0u8; block_xsize * 4 + 16];
+            for chunk in tf_data.as_chunks_mut::<4>().0 {
+                chunk[0] = r2b;
+                chunk[1] = g2b;
+                chunk[2] = g2r;
+            }
+
+            super::super::lossless_transform::apply_color_transform(
+                &mut scalar_data,
+                width as u16,
+                size_bits,
+                &tf_data,
+            );
+            super::transform_color_inverse_sse2_entry(
+                token,
+                &mut simd_data,
+                width,
+                size_bits,
+                &tf_data,
+            );
+
+            assert_eq!(
+                scalar_data, simd_data,
+                "Mismatch for multipliers r2b={r2b} g2b={g2b} g2r={g2r}"
+            );
+        }
+    }
+
+    /// Test predictor 1 (left) SSE2 matches scalar via full roundtrip.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_predictor_1_sse2_matches_scalar() {
+        let Some(token) = X64V1Token::summon() else {
+            return;
+        };
+
+        // Use a large block that covers entire rows (size_bits=6 → 64 pixels per block)
+        let width: usize = 64;
+        let height: usize = 4;
+        let size_bits: u8 = 6;
+        let block_xsize = super::super::lossless_transform::block_xsize(width as u16, size_bits);
+
+        let mut scalar_data = vec![0u8; width * height * 4];
+        let mut simd_data = vec![0u8; width * height * 4];
+
+        for i in 0..scalar_data.len() {
+            scalar_data[i] = (i * 53 + 7) as u8;
+            simd_data[i] = (i * 53 + 7) as u8;
+        }
+
+        // Predictor data: all blocks use predictor 1 (left)
+        let pred_data_len = block_xsize * ((height >> size_bits) + 2) * 4;
+        let mut pred_data = vec![0u8; pred_data_len];
+        for chunk in pred_data.as_chunks_mut::<4>().0 {
+            chunk[1] = 1; // predictor index in byte 1
+        }
+
+        super::super::lossless_transform::apply_predictor_transform_scalar(
+            &mut scalar_data,
+            width as u16,
+            height as u16,
+            size_bits,
+            &pred_data,
+        )
+        .unwrap();
+
+        super::apply_predictor_transform_sse2_entry(
+            token,
+            &mut simd_data,
+            width as u16,
+            height as u16,
+            size_bits,
+            &pred_data,
+        );
+
+        // Find first mismatch for debugging
+        for i in 0..scalar_data.len() {
+            if scalar_data[i] != simd_data[i] {
+                panic!(
+                    "Mismatch at byte {i} (pixel {}, channel {}, row {}, col {}): scalar={} simd={}",
+                    i / 4,
+                    i % 4,
+                    (i / 4) / width,
+                    (i / 4) % width,
+                    scalar_data[i],
+                    simd_data[i],
+                );
+            }
+        }
+    }
+
+    /// Test predictor 2 (top) SSE2 matches scalar.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_predictor_2_sse2_matches_scalar() {
+        let Some(token) = X64V1Token::summon() else {
+            return;
+        };
+
+        let width: usize = 32;
+        let height: usize = 8;
+        let size_bits: u8 = 3;
+        let block_xsize = super::super::lossless_transform::block_xsize(width as u16, size_bits);
+
+        let mut scalar_data = vec![0u8; width * height * 4];
+        let mut simd_data = vec![0u8; width * height * 4];
+
+        for i in 0..scalar_data.len() {
+            scalar_data[i] = (i * 41 + 19) as u8;
+            simd_data[i] = (i * 41 + 19) as u8;
+        }
+
+        let mut pred_data = vec![0u8; block_xsize * (height + 1) * 4];
+        for chunk in pred_data.as_chunks_mut::<4>().0 {
+            chunk[1] = 2; // predictor 2 (top)
+        }
+
+        super::super::lossless_transform::apply_predictor_transform_scalar(
+            &mut scalar_data,
+            width as u16,
+            height as u16,
+            size_bits,
+            &pred_data,
+        )
+        .unwrap();
+
+        super::apply_predictor_transform_sse2_entry(
+            token,
+            &mut simd_data,
+            width as u16,
+            height as u16,
+            size_bits,
+            &pred_data,
+        );
+
+        assert_eq!(
+            scalar_data, simd_data,
+            "Predictor 2 SSE2 doesn't match scalar"
+        );
+    }
+}

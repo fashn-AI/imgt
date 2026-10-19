@@ -1,0 +1,22 @@
+[package]
+name = "imgt-research-formats"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+publish = false
+
+[features]
+default = []
+avif = ["dep:zenavif", "dep:zenavif-parse"]
+
+[dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "webp"] }
+png = "=0.18.1"
+moxcms = "=0.8.1"
+crc32fast = "=1.5.2"
+zenavif = { version = "=0.1.6", default-features = false, optional = true }
+zenavif-parse = { version = "=0.6.2", default-features = false, optional = true }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

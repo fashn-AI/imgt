@@ -1,0 +1,8 @@
+ARM64 Rust 1.93.0 execution profile from the retained October 18, 2026 build.
+
+SHA-256: e4312e4f2fdd5b5c64680facd6595d90bcf2864634bb31c1e24fac6e6dc134d6
+
+Contains compiler function identities and counters, not images or request URLs.
+Build and training scope are documented in ../../README.md and ../../BENCHMARK.md.
+Do not apply this profile to another architecture or assume compatibility after
+source/compiler changes. A profile-use flag is required; it is opt-in.

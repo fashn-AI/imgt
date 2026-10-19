@@ -1,0 +1,4 @@
+node_modules
+rust/target
+.DS_Store
+*.log

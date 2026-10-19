@@ -740,7 +740,7 @@ for (const phase of ["startup", "encoding"]) {
   });
 }
 
-test("full shard rejects distinct jobs while accepting duplicates", async () => {
+test("full shard rejects distinct jobs while accepting duplicates", async (t) => {
   const release = deferred();
   const allStarted = deferred();
   let started = 0;
@@ -752,18 +752,30 @@ test("full shard rejects distinct jobs while accepting duplicates", async () => 
       return new Response("webp");
     },
   });
-  const requests = Array.from(
-    { length: MAX_DISTINCT_JOBS_PER_SHARD },
-    (_, id) => h.gateway(imageRequest(`?v=${id}`)),
+  t.after(async () => {
+    release.resolve();
+    await h.drain();
+  });
+  // Hash every key before filling the coordinator. Gateway hashing is async,
+  // so eight started encodes do not prove that all 128 jobs have been admitted.
+  const jobs = await Promise.all(
+    Array.from({ length: MAX_DISTINCT_JOBS_PER_SHARD + 1 }, async (_, id) => {
+      const options = parseImageOptions(new URL(imageRequest(`?v=${id}`).url), [
+        "images.unsplash.com",
+      ]);
+      return {
+        ...options,
+        outputKey: await derivativeKey(DERIVATIVE_PREFIX, options),
+      };
+    }),
   );
+  const requests = jobs.slice(0, -1).map(h.resize);
   await allStarted.promise;
   assert.equal(h.downloads, MAX_ACTIVE_JOBS_PER_SHARD);
-  const rejected = await h.gateway(
-    imageRequest(`?v=${MAX_DISTINCT_JOBS_PER_SHARD}`),
-  );
+  const rejected = await h.resize(jobs.at(-1)!);
   assert.equal(rejected.status, 429);
   assert.equal(rejected.headers.get("retry-after"), "1");
-  const duplicate = h.gateway(imageRequest("?v=0"));
+  const duplicate = h.resize(jobs[0]);
   release.resolve();
   assert.ok(
     (await Promise.all([...requests, duplicate])).every(

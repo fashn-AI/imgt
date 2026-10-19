@@ -1,0 +1,1125 @@
+//! Quantization matrix and coefficient quantization.
+//!
+//! Contains VP8Matrix for quantize/dequantize operations on 4x4 DCT blocks.
+//! SIMD-optimized quantization using SSE2 intrinsics.
+
+#![allow(dead_code)]
+
+use archmage::prelude::*;
+
+#[cfg(target_arch = "x86")]
+use archmage::intrinsics::x86 as simd_mem;
+#[cfg(target_arch = "x86_64")]
+use archmage::intrinsics::x86_64 as simd_mem;
+
+use super::tables::{MAX_LEVEL, VP8_FREQ_SHARPENING};
+
+//------------------------------------------------------------------------------
+// Fixed-size array splitting helpers (zero-cost, all checks elided at compile time)
+
+/// Split `&[T; 16]` into four `&[T; 4]` without runtime bounds checks.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn split4_ref<T>(arr: &[T; 16]) -> (&[T; 4], &[T; 4], &[T; 4], &[T; 4]) {
+    let (a, rest) = arr.split_first_chunk::<4>().unwrap();
+    let rest: &[T; 12] = rest.try_into().unwrap();
+    let (b, rest) = rest.split_first_chunk::<4>().unwrap();
+    let rest: &[T; 8] = rest.try_into().unwrap();
+    let (c, d) = rest.split_first_chunk::<4>().unwrap();
+    let d: &[T; 4] = d.try_into().unwrap();
+    (a, b, c, d)
+}
+
+/// Split `&mut [T; 16]` into four `&mut [T; 4]` without runtime bounds checks.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn split4_mut<T>(arr: &mut [T; 16]) -> (&mut [T; 4], &mut [T; 4], &mut [T; 4], &mut [T; 4]) {
+    let (a, rest) = arr.split_first_chunk_mut::<4>().unwrap();
+    let rest: &mut [T; 12] = rest.try_into().unwrap();
+    let (b, rest) = rest.split_first_chunk_mut::<4>().unwrap();
+    let rest: &mut [T; 8] = rest.try_into().unwrap();
+    let (c, d) = rest.split_first_chunk_mut::<4>().unwrap();
+    let d: &mut [T; 4] = d.try_into().unwrap();
+    (a, b, c, d)
+}
+
+/// Split `&[T; 16]` into two `&[T; 8]` without runtime bounds checks.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn split2_ref<T>(arr: &[T; 16]) -> (&[T; 8], &[T; 8]) {
+    let (a, b) = arr.split_first_chunk::<8>().unwrap();
+    let b: &[T; 8] = b.try_into().unwrap();
+    (a, b)
+}
+
+/// Split `&mut [T; 16]` into two `&mut [T; 8]` without runtime bounds checks.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn split2_mut<T>(arr: &mut [T; 16]) -> (&mut [T; 8], &mut [T; 8]) {
+    let (a, b) = arr.split_first_chunk_mut::<8>().unwrap();
+    let b: &mut [T; 8] = b.try_into().unwrap();
+    (a, b)
+}
+
+//------------------------------------------------------------------------------
+// Quantization constants
+
+/// Fixed-point precision for quantization
+pub const QFIX: u32 = 17;
+
+/// Bias calculation macro equivalent
+#[inline]
+pub const fn quantization_bias(b: u32) -> u32 {
+    (((b) << (QFIX)) + 128) >> 8
+}
+
+/// Quantization division: (coeff * iq + bias) >> QFIX
+#[inline]
+pub fn quantdiv(coeff: u32, iq: u32, bias: u32) -> i32 {
+    ((coeff as u64 * iq as u64 + bias as u64) >> QFIX) as i32
+}
+
+//------------------------------------------------------------------------------
+// Quantization matrix
+
+/// Quantization matrix for a coefficient type (Y1, Y2, UV)
+#[derive(Clone, Debug, Default)]
+pub struct VP8Matrix {
+    /// Quantizer steps for each coefficient position
+    pub q: [u16; 16],
+    /// Reciprocals (1 << QFIX) / q, for fast division
+    pub iq: [u32; 16],
+    /// Rounding bias for quantization
+    pub bias: [u32; 16],
+    /// Zero threshold: coefficients below this are quantized to 0
+    pub zthresh: [u32; 16],
+    /// Sharpening boost for high-frequency coefficients
+    pub sharpen: [u16; 16],
+}
+
+impl VP8Matrix {
+    /// Create a new quantization matrix from DC and AC quantizer values
+    pub fn new(q_dc: u16, q_ac: u16, matrix_type: MatrixType) -> Self {
+        let bias_values = match matrix_type {
+            MatrixType::Y1 => (96, 110),  // luma-ac
+            MatrixType::Y2 => (96, 108),  // luma-dc
+            MatrixType::UV => (110, 115), // chroma
+        };
+
+        let mut m = Self {
+            q: [0; 16],
+            iq: [0; 16],
+            bias: [0; 16],
+            zthresh: [0; 16],
+            sharpen: [0; 16],
+        };
+
+        // Set DC (index 0) and AC (index 1+) values
+        m.q[0] = q_dc;
+        m.q[1] = q_ac;
+
+        // Calculate reciprocals, bias, and zero thresholds for DC and AC
+        for i in 0..2 {
+            let is_ac = i > 0;
+            let bias = if is_ac { bias_values.1 } else { bias_values.0 };
+            m.iq[i] = ((1u64 << QFIX) / m.q[i] as u64) as u32;
+            m.bias[i] = quantization_bias(bias);
+            // zthresh: value such that quantdiv(coeff, iq, bias) is 0 if coeff <= zthresh
+            m.zthresh[i] = ((1 << QFIX) - 1 - m.bias[i]) / m.iq[i];
+        }
+
+        // Replicate AC values for positions 2-15
+        for i in 2..16 {
+            m.q[i] = m.q[1];
+            m.iq[i] = m.iq[1];
+            m.bias[i] = m.bias[1];
+            m.zthresh[i] = m.zthresh[1];
+        }
+
+        // Apply sharpening for Y1 matrix (luma AC)
+        if matches!(matrix_type, MatrixType::Y1) {
+            const SHARPEN_BITS: u32 = 11;
+            for (i, &freq_sharpen) in VP8_FREQ_SHARPENING.iter().enumerate() {
+                m.sharpen[i] = ((freq_sharpen as u32 * m.q[i] as u32) >> SHARPEN_BITS) as u16;
+            }
+        }
+
+        m
+    }
+
+    /// Get the average quantizer value (for lambda calculations)
+    pub fn average_q(&self) -> u32 {
+        let sum: u32 = self.q.iter().map(|&x| x as u32).sum();
+        (sum + 8) >> 4
+    }
+
+    /// Quantize a single coefficient (matches libwebp's QuantizeBlock_C)
+    ///
+    /// Adds sharpen boost to absolute coefficient value, then checks against
+    /// zthresh to skip coefficients guaranteed to quantize to zero.
+    #[inline]
+    pub fn quantize_coeff(&self, coeff: i32, pos: usize) -> i32 {
+        let sign = coeff < 0;
+        let abs_coeff = (if sign { -coeff } else { coeff } as u32) + self.sharpen[pos] as u32;
+        if abs_coeff <= self.zthresh[pos] {
+            return 0;
+        }
+        let level = quantdiv(abs_coeff, self.iq[pos], self.bias[pos]).min(MAX_LEVEL as i32);
+        if sign { -level } else { level }
+    }
+
+    /// Quantize a single coefficient with neutral bias (for trellis)
+    #[inline]
+    pub fn quantize_neutral(&self, coeff: i32, pos: usize) -> i32 {
+        let sign = coeff < 0;
+        let abs_coeff = if sign { -coeff } else { coeff } as u32;
+        let neutral_bias = quantization_bias(0x00); // neutral
+        let level = quantdiv(abs_coeff, self.iq[pos], neutral_bias);
+        if sign { -level } else { level }
+    }
+
+    /// Dequantize a coefficient
+    #[inline]
+    pub fn dequantize(&self, level: i32, pos: usize) -> i32 {
+        level * self.q[pos] as i32
+    }
+
+    /// Quantize an entire 4x4 block of coefficients in place
+    ///
+    /// Includes sharpen boost and zthresh check matching libwebp's QuantizeBlock_C.
+    #[inline]
+    pub fn quantize(&self, coeffs: &mut [i32; 16]) {
+        for (pos, coeff) in coeffs.iter_mut().enumerate() {
+            let sign = *coeff < 0;
+            let abs_coeff = (if sign { -*coeff } else { *coeff } as u32) + self.sharpen[pos] as u32;
+            if abs_coeff <= self.zthresh[pos] {
+                *coeff = 0;
+                continue;
+            }
+            let level = quantdiv(abs_coeff, self.iq[pos], self.bias[pos]).min(MAX_LEVEL as i32);
+            *coeff = if sign { -level } else { level };
+        }
+    }
+
+    /// Quantize only AC coefficients (positions 1-15) in place, leaving DC unchanged
+    /// This is used for Y1 blocks where the DC goes to the Y2 block
+    ///
+    /// Includes sharpen boost and zthresh check matching libwebp's QuantizeBlock_C.
+    #[allow(clippy::needless_range_loop)] // pos indexes both coeffs and self.iq/self.bias
+    pub fn quantize_ac_only(&self, coeffs: &mut [i32; 16]) {
+        for pos in 1..16 {
+            let sign = coeffs[pos] < 0;
+            let abs_coeff =
+                (if sign { -coeffs[pos] } else { coeffs[pos] } as u32) + self.sharpen[pos] as u32;
+            if abs_coeff <= self.zthresh[pos] {
+                coeffs[pos] = 0;
+                continue;
+            }
+            let level = quantdiv(abs_coeff, self.iq[pos], self.bias[pos]).min(MAX_LEVEL as i32);
+            coeffs[pos] = if sign { -level } else { level };
+        }
+    }
+
+    /// Dequantize an entire 4x4 block of coefficients in place
+    #[inline(always)]
+    pub fn dequantize_block(&self, coeffs: &mut [i32; 16]) {
+        incant!(
+            dequantize_block_dispatch(&self.q, coeffs),
+            [v3, neon, wasm128, scalar]
+        );
+    }
+
+    /// Dequantize only AC coefficients (positions 1-15) in place
+    #[allow(clippy::needless_range_loop)] // pos indexes both coeffs and self.q
+    pub fn dequantize_ac_only(&self, coeffs: &mut [i32; 16]) {
+        for pos in 1..16 {
+            coeffs[pos] *= self.q[pos] as i32;
+        }
+    }
+}
+
+/// V3 tier for dequantize_block dispatch.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn dequantize_block_dispatch_v3(_token: X64V3Token, q: &[u16; 16], coeffs: &mut [i32; 16]) {
+    dequantize_block_sse2(_token, q, coeffs);
+}
+
+/// NEON tier for dequantize_block dispatch.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+/// NOTE (measured 2026-07-31): this arm reads 0.90x against its own
+/// forced-scalar tier — 10.6 ns vs 9.5 ns, CI [-10.2%, -9.2%], reproduced.
+///
+/// The gap is NOT the kernel body. Replacing this call with the scalar form's
+/// loop inlined directly here measured 0.88x — no better, slightly worse. What
+/// costs is the `#[arcane]` dispatch boundary itself: on a ~10 ns kernel doing
+/// 16 multiplies, the target-feature transition is a material fraction of the
+/// total, and no choice of body recovers it.
+///
+/// The same shape appeared on `common::prediction::add_residue_i16` (0.95x,
+/// where routing to the scalar arm made it 0.91x). Both are left alone: the
+/// arms are bit-identical (verified over 200,000 random blocks here), so this
+/// is purely a dispatch-overhead question, and the fix would be to stop
+/// dispatching per block — hoisting the token to the caller and using a
+/// `#[rite]` — not to change what the arm does.
+///
+/// That hoist was COSTED and rejected, so the decision is not re-litigated on
+/// intuition: 2560x1664 is 266,240 4x4 blocks, and at the measured ~1.1 ns of
+/// boundary cost per call that is 0.29 ms against a 149 ms encode — **0.20%**.
+/// Buying it means changing signatures across 10 call sites in the encoder's
+/// hot loop (`vp8/prediction.rs`, `vp8/mode_selection.rs`, `quantize.rs`),
+/// which is a real regression surface for two tenths of a percent. If the
+/// dispatch boundary is ever attacked, do it as a deliberate encoder-wide
+/// change with its own gates, not as a fix for these two kernels.
+fn dequantize_block_dispatch_neon(token: NeonToken, q: &[u16; 16], coeffs: &mut [i32; 16]) {
+    crate::common::simd_neon::dequantize_block_neon(token, q, coeffs);
+}
+
+/// WASM tier for dequantize_block dispatch.
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+fn dequantize_block_dispatch_wasm128(token: Wasm128Token, q: &[u16; 16], coeffs: &mut [i32; 16]) {
+    crate::common::simd_wasm::dequantize_block_wasm(token, q, coeffs);
+}
+
+/// Scalar tier for dequantize_block dispatch.
+#[inline(always)]
+fn dequantize_block_dispatch_scalar(_token: ScalarToken, q: &[u16; 16], coeffs: &mut [i32; 16]) {
+    for (pos, coeff) in coeffs.iter_mut().enumerate() {
+        *coeff *= q[pos] as i32;
+    }
+}
+
+/// SIMD dequantization using SSE2
+/// Multiplies each coefficient by its quantizer step.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+pub(crate) fn dequantize_block_sse2(_token: X64V3Token, q: &[u16; 16], coeffs: &mut [i32; 16]) {
+    // Load quantizers as u16, zero-extend to i32
+    let (q_lo_arr, q_hi_arr) = split2_ref(q);
+    let q_lo = simd_mem::_mm_loadu_si128(q_lo_arr);
+    let q_hi = simd_mem::_mm_loadu_si128(q_hi_arr);
+
+    let zero = _mm_setzero_si128();
+
+    // Zero-extend u16 to i32: unpack low/high with zeros
+    let q0_32 = _mm_unpacklo_epi16(q_lo, zero); // q[0..4] as i32
+    let q1_32 = _mm_unpackhi_epi16(q_lo, zero); // q[4..8] as i32
+    let q2_32 = _mm_unpacklo_epi16(q_hi, zero); // q[8..12] as i32
+    let q3_32 = _mm_unpackhi_epi16(q_hi, zero); // q[12..16] as i32
+
+    // Load coefficients as i32
+    let (c0_arr, c1_arr, c2_arr, c3_arr) = split4_ref(coeffs);
+    let c0 = simd_mem::_mm_loadu_si128(c0_arr);
+    let c1 = simd_mem::_mm_loadu_si128(c1_arr);
+    let c2 = simd_mem::_mm_loadu_si128(c2_arr);
+    let c3 = simd_mem::_mm_loadu_si128(c3_arr);
+
+    // Multiply using SSE2 workaround (no _mm_mullo_epi32 until SSE4.1)
+    // For i32*i32, use _mm_mul_epu32 on even/odd elements separately
+    // Macro to inline the multiplication pattern
+    macro_rules! mul_epi32_sse2 {
+        ($a:expr, $b:expr) => {{
+            // Multiply even elements (positions 0, 2)
+            let even = _mm_mul_epu32($a, $b);
+            // Shuffle to get odd elements (1, 3) to even positions
+            let a_odd = _mm_shuffle_epi32($a, 0xF5); // [1,1,3,3]
+            let b_odd = _mm_shuffle_epi32($b, 0xF5);
+            let odd = _mm_mul_epu32(a_odd, b_odd);
+            // Extract low 32 bits of each 64-bit result and interleave
+            let even_lo = _mm_shuffle_epi32(even, 0x08); // [r0, _, r2, _]
+            let odd_lo = _mm_shuffle_epi32(odd, 0x08); // [r1, _, r3, _]
+            _mm_unpacklo_epi32(even_lo, odd_lo) // [r0, r1, r2, r3]
+        }};
+    }
+
+    let r0 = mul_epi32_sse2!(c0, q0_32);
+    let r1 = mul_epi32_sse2!(c1, q1_32);
+    let r2 = mul_epi32_sse2!(c2, q2_32);
+    let r3 = mul_epi32_sse2!(c3, q3_32);
+
+    // Store results
+    let (s0, s1, s2, s3) = split4_mut(coeffs);
+    simd_mem::_mm_storeu_si128(s0, r0);
+    simd_mem::_mm_storeu_si128(s1, r1);
+    simd_mem::_mm_storeu_si128(s2, r2);
+    simd_mem::_mm_storeu_si128(s3, r3);
+}
+
+/// Matrix type for bias selection
+#[derive(Clone, Copy, Debug)]
+pub enum MatrixType {
+    /// Luma AC coefficients
+    Y1,
+    /// Luma DC (WHT) coefficients
+    Y2,
+    /// Chroma coefficients
+    UV,
+}
+
+// =============================================================================
+// SIMD Quantization - Ported from libwebp's DoQuantizeBlock_SSE2
+// =============================================================================
+
+/// SIMD-optimized quantization of a 4x4 block.
+/// Returns true if any coefficient is non-zero.
+pub fn quantize_block_simd(coeffs: &mut [i32; 16], matrix: &VP8Matrix, use_sharpen: bool) -> bool {
+    incant!(
+        quantize_block_dispatch(coeffs, matrix, use_sharpen),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn quantize_block_dispatch_v3(
+    _token: X64V3Token,
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+) -> bool {
+    quantize_block_sse2(_token, coeffs, matrix, use_sharpen)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn quantize_block_dispatch_neon(
+    token: NeonToken,
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+) -> bool {
+    crate::common::simd_neon::quantize_block_neon(token, coeffs, matrix, use_sharpen)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+fn quantize_block_dispatch_wasm128(
+    token: Wasm128Token,
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+) -> bool {
+    crate::common::simd_wasm::quantize_block_wasm(token, coeffs, matrix, use_sharpen)
+}
+
+#[inline(always)]
+fn quantize_block_dispatch_scalar(
+    _token: ScalarToken,
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    _use_sharpen: bool,
+) -> bool {
+    matrix.quantize(coeffs);
+    coeffs.iter().any(|&c| c != 0)
+}
+
+/// SSE2 implementation of block quantization.
+/// Matches libwebp's DoQuantizeBlock_SSE2 algorithm.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+pub(crate) fn quantize_block_sse2(
+    _token: X64V3Token,
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+) -> bool {
+    let max_coeff = _mm_set1_epi16(MAX_LEVEL as i16);
+    let zero = _mm_setzero_si128();
+
+    // Pack i32 coefficients to i16 (safe for typical DCT range)
+    let (c0_arr, c1_arr, c2_arr, c3_arr) = split4_ref(coeffs);
+    let c0_32 = simd_mem::_mm_loadu_si128(c0_arr);
+    let c1_32 = simd_mem::_mm_loadu_si128(c1_arr);
+    let c2_32 = simd_mem::_mm_loadu_si128(c2_arr);
+    let c3_32 = simd_mem::_mm_loadu_si128(c3_arr);
+
+    let in0 = _mm_packs_epi32(c0_32, c1_32); // coeffs[0..8] as i16
+    let in8 = _mm_packs_epi32(c2_32, c3_32); // coeffs[8..16] as i16
+
+    // Load quantization parameters (need to convert u32 iq to u16 for SIMD)
+    // Since iq values fit in 16 bits for typical quantizers, this is safe
+    let iq0 = _mm_set_epi16(
+        matrix.iq[7] as i16,
+        matrix.iq[6] as i16,
+        matrix.iq[5] as i16,
+        matrix.iq[4] as i16,
+        matrix.iq[3] as i16,
+        matrix.iq[2] as i16,
+        matrix.iq[1] as i16,
+        matrix.iq[0] as i16,
+    );
+    let iq8 = _mm_set_epi16(
+        matrix.iq[15] as i16,
+        matrix.iq[14] as i16,
+        matrix.iq[13] as i16,
+        matrix.iq[12] as i16,
+        matrix.iq[11] as i16,
+        matrix.iq[10] as i16,
+        matrix.iq[9] as i16,
+        matrix.iq[8] as i16,
+    );
+
+    // Extract sign (0x0000 if positive, 0xffff if negative)
+    let sign0 = _mm_cmpgt_epi16(zero, in0);
+    let sign8 = _mm_cmpgt_epi16(zero, in8);
+
+    // coeff = abs(in) = (in ^ sign) - sign
+    let mut coeff0 = _mm_sub_epi16(_mm_xor_si128(in0, sign0), sign0);
+    let mut coeff8 = _mm_sub_epi16(_mm_xor_si128(in8, sign8), sign8);
+
+    // Add sharpen if enabled
+    if use_sharpen {
+        let sharpen0 = _mm_set_epi16(
+            matrix.sharpen[7] as i16,
+            matrix.sharpen[6] as i16,
+            matrix.sharpen[5] as i16,
+            matrix.sharpen[4] as i16,
+            matrix.sharpen[3] as i16,
+            matrix.sharpen[2] as i16,
+            matrix.sharpen[1] as i16,
+            matrix.sharpen[0] as i16,
+        );
+        let sharpen8 = _mm_set_epi16(
+            matrix.sharpen[15] as i16,
+            matrix.sharpen[14] as i16,
+            matrix.sharpen[13] as i16,
+            matrix.sharpen[12] as i16,
+            matrix.sharpen[11] as i16,
+            matrix.sharpen[10] as i16,
+            matrix.sharpen[9] as i16,
+            matrix.sharpen[8] as i16,
+        );
+        coeff0 = _mm_add_epi16(coeff0, sharpen0);
+        coeff8 = _mm_add_epi16(coeff8, sharpen8);
+    }
+
+    // out = (coeff * iQ + B) >> QFIX
+    // Using mulhi_epu16 + mullo_epi16 to get 32-bit result
+    let coeff_iq0_h = _mm_mulhi_epu16(coeff0, iq0);
+    let coeff_iq0_l = _mm_mullo_epi16(coeff0, iq0);
+    let coeff_iq8_h = _mm_mulhi_epu16(coeff8, iq8);
+    let coeff_iq8_l = _mm_mullo_epi16(coeff8, iq8);
+
+    // Unpack to 32-bit
+    let out_00 = _mm_unpacklo_epi16(coeff_iq0_l, coeff_iq0_h);
+    let out_04 = _mm_unpackhi_epi16(coeff_iq0_l, coeff_iq0_h);
+    let out_08 = _mm_unpacklo_epi16(coeff_iq8_l, coeff_iq8_h);
+    let out_12 = _mm_unpackhi_epi16(coeff_iq8_l, coeff_iq8_h);
+
+    // Add bias
+    let (b0, b1, b2, b3) = split4_ref(&matrix.bias);
+    let bias_00 = simd_mem::_mm_loadu_si128(b0);
+    let bias_04 = simd_mem::_mm_loadu_si128(b1);
+    let bias_08 = simd_mem::_mm_loadu_si128(b2);
+    let bias_12 = simd_mem::_mm_loadu_si128(b3);
+
+    let out_00 = _mm_add_epi32(out_00, bias_00);
+    let out_04 = _mm_add_epi32(out_04, bias_04);
+    let out_08 = _mm_add_epi32(out_08, bias_08);
+    let out_12 = _mm_add_epi32(out_12, bias_12);
+
+    // Shift by QFIX (17)
+    let out_00 = _mm_srai_epi32(out_00, QFIX as i32);
+    let out_04 = _mm_srai_epi32(out_04, QFIX as i32);
+    let out_08 = _mm_srai_epi32(out_08, QFIX as i32);
+    let out_12 = _mm_srai_epi32(out_12, QFIX as i32);
+
+    // Pack back to i16
+    let mut out0 = _mm_packs_epi32(out_00, out_04);
+    let mut out8 = _mm_packs_epi32(out_08, out_12);
+
+    // Clamp to MAX_LEVEL
+    out0 = _mm_min_epi16(out0, max_coeff);
+    out8 = _mm_min_epi16(out8, max_coeff);
+
+    // Apply sign back: (out ^ sign) - sign
+    out0 = _mm_sub_epi16(_mm_xor_si128(out0, sign0), sign0);
+    out8 = _mm_sub_epi16(_mm_xor_si128(out8, sign8), sign8);
+
+    // Unpack i16 to i32 for output
+    let sign0_ext = _mm_cmpgt_epi16(zero, out0);
+    let sign8_ext = _mm_cmpgt_epi16(zero, out8);
+
+    let out0_lo = _mm_unpacklo_epi16(out0, sign0_ext);
+    let out0_hi = _mm_unpackhi_epi16(out0, sign0_ext);
+    let out8_lo = _mm_unpacklo_epi16(out8, sign8_ext);
+    let out8_hi = _mm_unpackhi_epi16(out8, sign8_ext);
+
+    let (s0, s1, s2, s3) = split4_mut(coeffs);
+    simd_mem::_mm_storeu_si128(s0, out0_lo);
+    simd_mem::_mm_storeu_si128(s1, out0_hi);
+    simd_mem::_mm_storeu_si128(s2, out8_lo);
+    simd_mem::_mm_storeu_si128(s3, out8_hi);
+
+    // Return true if any coefficient is non-zero
+    let packed = _mm_packs_epi16(out0, out8);
+    _mm_movemask_epi8(_mm_cmpeq_epi8(packed, zero)) != 0xffff
+}
+
+/// SIMD-optimized AC-only quantization of a 4x4 block (DC at pos 0 unchanged).
+/// Returns true if any AC coefficient is non-zero.
+#[cfg(target_arch = "x86_64")]
+pub fn quantize_ac_only_simd(
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+) -> bool {
+    let dc = coeffs[0];
+    let has_nz = quantize_block_simd(coeffs, matrix, use_sharpen);
+    coeffs[0] = dc; // Restore DC
+    // Check AC coefficients only
+    coeffs[1..].iter().any(|&c| c != 0) || has_nz
+}
+
+/// NEON-optimized AC-only quantization
+#[cfg(target_arch = "aarch64")]
+pub fn quantize_ac_only_simd(
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+) -> bool {
+    let dc = coeffs[0];
+    let has_nz = quantize_block_simd(coeffs, matrix, use_sharpen);
+    coeffs[0] = dc;
+    coeffs[1..].iter().any(|&c| c != 0) || has_nz
+}
+
+/// WASM SIMD128-optimized AC-only quantization
+#[cfg(target_arch = "wasm32")]
+pub fn quantize_ac_only_simd(
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+) -> bool {
+    let dc = coeffs[0];
+    let has_nz = quantize_block_simd(coeffs, matrix, use_sharpen);
+    coeffs[0] = dc;
+    coeffs[1..].iter().any(|&c| c != 0) || has_nz
+}
+
+/// Scalar fallback for non-SIMD platforms (including i686)
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "wasm32"
+)))]
+pub fn quantize_ac_only_simd(
+    coeffs: &mut [i32; 16],
+    matrix: &VP8Matrix,
+    _use_sharpen: bool,
+) -> bool {
+    matrix.quantize_ac_only(coeffs);
+    coeffs[1..].iter().any(|&c| c != 0)
+}
+
+// =============================================================================
+// Fused Quantize + Dequantize SIMD
+// =============================================================================
+
+/// One-region fused quantize+dequantize of all 16 luma AC blocks of an MB
+/// (I16: DC lives in Y2 and is zeroed). Batches what was 16 per-block
+/// dispatches into a single `target_feature` region where the `#[rite]`
+/// kernel inlines. Levels land in `quant` (natural order), dequantized
+/// values in `dequant`. Bit-identical to per-block `quantize_ac_only_simd`
+/// + scalar `dequantize` (same kernel, DC zeroed on input).
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+pub(crate) fn quantize_dequantize_luma16_ac_arcane(
+    token: X64V3Token,
+    luma_blocks: &[i16; 16 * 16],
+    matrix: &VP8Matrix,
+    quant: &mut [[i16; 16]; 16],
+    dequant: &mut [[i16; 16]; 16],
+) {
+    for b in 0..16 {
+        let mut blk: [i16; 16] = luma_blocks[b * 16..][..16].try_into().unwrap();
+        blk[0] = 0;
+        quantize_dequantize_block_sse2(token, &blk, matrix, true, &mut quant[b], &mut dequant[b]);
+        quant[b][0] = 0;
+        dequant[b][0] = 0;
+    }
+}
+
+/// Fused quantize+dequantize: produces both quantized levels and dequantized
+/// values (quantized * q) in a single SIMD pass. Returns true if any coefficient
+/// is non-zero. Coefficients are in natural (raster) order.
+///
+/// This matches libwebp's DoQuantizeBlock_SSE2 dual-output pattern where
+/// dequantized values are computed immediately after quantization.
+pub fn quantize_dequantize_block_simd(
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    incant!(
+        quantize_dequantize_block_dispatch(coeffs, matrix, use_sharpen, quantized, dequantized),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// Scalar implementation of fused quantize+dequantize
+pub(crate) fn quantize_dequantize_block_scalar(
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    let mut has_nz = false;
+    for pos in 0..16 {
+        // Levels are clamped to MAX_LEVEL (2047) and dequantized = level*q
+        // stays within the DCT coefficient range, so both fit i16.
+        let q = matrix.quantize_coeff(i32::from(coeffs[pos]), pos);
+        quantized[pos] = q as i16;
+        dequantized[pos] = (q * i32::from(matrix.q[pos])) as i16;
+        if q != 0 {
+            has_nz = true;
+        }
+    }
+    has_nz
+}
+
+/// V3 tier for quantize_dequantize_block dispatch.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn quantize_dequantize_block_dispatch_v3(
+    _token: X64V3Token,
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    quantize_dequantize_block_sse2(_token, coeffs, matrix, use_sharpen, quantized, dequantized)
+}
+
+/// NEON tier for quantize_dequantize_block dispatch.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn quantize_dequantize_block_dispatch_neon(
+    token: NeonToken,
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    crate::common::simd_neon::quantize_dequantize_block_neon(
+        token,
+        coeffs,
+        matrix,
+        use_sharpen,
+        quantized,
+        dequantized,
+    )
+}
+
+/// WASM tier for quantize_dequantize_block dispatch.
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+fn quantize_dequantize_block_dispatch_wasm128(
+    token: Wasm128Token,
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    crate::common::simd_wasm::quantize_dequantize_block_wasm(
+        token,
+        coeffs,
+        matrix,
+        use_sharpen,
+        quantized,
+        dequantized,
+    )
+}
+
+/// Scalar tier for quantize_dequantize_block dispatch.
+#[inline(always)]
+fn quantize_dequantize_block_dispatch_scalar(
+    _token: ScalarToken,
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    _use_sharpen: bool,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    quantize_dequantize_block_scalar(coeffs, matrix, quantized, dequantized)
+}
+
+/// SSE2 fused quantize+dequantize.
+/// Quantizes coefficients, then immediately multiplies by q to get dequantized values.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+pub(crate) fn quantize_dequantize_block_sse2(
+    _token: X64V3Token,
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    let max_coeff = _mm_set1_epi16(MAX_LEVEL as i16);
+    let zero = _mm_setzero_si128();
+
+    // Direct i16 loads (DCT coefficients are i16 end-to-end)
+    let (c_lo, c_hi) = split2_ref(coeffs);
+    let in0 = simd_mem::_mm_loadu_si128(c_lo);
+    let in8 = simd_mem::_mm_loadu_si128(c_hi);
+
+    // Load quantization parameters
+    let iq0 = _mm_set_epi16(
+        matrix.iq[7] as i16,
+        matrix.iq[6] as i16,
+        matrix.iq[5] as i16,
+        matrix.iq[4] as i16,
+        matrix.iq[3] as i16,
+        matrix.iq[2] as i16,
+        matrix.iq[1] as i16,
+        matrix.iq[0] as i16,
+    );
+    let iq8 = _mm_set_epi16(
+        matrix.iq[15] as i16,
+        matrix.iq[14] as i16,
+        matrix.iq[13] as i16,
+        matrix.iq[12] as i16,
+        matrix.iq[11] as i16,
+        matrix.iq[10] as i16,
+        matrix.iq[9] as i16,
+        matrix.iq[8] as i16,
+    );
+
+    // Extract sign
+    let sign0 = _mm_cmpgt_epi16(zero, in0);
+    let sign8 = _mm_cmpgt_epi16(zero, in8);
+
+    // Absolute value
+    let mut coeff0 = _mm_sub_epi16(_mm_xor_si128(in0, sign0), sign0);
+    let mut coeff8 = _mm_sub_epi16(_mm_xor_si128(in8, sign8), sign8);
+
+    // Add sharpen if enabled
+    if use_sharpen {
+        let sharpen0 = _mm_set_epi16(
+            matrix.sharpen[7] as i16,
+            matrix.sharpen[6] as i16,
+            matrix.sharpen[5] as i16,
+            matrix.sharpen[4] as i16,
+            matrix.sharpen[3] as i16,
+            matrix.sharpen[2] as i16,
+            matrix.sharpen[1] as i16,
+            matrix.sharpen[0] as i16,
+        );
+        let sharpen8 = _mm_set_epi16(
+            matrix.sharpen[15] as i16,
+            matrix.sharpen[14] as i16,
+            matrix.sharpen[13] as i16,
+            matrix.sharpen[12] as i16,
+            matrix.sharpen[11] as i16,
+            matrix.sharpen[10] as i16,
+            matrix.sharpen[9] as i16,
+            matrix.sharpen[8] as i16,
+        );
+        coeff0 = _mm_add_epi16(coeff0, sharpen0);
+        coeff8 = _mm_add_epi16(coeff8, sharpen8);
+    }
+
+    // Quantize: out = (coeff * iQ + B) >> QFIX
+    let coeff_iq0_h = _mm_mulhi_epu16(coeff0, iq0);
+    let coeff_iq0_l = _mm_mullo_epi16(coeff0, iq0);
+    let coeff_iq8_h = _mm_mulhi_epu16(coeff8, iq8);
+    let coeff_iq8_l = _mm_mullo_epi16(coeff8, iq8);
+
+    let out_00 = _mm_unpacklo_epi16(coeff_iq0_l, coeff_iq0_h);
+    let out_04 = _mm_unpackhi_epi16(coeff_iq0_l, coeff_iq0_h);
+    let out_08 = _mm_unpacklo_epi16(coeff_iq8_l, coeff_iq8_h);
+    let out_12 = _mm_unpackhi_epi16(coeff_iq8_l, coeff_iq8_h);
+
+    let (b0, b1, b2, b3) = split4_ref(&matrix.bias);
+    let bias_00 = simd_mem::_mm_loadu_si128(b0);
+    let bias_04 = simd_mem::_mm_loadu_si128(b1);
+    let bias_08 = simd_mem::_mm_loadu_si128(b2);
+    let bias_12 = simd_mem::_mm_loadu_si128(b3);
+
+    let out_00 = _mm_srai_epi32(_mm_add_epi32(out_00, bias_00), QFIX as i32);
+    let out_04 = _mm_srai_epi32(_mm_add_epi32(out_04, bias_04), QFIX as i32);
+    let out_08 = _mm_srai_epi32(_mm_add_epi32(out_08, bias_08), QFIX as i32);
+    let out_12 = _mm_srai_epi32(_mm_add_epi32(out_12, bias_12), QFIX as i32);
+
+    // Pack to i16 and clamp
+    let mut qout0 = _mm_packs_epi32(out_00, out_04);
+    let mut qout8 = _mm_packs_epi32(out_08, out_12);
+    qout0 = _mm_min_epi16(qout0, max_coeff);
+    qout8 = _mm_min_epi16(qout8, max_coeff);
+
+    // Apply sign back
+    qout0 = _mm_sub_epi16(_mm_xor_si128(qout0, sign0), sign0);
+    qout8 = _mm_sub_epi16(_mm_xor_si128(qout8, sign8), sign8);
+
+    // === Dequantize: dequantized = quantized * q ===
+    // Load q values as i16
+    let (q0_arr, q8_arr) = split2_ref(&matrix.q);
+    let q0 = simd_mem::_mm_loadu_si128(q0_arr);
+    let q8 = simd_mem::_mm_loadu_si128(q8_arr);
+
+    // Multiply i16 * i16 (result fits in i16 for typical ranges)
+    let dq0 = _mm_mullo_epi16(qout0, q0);
+    let dq8 = _mm_mullo_epi16(qout8, q8);
+
+    // Store quantized levels and dequantized values directly as i16
+    let (qs_lo, qs_hi) = split2_mut(quantized);
+    simd_mem::_mm_storeu_si128(qs_lo, qout0);
+    simd_mem::_mm_storeu_si128(qs_hi, qout8);
+
+    let (ds_lo, ds_hi) = split2_mut(dequantized);
+    simd_mem::_mm_storeu_si128(ds_lo, dq0);
+    simd_mem::_mm_storeu_si128(ds_hi, dq8);
+
+    // Check if any coefficient is non-zero
+    let packed = _mm_packs_epi16(qout0, qout8);
+    _mm_movemask_epi8(_mm_cmpeq_epi8(packed, zero)) != 0xffff
+}
+
+/// Fused quantize+dequantize for AC-only (zeroes DC at position 0).
+///
+/// Used for Y1 blocks in I16 mode where DC goes to the Y2 block. The DC slot
+/// is zeroed (matching libwebp's `QuantizeBlock_SSE2` behavior at `enc_sse2.c`)
+/// rather than left holding the original input value. Both produce identical
+/// final pixels because the WHT path overwrites slot 0 later — zeroing is just
+/// the clearer expression of intent. (#35-#11)
+pub fn quantize_dequantize_ac_only_simd(
+    coeffs: &[i16; 16],
+    matrix: &VP8Matrix,
+    use_sharpen: bool,
+    quantized: &mut [i16; 16],
+    dequantized: &mut [i16; 16],
+) -> bool {
+    // `quantize_dequantize_block_simd` dispatches per platform (incl. the
+    // scalar tier on i686), so ONE definition covers every arch — the old
+    // per-arch copies had identical bodies and left i686 with none.
+    let has_nz =
+        quantize_dequantize_block_simd(coeffs, matrix, use_sharpen, quantized, dequantized);
+    // Zero DC; Y2 path will overwrite slot 0 with the WHT result later.
+    quantized[0] = 0;
+    dequantized[0] = 0;
+    has_nz || quantized[1..].iter().any(|&c| c != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quantize_dequantize_block_matches_separate() {
+        let matrix = VP8Matrix::new(4, 6, MatrixType::Y1);
+        let coeffs: [i16; 16] = [120, -45, 30, -15, 22, -8, 5, -3, 10, -6, 4, -2, 3, -1, 1, 0];
+
+        let mut fused_quantized = [0i16; 16];
+        let mut fused_dequantized = [0i16; 16];
+        let fused_nz = quantize_dequantize_block_simd(
+            &coeffs,
+            &matrix,
+            true,
+            &mut fused_quantized,
+            &mut fused_dequantized,
+        );
+
+        // Separate path still runs on i32 (quantize_block_simd + dequantize_block
+        // are the in-place i32 Y2-path primitives).
+        let mut sep_quantized = [0i32; 16];
+        for (d, &v) in sep_quantized.iter_mut().zip(coeffs.iter()) {
+            *d = i32::from(v);
+        }
+        quantize_block_simd(&mut sep_quantized, &matrix, true);
+        let mut sep_dequantized = sep_quantized;
+        matrix.dequantize_block(&mut sep_dequantized);
+        let sep_nz = sep_quantized.iter().any(|&c| c != 0);
+
+        let fused_q_wide: [i32; 16] = core::array::from_fn(|k| i32::from(fused_quantized[k]));
+        let fused_dq_wide: [i32; 16] = core::array::from_fn(|k| i32::from(fused_dequantized[k]));
+        assert_eq!(
+            fused_q_wide, sep_quantized,
+            "Quantized mismatch.\nFused: {:?}\nSep: {:?}",
+            fused_q_wide, sep_quantized
+        );
+        assert_eq!(
+            fused_dq_wide, sep_dequantized,
+            "Dequantized mismatch.\nFused: {:?}\nSep: {:?}",
+            fused_dq_wide, sep_dequantized
+        );
+        assert_eq!(fused_nz, sep_nz, "has_nz mismatch");
+    }
+
+    #[test]
+    fn test_quantize_dequantize_block_all_zero() {
+        let matrix = VP8Matrix::new(80, 100, MatrixType::UV);
+        let coeffs = [0i16; 16];
+
+        let mut quantized = [0i16; 16];
+        let mut dequantized = [0i16; 16];
+        let has_nz = quantize_dequantize_block_simd(
+            &coeffs,
+            &matrix,
+            false,
+            &mut quantized,
+            &mut dequantized,
+        );
+
+        assert!(!has_nz);
+        assert_eq!(quantized, [0; 16]);
+        assert_eq!(dequantized, [0; 16]);
+    }
+}
+
+/// wasm SIMD128 kernels vs the scalar reference on random inputs (runs in
+/// CI's wasmtime `--lib` job; scalar output is what x86/NEON produce).
+#[cfg(all(
+    test,
+    any(
+        all(target_arch = "wasm32", target_feature = "simd128"),
+        target_arch = "x86_64"
+    )
+))]
+mod wasm_parity {
+    use super::*;
+    // The same randomized domain runs against the x86 tier too: an input on
+    // which x86 also disagrees with scalar is outside the production domain.
+    #[cfg(target_arch = "wasm32")]
+    fn tok() -> Wasm128Token {
+        Wasm128Token::summon().expect("+simd128")
+    }
+    #[cfg(target_arch = "x86_64")]
+    fn tok() -> X64V3Token {
+        X64V3Token::summon().expect("AVX2")
+    }
+    macro_rules! simd {
+        ($f:ident) => {
+            paste::paste! {{
+                #[cfg(target_arch = "wasm32")]
+                let f = [<$f _wasm128>];
+                #[cfg(target_arch = "x86_64")]
+                let f = [<$f _v3>];
+                f
+            }}
+        };
+    }
+
+    fn rng(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+
+    #[test]
+    fn quantize_kernels_match_scalar() {
+        let t = tok();
+        let mut s = 0x1234_5678_9abc_def1u64;
+        for case in 0..20_000 {
+            let ty = [MatrixType::Y1, MatrixType::Y2, MatrixType::UV][case % 3];
+            // VP8 quantizer steps start at 4 (Y2 up to 2*157 DC / 284*155/100 AC);
+            // the SIMD paths hold iq = 2^17/q in u16, which needs q >= 4.
+            let q_dc = 4 + (rng(&mut s) % 311) as u16;
+            let q_ac = 4 + (rng(&mut s) % 437) as u16;
+            let m = VP8Matrix::new(q_dc, q_ac, ty);
+            let range = [64i64, 512, 2048, 8191][(rng(&mut s) % 4) as usize];
+            let c16: [i16; 16] = core::array::from_fn(|_| {
+                ((rng(&mut s) % (2 * range as u64 + 1)) as i64 - range) as i16
+            });
+            let c32: [i32; 16] = core::array::from_fn(|i| i32::from(c16[i]));
+            // Y1 is always quantized with sharpening; Y2/UV have a zero
+            // sharpen table, so both flag values are in-domain for them.
+            let flags: &[bool] = if matches!(ty, MatrixType::Y1) {
+                &[true]
+            } else {
+                &[true, false]
+            };
+            for &sharpen in flags {
+                let (mut a, mut b) = (c32, c32);
+                let na = simd!(quantize_block_dispatch)(t, &mut a, &m, sharpen);
+                let nb = quantize_block_dispatch_scalar(ScalarToken, &mut b, &m, sharpen);
+                assert_eq!(
+                    (a, na),
+                    (b, nb),
+                    "quantize_block case {case} sharpen {sharpen} q {q_dc}/{q_ac}"
+                );
+
+                let (mut qa, mut da, mut qb, mut db) =
+                    ([0i16; 16], [0i16; 16], [0i16; 16], [0i16; 16]);
+                let na = simd!(quantize_dequantize_block_dispatch)(
+                    t, &c16, &m, sharpen, &mut qa, &mut da,
+                );
+                let nb = quantize_dequantize_block_dispatch_scalar(
+                    ScalarToken,
+                    &c16,
+                    &m,
+                    sharpen,
+                    &mut qb,
+                    &mut db,
+                );
+                assert_eq!(
+                    (qa, da, na),
+                    (qb, db, nb),
+                    "quantize_dequantize case {case} sharpen {sharpen} q {q_dc}/{q_ac} in {c16:?}"
+                );
+            }
+            let (mut a, mut b) = (c32, c32);
+            simd!(dequantize_block_dispatch)(t, &m.q, &mut a);
+            dequantize_block_dispatch_scalar(ScalarToken, &m.q, &mut b);
+            assert_eq!(a, b, "dequantize case {case}");
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+pub(crate) fn quantize_dequantize_luma16_ac_neon(
+    token: NeonToken,
+    luma_blocks: &[i16; 256],
+    matrix: &VP8Matrix,
+    quant: &mut [[i16; 16]; 16],
+    dequant: &mut [[i16; 16]; 16],
+) {
+    let context = crate::common::simd_neon::prepare_quant_context(token, matrix, true);
+    for b in 0..16 {
+        let mut block: [i16; 16] = luma_blocks[b * 16..b * 16 + 16].try_into().unwrap();
+        block[0] = 0;
+        crate::common::simd_neon::quantize_prepared(
+            token,
+            &block,
+            &context,
+            &mut quant[b],
+            &mut dequant[b],
+        );
+        quant[b][0] = 0;
+        dequant[b][0] = 0;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+pub(crate) fn quantize_dequantize_chroma8_neon(
+    token: NeonToken,
+    u: &[i16; 64],
+    v: &[i16; 64],
+    matrix: &VP8Matrix,
+    quant: &mut [[i16; 16]; 8],
+    dequant: &mut [[i16; 16]; 8],
+) {
+    let context = crate::common::simd_neon::prepare_quant_context(token, matrix, false);
+    for b in 0..8 {
+        let plane = if b < 4 { u } else { v };
+        let offset = (b % 4) * 16;
+        let block = plane[offset..offset + 16].try_into().unwrap();
+        crate::common::simd_neon::quantize_prepared(
+            token,
+            block,
+            &context,
+            &mut quant[b],
+            &mut dequant[b],
+        );
+    }
+}

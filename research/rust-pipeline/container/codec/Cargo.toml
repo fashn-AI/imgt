@@ -1,0 +1,532 @@
+# NOTE: zenwebp is intentionally NOT a Cargo workspace. The sibling
+# `zenwebp-recompress/` directory is a SELF-CONTAINED nested workspace with
+# path deps to ../zensim, ../zenanalyze, etc. Those siblings are not checked
+# out on zenwebp's CI runners, and Cargo resolves a workspace's entire
+# member graph upfront — so making zenwebp-recompress a member here would
+# break `cargo build`/`test`/`clippy` on CI (the same constraint that keeps
+# zenanalyze/zenpredict registry-only below). zenwebp-recompress builds
+# independently from its own directory when the siblings are present.
+
+[package]
+name = "zenwebp"
+version = "0.5.0"
+edition = "2024"
+license = "(AGPL-3.0-only OR LicenseRef-Imazen-Commercial) AND (MIT OR Apache-2.0)"
+rust-version = "1.93"
+
+description = "High-performance WebP encoding and decoding in pure Rust"
+homepage = "https://github.com/imazen/zenwebp"
+repository = "https://github.com/imazen/zenwebp"
+documentation = "https://docs.rs/zenwebp"
+categories = ["multimedia::images", "multimedia::encoding", "encoding"]
+keywords = ["webp", "image", "encoder", "decoder", "codec"]
+readme = "README.crates.md"
+autobenches = false
+
+include = ["/src", "LICENSE-AGPL3", "LICENSE-COMMERCIAL", "README.crates.md", "CHANGES.md"]
+
+[dependencies]
+# Core dependencies - all no_std compatible
+byteorder-lite = { version = "0.1.0", default-features = false }
+enough = { version = "0.4.3", default-features = false, features = ["alloc"] }
+hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher"] }
+thiserror = { version = "2.0.18", default-features = false }
+whereat = { version = "0.1.5", default-features = false }
+libm = "0.2.16"
+zencodec = ">=0.1.27, <0.3.0"
+# zennode = { path = "../zennode/zennode", optional = true, default-features = false, features = ["derive"] }
+zenpixels = { version = ">=0.2.11, <0.4.0", default-features = false }
+# Used by the zencodec encode path to synthesize an ICC profile from a
+# CICP-only source (WebP has no CICP carrier, so an embedded ICC is the only
+# way to retain non-sRGB primaries). `synthesize_icc_for_cicp` is a transfer-
+# aware lookup — no CMS, no_std-safe. Unconditional (the zencodec integration
+# is always-on); `default-features = false` keeps the wasm32 (no_std) build
+# clean.
+zenpixels-convert = { version = ">=0.2.13, <0.4.0", default-features = false }
+# self_cell backs the owned-data animation decoder in the zencodec adapter
+# (codec.rs). no_std-clean, so it rides the always-on integration.
+self_cell = { version = "1.2" }
+bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }
+garb = { version = "0.2.5", default-features = false, features = ["experimental"] }
+linear-srgb = { version = "0.6.7"}
+zenyuv = { version = "0.1.3", default-features = false }
+png = { version = "0.18", optional = true }
+webp = { version = "0.3.0", optional = true }
+archmage = { version = "0.9.15", features = ["macros"] }
+magetypes = { version = "0.9.15" }
+rgb = { version = "0.8", optional = true, default-features = false, features = ["as-bytes"] }
+imgref = { version = "1.12", optional = true, default-features = false }
+zensim = { version = "0.2", optional = true }
+# Private experimental runtime: leave the calibrated legacy scorer untouched.
+zensim-candidate = { package = "zensim", version = "0.3.0", git = "https://github.com/imazen/zensim", rev = "6c7c14a300ace3b0e1631b754faf8bd99aebbcdf", optional = true, default-features = false, features = ["custom-profiles", "feature-regime-v2"] }
+zenpredict-serving = { package = "zenpredict", version = "0.2.0", git = "https://github.com/imazen/zenanalyze", rev = "05de3cbc44b19d8769077d99710b0146c761d6df", optional = true }
+# `zenanalyze-api` — the version-unifying feature contract (`Offer`, `Request`,
+# `Select`) and this crate's INTERCHANGE BOUNDARY, so a host on any `zenanalyze`
+# version can drive the classifier by handing it an `Offer`. See
+# `docs/sole-contract.md` in imazen/zenanalyze.
+#
+# Declared as a crates.io VERSION, never a git rev: a registry dep and a git dep
+# are different Cargo sources, and two git deps at different revs are too —
+# either way a consumer ends up with two `Offer` types that don't interconvert.
+# Unreleased contract changes come in through the single `[patch.crates-io]`
+# below, which rewrites this entry and KEEPS unification.
+zenanalyze-api = { version = "0.1.0", optional = true, default-features = false }
+# zenanalyze rides `analyzer` unconditionally: it is what `classify_image_type_rgb8`
+# scans with when no offer was handed in, and what powers the dev/ extractors. A
+# direct dep like this is explicitly PERMITTED — a codec that needs features the
+# host didn't provide should re-analyse. The public boundary is still
+# zenanalyze-api-only, which is the rule that actually matters and is checkable by
+# reading the signatures.
+#
+# It used to be optional behind a second `analyzer-bundled` feature. That flag was
+# removed 2026-08-30: it bought "analyzer without zenanalyze", a configuration
+# nobody built, and its `#[cfg(not(analyzer-bundled))]` arms were dead code that CI
+# only compiled by accident. Feature permutations are where bugs hide.
+#
+# Historical note: this used to be a plain registry `0.1.0` pin that the library
+# named types from directly, and `--features analyzer` HAD NOT COMPILED since
+# `IndexedPaletteWidth` was replaced by `PaletteLog2Size` upstream — CI could
+# never enable the feature. Routing the classifier through the contract is what
+# fixed that; `analyzer` alone no longer depends on zenanalyze at all.
+zenanalyze = { version = "0.2.0", optional = true, features = ["api", "experimental"] }
+
+[dev-dependencies]
+zencodec-io = { git = "https://github.com/imazen/zencodec", rev = "d327434b0826a3e39633665c76f5081c0ceb34cc" }
+# Companion crate shipping the conformance checks (incl.
+# `check_decode_truncation_series`); rides the same registry zencodec 0.1.26.
+zencodec-testkit = ">=0.1.0, <0.3.0"
+# `testable_dispatch` lets benches/tier_isolation.rs disable the baseline
+# SIMD token (NEON on aarch64) so the scalar arm is real rather than a
+# second measurement of the SIMD path.
+archmage = { version = "0.9.15", features = ["std", "macros", "testable_dispatch"] }
+paste = "1.0.14"
+png = "0.18"
+rand = "0.10.1"
+rayon = "1.10"
+rgb = "0.8"
+zenpng = "0.1.4"
+zenpixels-convert = { version = ">=0.2.13, <0.4.0", features = ["rgb"] }
+jpeg-decoder = "0.3"
+# zenanalyze as a path-pinned dev-dep was removed: CI regression-test
+# runs (`cargo build` then `cargo test --test fuzz_regression`) don't
+# have the sibling repo checked out, and unconditional path-only
+# dev-deps break cargo's dependency resolution. The dev/ binaries that
+# consume zenanalyze have `required-features = ["analyzer"]`, which
+# pulls it in via the optional regular dep above when the feature is
+# enabled.
+
+# Native-only dev-deps (C bindings, threading, or native-only features)
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+butteraugli = "0.9.0"
+codec-corpus = "1"
+dssim-core = "3.4"
+fast-ssim2 = "0.7.1"
+imgref = "1.12"
+libwebp-sys = "0.14"
+webp = "0.3.1"
+# 0.4.0: webpx free decode fns apply Limits::default() (64 MP / 64 MiB
+# caps) — fine here, the differential tests decode corpus images far
+# below the caps. 0.1.4 was yanked upstream.
+webpx = { version = "0.4.0", features = ["animation"] }
+yuv = "0.8"
+# Pareto sweep harness uses zenresize for size variants (Lanczos),
+# matching the project-wide resampling used elsewhere in zen* benches.
+zenresize = "0.3"
+serde_json = "1"
+sha2 = "0.10"
+zenbench = { version = "0.1.2", features = ["criterion-compat"] }
+zensim = "0.2"
+zensim-regress = "0.3.0"
+
+[features]
+research-profile = ["std"]
+# Optional structural walker; baseline metadata is always available.
+inventory = []
+default = ["std", "fast-yuv", "pixel-types"]
+# Dev-only: exposes internal SIMD kernels for per-tier benchmarking. Not API.
+_dev = []
+# Enable std library. Required only for Encoder.encode_to_writer().
+# Without std, use slice-based decoder and Vec-based encoder APIs.
+std = ["thiserror/std", "whereat/std", "byteorder-lite/std"]
+# Type-safe pixel format support via the `rgb` crate.
+pixel-types = ["dep:rgb"]
+# imgref integration for Img<Vec<P>> / Img<&[P]> decode/encode.
+imgref = ["dep:imgref", "pixel-types"]
+# Enable AVX-512 autoversion variants (passthrough to archmage).
+avx512 = ["archmage/avx512"]
+# Test-only: cause the SIMD tier parity tests to PANIC if any token is
+# compile-time guaranteed (and therefore cannot be disabled at runtime).
+# Used in CI to ensure full tier coverage. Do NOT combine with
+# `-Ctarget-cpu=native` — that bakes features in at compile time and
+# defeats runtime disabling, which is exactly what this feature catches.
+testable_dispatch = []
+# --- Internal features (not for public use, underscore prefix = private) ---
+# Nightly-only: enables #[bench] micro-benchmarks. Requires `cargo +nightly test`.
+_benchmarks = []
+# Run corpus-based integration tests (requires codec-corpus data).
+_corpus_tests = []
+# Debug mode selection for encoder (set MB_DEBUG=x,y env var to debug specific macroblock).
+mode_debug = ["std"]
+# Enable PNG/WebP deps for profiling binaries.
+_profiling = ["dep:png", "dep:webp"]
+# WASM profiling - minimal deps for wasm32 benchmarking.
+_wasm_profiling = ["std"]
+# Deprecated no-op: YUV conversion now always uses zenyuv.
+# Kept for backwards compatibility so existing Cargo.toml entries
+# with `features = ["fast-yuv"]` don't break.
+fast-yuv = []
+# NOTE: `zencodec` is no longer an optional feature — the codec-trait
+# integration is now an always-on hard dependency (zencodec is
+# `#![no_std] + alloc`, so it builds on wasm32/no_std). `self_cell` and
+# `zenpixels-convert` are likewise unconditional deps now. See the
+# `[dependencies]` section above.
+# ICC synthesis for the zencodec color-emit path, via zenpixels-convert's
+# `icc-db` feature: a bundled LZ4 profile blob + the pure-Rust lz4_flex
+# decoder — far lighter than pulling moxcms (which is no longer involved in
+# synthesis). Covers the full ITU-T H.273 grid incl PQ/HLG. Without it only
+# the bundled Display-P3 / SDR BT.2020 / AdobeRGB consts synthesize, and an
+# unsynthesizable (off-grid) CICP is an encode error (WebP has no CICP
+# carrier — never a silently mislabeled image).
+cms = ["zenpixels-convert/icc-db"]
+# Enable target_zensim closed-loop adaptive encoder.
+# Pulls in zensim for perceptual measurement; iteration loop encodes →
+# decodes → measures → adjusts global VP8 quality until it lands in
+# the target band. See `LossyConfig::with_target_zensim`.
+target-zensim = ["dep:zensim", "std"]
+# Content classification. The classifier reads feature values out of a
+# `zenanalyze_api::Offer` the caller hands in; when there is no offer, the
+# zero-argument entry points (`classify_image_type_rgb8`) run their own scan with
+# the bundled `zenanalyze`. Both deps ride this one flag — see the note on the
+# `zenanalyze` dependency above for why there is no second, provider-less variant.
+#
+# The contract still governs the BOUNDARY: no `zenanalyze` type appears in any
+# public signature here, so a host on a different `zenanalyze` version can drive
+# `classify_image_type_from_offer` with its own pass.
+analyzer = ["dep:zenanalyze-api", "dep:zenanalyze"]
+# dev-only — enables runtime ablation toggles read from environment
+# variables for `dev/zensim_*.rs` measurement binaries. Production
+# builds should leave this off so the iteration hot path makes no
+# `std::env::var` calls. See `src/encoder/zensim_target.rs` for the
+# list of toggles.
+ablation = ["target-zensim"]
+# Private candidate binding for the existing phase-3 trace instrument.
+__zensim-research = ["ablation", "dep:zensim-candidate", "dep:zenpredict-serving"]
+# Expose advanced encoder tuning knobs (partition_limit, multi_pass_stats,
+# smooth_segment_map, sharp_yuv, cost_model). Gated because the default
+# public API surface keeps the codec's user contract minimal — Quality
+# + Method + a few SNS/filter knobs — and these axes are mostly for
+# corpus calibration sweeps and the picker training pipeline. Build
+# with `--features expert` for picker training, codec calibration, or
+# any harness varying these axes. Production codec consumers don't
+# need this.
+__expert = []
+# Enable zennode pipeline node definitions
+# zennode = ["dep:zennode"]
+
+[[example]]
+name = "sweep_validate"
+required-features = ["__expert"]
+
+[[example]]
+name = "debug_zensim"
+path = "dev/debug_zensim.rs"
+
+# #38 StrictLibwebpParity tooling. `byteparity_sweep` is the score; `mbpixdiff`
+# finds the first EMITTED divergence to trace (per-MB debug output mixes ~4
+# probe calls per MB and will mislead you otherwise); `bitexact_diff` drills
+# header fields + the mode stream for one cell.
+[[example]]
+name = "byteparity_sweep"
+path = "dev/byteparity_sweep.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "sharpyuv_compare"
+path = "dev/sharpyuv_compare.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "callgrind_encode"
+path = "dev/callgrind_encode.rs"
+required-features = ["_profiling"]
+
+[[example]]
+name = "callgrind_libwebp"
+path = "dev/callgrind_libwebp.rs"
+required-features = ["_profiling"]
+
+[[example]]
+name = "output_hash"
+path = "dev/output_hash.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "issue71_probe"
+path = "dev/issue71_probe.rs"
+required-features = ["mode_debug"]
+
+[[example]]
+name = "corpus_test"
+path = "dev/corpus_test.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "sharpyuv_selftest"
+path = "dev/sharpyuv_selftest.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "alphadiff"
+path = "dev/alphadiff.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "mbpixdiff"
+path = "dev/mbpixdiff.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "bitexact_diff"
+path = "dev/bitexact_diff.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "zensim_calibrate"
+path = "dev/zensim_calibrate.rs"
+required-features = ["target-zensim"]
+
+[[example]]
+name = "zensim_convergence_eval"
+path = "dev/zensim_convergence_eval.rs"
+required-features = ["target-zensim"]
+
+[[example]]
+name = "zensim_extended_eval"
+path = "dev/zensim_extended_eval.rs"
+required-features = ["target-zensim"]
+
+[[example]]
+name = "zensim_ab_quadrant_vs_segmap"
+path = "dev/zensim_ab_quadrant_vs_segmap.rs"
+required-features = ["target-zensim", "ablation"]
+
+[[example]]
+name = "zensim_ablation"
+path = "dev/zensim_ablation.rs"
+required-features = ["target-zensim", "ablation"]
+
+[[example]]
+name = "zensim_phase3_trace"
+path = "dev/zensim_phase3_trace.rs"
+required-features = ["target-zensim", "ablation"]
+
+[[example]]
+name = "empirical_sweep"
+path = "dev/empirical_sweep.rs"
+
+[[example]]
+name = "issue_32_baseline"
+path = "dev/issue_32_baseline.rs"
+
+[[example]]
+name = "parity_baseline"
+path = "dev/parity_baseline.rs"
+
+[[example]]
+name = "cost_model_sweep"
+path = "dev/cost_model_sweep.rs"
+required-features = ["__expert"]
+
+[[example]]
+name = "issue44_dump_scores"
+path = "dev/issue44_dump_scores.rs"
+
+[[example]]
+name = "zenanalyze_classify_diff"
+path = "dev/zenanalyze_classify_diff.rs"
+required-features = ["analyzer"]
+
+# Proper Pareto sweep harness following zenpicker/FOR_NEW_CODECS.md
+# Step 1+2. Per (image, config, q) → (bytes, zensim, encode_ms).
+# Per (image) → full zenanalyze feature vector. --features-only mode
+# extends the features TSV without re-running the encode pass.
+[[example]]
+name = "zenwebp_pareto"
+path = "dev/zenwebp_pareto.rs"
+required-features = ["analyzer"]
+
+# Replays features against an existing pareto features TSV — used to
+# regenerate the feature columns when the analyzer schema has moved
+# but the encode TSV is reused as-is. See dev/zenwebp_features_replay.rs.
+[[example]]
+name = "zenwebp_features_replay"
+path = "dev/zenwebp_features_replay.rs"
+required-features = ["analyzer"]
+
+# Tuned-default A/B harness: (image, method, q) -> (size, zsim, min-of-3 ms)
+# TSV for measured adoption of parity-derived candidates. Run once per build
+# variant with a distinct --variant label; rows append to one TSV. See
+# benchmarks/tuned_candidates_2026-07-14.md for the discipline it feeds.
+[[example]]
+name = "tuned_ab_sweep"
+path = "dev/tuned_ab_sweep.rs"
+
+# Scans-pocket probe: per-config I4/I16/skip + segment stats, tuned vs
+# parity, on scan-class images. See benchmarks/rd_pareto_review_2026-07-16.md.
+[[example]]
+name = "scan_stats_probe"
+path = "dev/scan_stats_probe.rs"
+required-features = ["__expert"]
+
+# One-shot empirical probe: do tiny zenwebp-encoded images have an
+# intrinsic ceiling on achievable zensim score? See dev/zensim_ceiling_probe.rs.
+[[example]]
+name = "zensim_ceiling_probe"
+path = "dev/zensim_ceiling_probe.rs"
+required-features = ["analyzer"]
+
+# Build size-dense corpus: 20 representative source images resampled
+# (Mitchell-Netravali) to log-spaced sizes 32..4096 for picker
+# size-axis training coverage. Output PNGs feed zenwebp_pareto via
+# --corpus.
+[[example]]
+name = "build_size_dense_corpus"
+path = "dev/build_size_dense_corpus.rs"
+
+[[example]]
+name = "zenanalyze_validate_vs_gpt"
+path = "dev/zenanalyze_validate_vs_gpt.rs"
+required-features = ["analyzer"]
+
+[[example]]
+name = "hrtb_test"
+
+[[example]]
+name = "lossless_anim_path_test"
+required-features = ["std"]
+
+[[example]]
+name = "heap_strip_pipeline"
+required-features = ["std"]
+
+# Standalone encode+decode hot-path profiling driver (perf-friendly tight
+# loops, no criterion warmup). Takes a PNG path from argv/ZENWEBP_PROF_IMG.
+# Used for the 2026-05-30 ARM (aarch64) hot-path profile in
+# benchmarks/zenwebp_arm_profile_2026-05-30.tsv.
+[[example]]
+name = "arm_profile"
+path = "dev/arm_profile.rs"
+required-features = ["_profiling"]
+
+[[bin]]
+name = "zenwebp-encode"
+path = "src/bin/zenwebp_encode.rs"
+required-features = ["_profiling"]
+
+[[bin]]
+name = "profile_encode"
+path = "benches/profile_encode.rs"
+required-features = ["_profiling"]
+
+[[bin]]
+name = "profile_libwebp"
+path = "benches/profile_libwebp.rs"
+required-features = ["_profiling"]
+
+[[bin]]
+name = "profile_decode"
+path = "benches/profile_decode.rs"
+required-features = ["_profiling"]
+
+[[bin]]
+name = "profile_wasm"
+path = "benches/profile_wasm.rs"
+required-features = ["_wasm_profiling"]
+
+[lints.rust]
+# archmage::autoversion(cfg(simd)) uses "simd" as an archmage config name, not a Cargo feature
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(simd)'] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+# Criterion benchmarks
+[[bench]]
+name = "encode_benchmark"
+harness = false
+
+[[bench]]
+name = "encode_vs_libwebp"
+harness = false
+
+[[bench]]
+name = "decode_benchmark"
+harness = false
+
+[[bench]]
+name = "decode_zenbench"
+harness = false
+
+[[bench]]
+name = "tier_isolation"
+harness = false
+
+[[bench]]
+name = "decode_compare"
+harness = false
+
+[dev-dependencies.image-webp]
+version = "0.2"
+
+
+[[bench]]
+name = "decode_lossless_compare"
+harness = false
+
+[[bench]]
+name = "predictor_coalesce"
+harness = false
+required-features = ["_benchmarks"]
+
+# Codec code is unusably slow in debug mode (10-50x). Always optimize,
+# even for `cargo test`. This matches libwebp which is always -O2.
+[profile.dev]
+opt-level = 2
+
+[profile.test]
+opt-level = 2
+
+[[bench]]
+name = "kernel_tiers"
+harness = false
+required-features = ["_dev"]
+
+# The zenanalyze-family contract additions this crate needs (`FeatureProvider`,
+# `Select::Names`) are on `main` but not yet on crates.io. One patch, at the
+# manifest root, rewrites BOTH registry entries above so everything in the graph
+# still resolves to a single source and the `Offer` types unify. Delete this
+# block once zenanalyze-api 0.1.1 / zenanalyze 0.2.x are published.
+[patch.crates-io]
+zenanalyze-api = { git = "https://github.com/imazen/zenanalyze" }
+zenanalyze = { git = "https://github.com/imazen/zenanalyze" }
+# zencodec#133 (structural inventories). The version floor above (0.1.27) is the first
+# release that must contain the inventory API. Swap this patch for the released zencodec /
+# zencodec-testkit before merging this branch.
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "d327434b0826a3e39633665c76f5081c0ceb34cc" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "d327434b0826a3e39633665c76f5081c0ceb34cc" }
+
+# Wide-corpus decoder parity sweep vs libwebp (rgba/rgb/nofancy/yuv/anim,
+# tolerance 0) over existing .webp files plus libwebp- and zenwebp-encoded
+# variants of PNG sources. See benchmarks/decode_parity_*.md.
+[[example]]
+name = "decode_parity_sweep"
+path = "dev/decode_parity_sweep.rs"
+required-features = ["__expert"]
+
+# Target-independent half of the sweep (no libwebp): digests zenwebp's output
+# per (file, mode) and compares against the sweep's `--hash-out` libwebp
+# digests. Builds for wasm32-wasip1 to check the wasm/simd128 tiers.
+[[example]]
+name = "decode_parity_dump"
+path = "dev/decode_parity_dump.rs"

@@ -1,0 +1,2669 @@
+use alloc::string::String;
+use thiserror::Error;
+use whereat::{ResultAtExt, at};
+
+/// Errors that can occur when attempting to decode a WebP image
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum DecodeError {
+    /// An IO error occurred while reading the file
+    #[cfg(feature = "std")]
+    #[error("IO Error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    /// RIFF's "RIFF" signature not found or invalid
+    #[error("Invalid RIFF signature: {0:x?}")]
+    RiffSignatureInvalid([u8; 4]),
+
+    /// WebP's "WEBP" signature not found or invalid
+    #[error("Invalid WebP signature: {0:x?}")]
+    WebpSignatureInvalid([u8; 4]),
+
+    /// An expected chunk was missing
+    #[error("An expected chunk was missing")]
+    ChunkMissing,
+
+    /// Chunk Header was incorrect or invalid in its usage
+    #[error("Invalid Chunk header: {0:x?}")]
+    ChunkHeaderInvalid([u8; 4]),
+
+    /// The ALPH chunk preprocessing info flag was invalid
+    #[error("Alpha chunk preprocessing flag invalid")]
+    InvalidAlphaPreprocessing,
+
+    /// Invalid compression method
+    #[error("Invalid compression method")]
+    InvalidCompressionMethod,
+
+    /// Alpha chunk doesn't match the frame's size
+    #[error("Alpha chunk size mismatch")]
+    AlphaChunkSizeMismatch,
+
+    /// Image is too large, either for the platform's pointer size or generally
+    #[error("Image too large")]
+    ImageTooLarge,
+
+    /// Frame would go out of the canvas
+    #[error("Frame outside image")]
+    FrameOutsideImage,
+
+    /// Signature of 0x2f not found
+    #[error("Invalid lossless signature: {0:x?}")]
+    LosslessSignatureInvalid(u8),
+
+    /// Version Number was not zero
+    #[error("Invalid lossless version number: {0}")]
+    VersionNumberInvalid(u8),
+
+    /// Invalid color cache bits
+    #[error("Invalid color cache bits: {0}")]
+    InvalidColorCacheBits(u8),
+
+    /// An invalid Huffman code was encountered
+    #[error("Invalid Huffman code")]
+    HuffmanError,
+
+    /// The bitstream was somehow corrupt
+    #[error("Corrupt bitstream")]
+    BitStreamError,
+
+    /// The transforms specified were invalid
+    #[error("Invalid transform")]
+    TransformError,
+
+    /// VP8's `[0x9D, 0x01, 0x2A]` magic not found or invalid
+    #[error("Invalid VP8 magic: {0:x?}")]
+    Vp8MagicInvalid([u8; 3]),
+
+    /// VP8 Decoder initialisation wasn't provided with enough data
+    #[error("Not enough VP8 init data")]
+    NotEnoughInitData,
+
+    /// At time of writing, only the YUV colour-space encoded as `0` is specified
+    #[error("Invalid VP8 color space: {0}")]
+    ColorSpaceInvalid(u8),
+
+    /// LUMA prediction mode was not recognised
+    #[error("Invalid VP8 luma prediction mode: {0}")]
+    LumaPredictionModeInvalid(i8),
+
+    /// Intra-prediction mode was not recognised
+    #[error("Invalid VP8 intra prediction mode: {0}")]
+    IntraPredictionModeInvalid(i8),
+
+    /// Chroma prediction mode was not recognised
+    #[error("Invalid VP8 chroma prediction mode: {0}")]
+    ChromaPredictionModeInvalid(i8),
+
+    /// Inconsistent image sizes
+    #[error("Inconsistent image sizes")]
+    InconsistentImageSizes,
+
+    /// The file may be valid, but this crate doesn't support decoding it.
+    #[error("Unsupported feature: {0}")]
+    UnsupportedFeature(String),
+
+    /// Invalid function call or parameter
+    #[error("Invalid parameter: {0}")]
+    InvalidParameter(String),
+
+    /// Memory limit exceeded
+    #[error("Memory limit exceeded")]
+    MemoryLimitExceeded,
+
+    /// Invalid chunk size
+    #[error("Invalid chunk size")]
+    InvalidChunkSize,
+
+    /// No more frames in image
+    #[error("No more frames")]
+    NoMoreFrames,
+
+    /// Decoding was cancelled via a [`enough::Stop`] token.
+    #[error("Decoding cancelled: {0}")]
+    Cancelled(enough::StopReason),
+
+    /// Unsupported codec operation.
+    #[error("{0}")]
+    UnsupportedOperation(#[from] zencodec::UnsupportedOperation),
+}
+
+/// Result type alias using `At<DecodeError>` for automatic location tracking.
+///
+/// Errors wrapped in `At<>` automatically capture file and line information,
+/// making debugging easier in production environments.
+pub type DecodeResult<T> = core::result::Result<T, whereat::At<DecodeError>>;
+
+impl From<enough::StopReason> for DecodeError {
+    fn from(reason: enough::StopReason) -> Self {
+        Self::Cancelled(reason)
+    }
+}
+
+// Codec-agnostic error taxonomy (zencodec PR #103/#116, origin-first two-level
+// reshape). Maps every `DecodeError` variant to exactly one coarse
+// `ErrorCategory` so consumers can route on the category (HTTP status, retry
+// policy, logging) without naming this enum.
+impl zencodec::CategorizedError for DecodeError {
+    fn codec_name(&self) -> Option<&'static str> {
+        Some("zenwebp")
+    }
+
+    fn category(&self) -> zencodec::ErrorCategory {
+        use zencodec::ErrorCategory as C;
+        use zencodec::LimitKind as L;
+        use zencodec::{
+            ImageError as IE, InvalidKind as IK, RequestError as RE, ResourceError as ReE,
+            UnsupportedImageKind as UIK,
+        };
+        match self {
+            // === I/O ===
+            #[cfg(feature = "std")]
+            DecodeError::IoError(_) => C::Io(zencodec::CodecIoKind::opaque()),
+
+            // === Malformed / corrupt bitstream content ===
+            DecodeError::RiffSignatureInvalid(_)
+            | DecodeError::WebpSignatureInvalid(_)
+            | DecodeError::ChunkMissing
+            | DecodeError::ChunkHeaderInvalid(_)
+            | DecodeError::InvalidAlphaPreprocessing
+            | DecodeError::InvalidCompressionMethod
+            | DecodeError::AlphaChunkSizeMismatch
+            | DecodeError::FrameOutsideImage
+            | DecodeError::LosslessSignatureInvalid(_)
+            | DecodeError::VersionNumberInvalid(_)
+            | DecodeError::InvalidColorCacheBits(_)
+            | DecodeError::HuffmanError
+            | DecodeError::BitStreamError
+            | DecodeError::TransformError
+            | DecodeError::Vp8MagicInvalid(_)
+            | DecodeError::ColorSpaceInvalid(_)
+            | DecodeError::LumaPredictionModeInvalid(_)
+            | DecodeError::IntraPredictionModeInvalid(_)
+            | DecodeError::ChromaPredictionModeInvalid(_)
+            | DecodeError::InconsistentImageSizes
+            | DecodeError::InvalidChunkSize => C::Image(IE::Malformed),
+
+            // === Truncated / insufficient input ===
+            DecodeError::NotEnoughInitData => C::Image(IE::UnexpectedEof),
+            // Animation-iteration end is a NORMAL control-flow signal, not
+            // truncated/incomplete image bytes — deliberately NOT
+            // `Image(UnexpectedEof)`. The crate's own idiomatic entry point
+            // (`AnimationDecoder::next_frame`/`decode_next`,
+            // `mux/anim_decode.rs`) already intercepts this exact variant and
+            // turns it into a clean `Ok(None)` before it ever reaches a
+            // caller inspecting `category()`; it only surfaces as a `category()`-
+            // visible `Err` when a caller drives the lower-level
+            // `WebPDecoder::read_frame` directly, one call past `num_frames()`
+            // (both are public, so the caller can and should check before
+            // calling again). That is exactly `InvalidKind::State` — "the
+            // operation was invoked ... out of sequence" — a caller-request
+            // fault, not an image-bytes fault. Mapping it to `Image(_)` would
+            // also make it silently pass the truncation-conformance check's
+            // "is this OK" tolerance (`is_incomplete_input_category` accepts
+            // the whole `Image(_)` arm), which is wrong: this has nothing to
+            // do with a truncated bitstream.
+            DecodeError::NoMoreFrames => C::Request(RE::Invalid(IK::State)),
+
+            // === Format handled, but the bitstream uses an unimplemented feature ===
+            DecodeError::UnsupportedFeature(_) => C::Image(IE::Unsupported(UIK::Feature)),
+
+            // === Caller-supplied parameter invalid (not the image's fault) ===
+            DecodeError::InvalidParameter(_) => C::Request(RE::Invalid(IK::Parameters)),
+
+            // === Resource limits (closest LimitKind) ===
+            // "Image too large" caps total image extent, so Pixels is the fit.
+            DecodeError::ImageTooLarge => C::Resource(ReE::Limits(L::Pixels)),
+            DecodeError::MemoryLimitExceeded => C::Resource(ReE::Limits(L::Memory)),
+
+            // === Cancellation — delegate to the StopReason cause type ===
+            // (TimedOut vs Cancelled is preserved through the delegation.)
+            DecodeError::Cancelled(reason) => reason.category(),
+
+            // === Unsupported codec operation — delegate to the zencodec cause type ===
+            DecodeError::UnsupportedOperation(op) => op.category(),
+        }
+    }
+}
+
+// Core decoder implementation using SliceReader for no_std compatibility
+use alloc::format;
+#[cfg(test)]
+use alloc::vec;
+use alloc::vec::Vec;
+use core::num::NonZeroU16;
+use core::ops::Range;
+
+use hashbrown::HashMap;
+
+use super::extended::{self, WebPExtendedInfo, get_alpha_predictor, read_alpha_chunk};
+use super::lossless::LosslessDecoder;
+use super::vp8v2::DecoderContext;
+use crate::slice_reader::SliceReader;
+
+/// All possible RIFF chunks in a WebP image file
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+pub(crate) enum WebPRiffChunk {
+    RIFF,
+    WEBP,
+    VP8,
+    VP8L,
+    VP8X,
+    ANIM,
+    ANMF,
+    ALPH,
+    ICCP,
+    EXIF,
+    XMP,
+    Unknown([u8; 4]),
+}
+
+impl WebPRiffChunk {
+    pub(crate) const fn from_fourcc(chunk_fourcc: [u8; 4]) -> Self {
+        match &chunk_fourcc {
+            b"RIFF" => Self::RIFF,
+            b"WEBP" => Self::WEBP,
+            b"VP8 " => Self::VP8,
+            b"VP8L" => Self::VP8L,
+            b"VP8X" => Self::VP8X,
+            b"ANIM" => Self::ANIM,
+            b"ANMF" => Self::ANMF,
+            b"ALPH" => Self::ALPH,
+            b"ICCP" => Self::ICCP,
+            b"EXIF" => Self::EXIF,
+            b"XMP " => Self::XMP,
+            _ => Self::Unknown(chunk_fourcc),
+        }
+    }
+
+    pub(crate) const fn to_fourcc(self) -> [u8; 4] {
+        match self {
+            Self::RIFF => *b"RIFF",
+            Self::WEBP => *b"WEBP",
+            Self::VP8 => *b"VP8 ",
+            Self::VP8L => *b"VP8L",
+            Self::VP8X => *b"VP8X",
+            Self::ANIM => *b"ANIM",
+            Self::ANMF => *b"ANMF",
+            Self::ALPH => *b"ALPH",
+            Self::ICCP => *b"ICCP",
+            Self::EXIF => *b"EXIF",
+            Self::XMP => *b"XMP ",
+            Self::Unknown(fourcc) => fourcc,
+        }
+    }
+
+    pub(crate) const fn is_unknown(self) -> bool {
+        matches!(self, Self::Unknown(_))
+    }
+}
+
+// enum WebPImage {
+//     Lossy(VP8Frame),
+//     Lossless(LosslessFrame),
+//     Extended(ExtendedImage),
+// }
+
+enum ImageKind {
+    Lossy,
+    Lossless,
+    Extended(WebPExtendedInfo),
+}
+
+struct AnimationState {
+    next_frame: u32,
+    next_frame_start: u64,
+    dispose_next_frame: bool,
+    previous_frame_width: u32,
+    previous_frame_height: u32,
+    previous_frame_x_offset: u32,
+    previous_frame_y_offset: u32,
+    /// The previous frame was composited as a keyframe (libwebp's
+    /// `prev_frame_was_keyframe`), part of the next frame's keyframe test.
+    previous_frame_was_keyframe: bool,
+    canvas: Option<Vec<u8>>,
+    /// Reusable scratch buffer for per-frame decode data.
+    /// Avoids allocating a fresh Vec<u8> for every animation frame.
+    frame_scratch: Vec<u8>,
+    /// Reusable decoder context for lossy VP8 frames in animations.
+    /// Shared across all lossy frames to avoid per-frame allocation
+    /// of coefficient/prediction/filter buffers (~100KB savings per frame).
+    ctx: DecoderContext,
+}
+impl Default for AnimationState {
+    fn default() -> Self {
+        Self {
+            next_frame: 0,
+            next_frame_start: 0,
+            dispose_next_frame: true,
+            previous_frame_width: 0,
+            previous_frame_height: 0,
+            previous_frame_x_offset: 0,
+            previous_frame_y_offset: 0,
+            previous_frame_was_keyframe: false,
+            canvas: None,
+            frame_scratch: Vec::new(),
+            ctx: DecoderContext::new(),
+        }
+    }
+}
+
+/// Number of times that an animation loops.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum LoopCount {
+    /// The animation loops forever.
+    Forever,
+    /// Each frame of the animation is displayed the specified number of times.
+    Times(NonZeroU16),
+}
+
+impl core::fmt::Display for LoopCount {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            LoopCount::Forever => f.write_str("infinite"),
+            LoopCount::Times(n) => write!(f, "{} time{}", n, if n.get() == 1 { "" } else { "s" }),
+        }
+    }
+}
+
+impl From<u16> for LoopCount {
+    fn from(n: u16) -> Self {
+        match NonZeroU16::new(n) {
+            None => LoopCount::Forever,
+            Some(n) => LoopCount::Times(n),
+        }
+    }
+}
+
+/// WebP decoder configuration. Reusable across requests.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodeConfig {
+    /// Upsampling method for lossy chroma reconstruction. Default: `Bilinear`.
+    pub upsampling: UpsamplingMethod,
+
+    /// Decode limits for dimensions, memory, frame count, etc.
+    pub limits: super::limits::Limits,
+
+    /// Chroma dithering strength for lossy decoding (0-100, 0=off). Default: 0.
+    /// Adds noise to U/V planes to hide banding at low quality settings.
+    /// libwebp defaults to 0 in both simple and advanced APIs.
+    pub dithering_strength: u8,
+}
+
+impl Default for DecodeConfig {
+    fn default() -> Self {
+        Self {
+            upsampling: UpsamplingMethod::Bilinear,
+            limits: super::limits::Limits::default(),
+            dithering_strength: 0,
+        }
+    }
+}
+
+impl DecodeConfig {
+    /// Set the upsampling method.
+    #[must_use]
+    pub fn upsampling(mut self, method: UpsamplingMethod) -> Self {
+        self.upsampling = method;
+        self
+    }
+
+    /// Set decode limits.
+    #[must_use]
+    pub fn limits(mut self, limits: super::limits::Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Set maximum dimensions.
+    #[must_use]
+    pub fn max_dimensions(mut self, width: u32, height: u32) -> Self {
+        self.limits = self.limits.max_dimensions(width, height);
+        self
+    }
+
+    /// Set maximum memory usage.
+    #[must_use]
+    pub fn max_memory(mut self, bytes: u64) -> Self {
+        self.limits = self.limits.max_memory(bytes);
+        self
+    }
+
+    /// Disable fancy upsampling.
+    #[must_use]
+    pub fn no_fancy_upsampling(mut self) -> Self {
+        self.upsampling = UpsamplingMethod::Simple;
+        self
+    }
+
+    /// Set chroma dithering strength (0=off, 100=max). Default: 0.
+    ///
+    /// Adds random noise to U/V chroma planes after loop filtering to hide
+    /// banding artifacts from coarse chroma quantization at low quality settings.
+    #[must_use]
+    pub fn with_dithering_strength(mut self, strength: u8) -> Self {
+        self.dithering_strength = strength;
+        self
+    }
+
+    pub(crate) fn to_options(&self) -> WebPDecodeOptions {
+        WebPDecodeOptions {
+            lossy_upsampling: self.upsampling,
+            dithering_strength: self.dithering_strength,
+        }
+    }
+}
+
+/// Decoding request that borrows configuration and input data.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use zenwebp::{DecodeConfig, DecodeRequest};
+///
+/// let config = DecodeConfig::default();
+/// let webp_data: &[u8] = &[]; // your WebP data
+/// let (pixels, w, h) = DecodeRequest::new(&config, webp_data).decode_rgba()?;
+/// # Ok::<(), whereat::At<zenwebp::DecodeError>>(())
+/// ```
+pub struct DecodeRequest<'a> {
+    config: &'a DecodeConfig,
+    data: &'a [u8],
+    stop: Option<&'a dyn enough::Stop>,
+    stride_pixels: Option<u32>,
+}
+
+impl<'a> DecodeRequest<'a> {
+    /// Create a new decoding request.
+    #[must_use]
+    pub fn new(config: &'a DecodeConfig, data: &'a [u8]) -> Self {
+        Self {
+            config,
+            data,
+            stop: None,
+            stride_pixels: None,
+        }
+    }
+
+    /// Set a cooperative cancellation token.
+    #[must_use]
+    pub fn stop(mut self, stop: &'a dyn enough::Stop) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    /// Set row stride in pixels for `_into` methods. Must be >= image width.
+    #[must_use]
+    pub fn stride(mut self, stride_pixels: u32) -> Self {
+        self.stride_pixels = Some(stride_pixels);
+        self
+    }
+
+    /// Decode to the image's native pixel format (RGB or RGBA).
+    ///
+    /// Returns RGBA if the image has alpha, RGB otherwise. This avoids
+    /// both unnecessary alpha expansion and alpha stripping.
+    ///
+    /// The returned [`PixelLayout`](crate::PixelLayout) indicates the format.
+    pub fn decode(self) -> DecodeResult<(Vec<u8>, u32, u32, crate::PixelLayout)> {
+        let (pixels, w, h, has_alpha) = decode_native_internal(
+            self.data,
+            &self.config.to_options(),
+            &self.config.limits,
+            self.stop,
+        )?;
+        let layout = if has_alpha {
+            crate::PixelLayout::Rgba8
+        } else {
+            crate::PixelLayout::Rgb8
+        };
+        Ok((pixels, w, h, layout))
+    }
+
+    /// Decode to RGBA pixels. If the image has no alpha channel, alpha is set to 255.
+    ///
+    /// RGB bytes underneath fully transparent pixels (alpha=0) are returned
+    /// exactly as the bitstream encodes them — the decoder never zeros, clamps,
+    /// or otherwise rewrites RGB based on the alpha value. Encoders may decide
+    /// at compression time to discard those bytes (libwebp's `exact=false` is
+    /// the canonical example), but that is an encode-side trade-off; the
+    /// decoder's contract is byte-for-byte preservation of whatever the bitstream
+    /// contains. See issue #46 for the test gate that enforces this against
+    /// libwebp on lossless and VP8X+ALPH inputs.
+    pub fn decode_rgba(self) -> DecodeResult<(Vec<u8>, u32, u32)> {
+        let (rgba, w, h) = decode_to_rgba_internal(
+            self.data,
+            &self.config.to_options(),
+            &self.config.limits,
+            self.stop,
+        )?;
+        Ok((rgba, w, h))
+    }
+
+    /// Decode to RGB pixels (no alpha). If the image has alpha, it is discarded.
+    pub fn decode_rgb(self) -> DecodeResult<(Vec<u8>, u32, u32)> {
+        let (native, w, h, has_alpha) = decode_native_internal(
+            self.data,
+            &self.config.to_options(),
+            &self.config.limits,
+            self.stop,
+        )?;
+        if !has_alpha {
+            Ok((native, w, h))
+        } else {
+            let pixel_count = (w as usize) * (h as usize);
+            // Full-image conversion buffer, sized from the (limit-checked)
+            // header dimensions → fallible by default (#63).
+            let mut rgb = super::alloc_util::alloc_zeroed(
+                self.config.limits.alloc_pref,
+                true,
+                pixel_count * 3,
+            )
+            .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+            garb::bytes::rgba_to_rgb(&native, &mut rgb).map_err(|e| at!(garb_err(e)))?;
+            Ok((rgb, w, h))
+        }
+    }
+
+    /// Decode to RGBA, writing into a pre-allocated buffer.
+    ///
+    /// If [`stride`](Self::stride) is set, rows are written with that pixel stride.
+    /// Otherwise rows are packed (stride == width).
+    pub fn decode_rgba_into(self, output: &mut [u8]) -> DecodeResult<(u32, u32)> {
+        let (rgba, w, h) = decode_to_rgba_internal(
+            self.data,
+            &self.config.to_options(),
+            &self.config.limits,
+            self.stop,
+        )?;
+        convert_to_output(
+            &rgba,
+            output,
+            w,
+            h,
+            4,
+            self.stride_pixels,
+            |src, dst, w, h, ss, ds| {
+                // RGBA -> RGBA is just a strided copy
+                for y in 0..h {
+                    dst[y * ds..][..w * 4].copy_from_slice(&src[y * ss..][..w * 4]);
+                }
+                Ok(())
+            },
+        )?;
+        Ok((w, h))
+    }
+
+    /// Decode to RGB, writing into a pre-allocated buffer.
+    ///
+    /// If [`stride`](Self::stride) is set, rows are written with that pixel stride.
+    /// Otherwise rows are packed (stride == width).
+    pub fn decode_rgb_into(self, output: &mut [u8]) -> DecodeResult<(u32, u32)> {
+        let (rgba, w, h) = decode_to_rgba_internal(
+            self.data,
+            &self.config.to_options(),
+            &self.config.limits,
+            self.stop,
+        )?;
+        convert_to_output(
+            &rgba,
+            output,
+            w,
+            h,
+            3,
+            self.stride_pixels,
+            |src, dst, w, h, ss, ds| {
+                garb::bytes::rgba_to_rgb_strided(src, dst, w, h, ss, ds).map_err(garb_err)
+            },
+        )?;
+        Ok((w, h))
+    }
+
+    /// Read image info without decoding pixel data.
+    pub fn info(self) -> DecodeResult<ImageInfo> {
+        ImageInfo::from_webp(self.data)
+    }
+
+    /// Decode to YUV 4:2:0 planes (lossy only).
+    ///
+    /// Honors the request's [`Limits`](super::limits::Limits) (dimension /
+    /// pixel / memory caps and the allocation policy); this used to discard
+    /// the request config entirely (#78-B).
+    pub fn decode_yuv420(self) -> DecodeResult<YuvPlanes> {
+        decode_yuv420_with_config(self.data, self.config)
+    }
+
+    /// Decode lossy VP8 to RGB.
+    #[allow(dead_code)]
+    pub(crate) fn decode_rgb_lossy(self) -> DecodeResult<(Vec<u8>, u16, u16)> {
+        self.decode_lossy_internal(3)
+    }
+
+    /// Decode lossy VP8 to RGBA.
+    #[allow(dead_code)]
+    pub(crate) fn decode_rgba_lossy(self) -> DecodeResult<(Vec<u8>, u16, u16)> {
+        self.decode_lossy_internal(4)
+    }
+
+    fn decode_lossy_internal(self, bpp: usize) -> DecodeResult<(Vec<u8>, u16, u16)> {
+        // Honor cancellation before doing any work — the one-shot lossy path
+        // has no mid-decode checkpoints (the VP8v2 context does not carry a
+        // stop token), so the entry check is the cancellation contract here.
+        if let Some(stop) = self.stop {
+            stop.check()
+                .map_err(|r| whereat::at!(DecodeError::Cancelled(r)))?;
+        }
+        let data = self.data;
+        let dither_strength = self.config.dithering_strength;
+        if data.len() < 20 {
+            return Err(whereat::at!(DecodeError::NotEnoughInitData));
+        }
+
+        // Parse RIFF/WebP container to find the VP8 chunk
+        if &data[..4] != b"RIFF" {
+            let mut sig = [0u8; 4];
+            sig.copy_from_slice(&data[..4]);
+            return Err(whereat::at!(DecodeError::RiffSignatureInvalid(sig)));
+        }
+        if &data[8..12] != b"WEBP" {
+            let mut sig = [0u8; 4];
+            sig.copy_from_slice(&data[8..12]);
+            return Err(whereat::at!(DecodeError::WebpSignatureInvalid(sig)));
+        }
+
+        let first_chunk = &data[12..16];
+
+        match first_chunk {
+            b"VP8 " => {
+                // Simple lossy VP8
+                let chunk_size =
+                    u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
+                let vp8_start = 20;
+                let vp8_end = (vp8_start + chunk_size).min(data.len());
+                let vp8_data = &data[vp8_start..vp8_end];
+
+                let mut ctx = DecoderContext::new().with_dithering_strength(dither_strength);
+                ctx.set_upsampling(self.config.upsampling);
+                ctx.set_alloc_pref(self.config.limits.alloc_pref);
+                let mut output = Vec::new();
+                let (w, h) = ctx.decode_to_rgb(vp8_data, &mut output, bpp)?;
+                Ok((output, w, h))
+            }
+            b"VP8X" => {
+                // Extended format — use the demuxer to find the VP8 bitstream
+                use crate::mux::WebPDemuxer;
+
+                let demuxer = WebPDemuxer::new(data).map_err_at(|inner| {
+                    DecodeError::InvalidParameter(alloc::format!("demux error: {inner}"))
+                })?;
+
+                if demuxer.is_animated() {
+                    return Err(whereat::at!(DecodeError::UnsupportedFeature(
+                        "lossy single-frame decode does not support animation; use AnimationDecoder"
+                            .into()
+                    )));
+                }
+
+                let frame = demuxer
+                    .frame(1)
+                    .ok_or_else(|| whereat::at!(DecodeError::ChunkMissing))?;
+
+                if !frame.is_lossy {
+                    return Err(whereat::at!(DecodeError::UnsupportedFeature(
+                        "lossy decoder only supports VP8, got VP8L".into()
+                    )));
+                }
+
+                let mut ctx = DecoderContext::new().with_dithering_strength(dither_strength);
+                ctx.set_upsampling(self.config.upsampling);
+                ctx.set_alloc_pref(self.config.limits.alloc_pref);
+                let mut output = Vec::new();
+
+                // Decode lossy bitstream, requesting RGBA if alpha is present
+                let decode_bpp = if frame.has_alpha { 4 } else { bpp };
+                let (w, h) = ctx.decode_to_rgb(frame.bitstream, &mut output, decode_bpp)?;
+
+                // Apply alpha channel if present
+                if let Some(alpha_data) = frame.alpha_data {
+                    let alpha_chunk = read_alpha_chunk(alpha_data, w, h, &self.config.limits)?;
+
+                    let fw = usize::from(w);
+                    let fh = usize::from(h);
+                    for y in 0..fh {
+                        for x in 0..fw {
+                            let predictor: u8 = get_alpha_predictor(
+                                x,
+                                y,
+                                fw,
+                                alpha_chunk.filtering_method,
+                                &output,
+                            );
+
+                            let alpha_index = y * fw + x;
+                            let buffer_index = alpha_index * 4 + 3;
+
+                            output[buffer_index] =
+                                predictor.wrapping_add(alpha_chunk.data[alpha_index]);
+                        }
+                    }
+                }
+
+                // Convert to requested bpp if needed
+                if decode_bpp == 4 && bpp == 3 {
+                    let pixel_count = usize::from(w) * usize::from(h);
+                    let mut rgb = super::alloc_util::alloc_zeroed(
+                        self.config.limits.alloc_pref,
+                        true,
+                        pixel_count * 3,
+                    )
+                    .map_err(|_| whereat::at!(DecodeError::MemoryLimitExceeded))?;
+                    garb::bytes::rgba_to_rgb(&output, &mut rgb)
+                        .map_err(|e| whereat::at!(garb_err(e)))?;
+                    Ok((rgb, w, h))
+                } else {
+                    Ok((output, w, h))
+                }
+            }
+            _ => Err(whereat::at!(DecodeError::UnsupportedFeature(
+                alloc::format!("lossy decoder only supports VP8, got {:?}", first_chunk)
+            ))),
+        }
+    }
+}
+
+/// WebP decoder configuration options (internal, used by AnimationDecoder)
+#[derive(Clone)]
+#[non_exhaustive]
+pub(crate) struct WebPDecodeOptions {
+    /// The upsampling method used in conversion from lossy yuv to rgb
+    pub lossy_upsampling: UpsamplingMethod,
+    /// Chroma dithering strength (0=off, 100=max). Default: 0.
+    pub dithering_strength: u8,
+}
+
+impl Default for WebPDecodeOptions {
+    fn default() -> Self {
+        Self {
+            lossy_upsampling: UpsamplingMethod::Bilinear,
+            dithering_strength: 0,
+        }
+    }
+}
+
+/// Methods for upsampling the chroma values in lossy decoding
+///
+/// The chroma red and blue planes are encoded in VP8 as half the size of the luma plane
+/// Therefore we need to upsample these values up to fit each pixel in the image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UpsamplingMethod {
+    /// Fancy upsampling
+    ///
+    /// Does bilinear interpolation using the 4 values nearest to the pixel, weighting based on the distance
+    /// from the pixel.
+    #[default]
+    Bilinear,
+    /// Simple upsampling, just uses the closest u/v value to the pixel when upsampling
+    ///
+    /// Matches the -nofancy option in dwebp.
+    /// Should be faster but may lead to slightly jagged edges.
+    Simple,
+}
+
+/// WebP image format decoder.
+pub struct WebPDecoder<'a> {
+    r: SliceReader<'a>,
+    memory_limit: usize,
+    limits: super::limits::Limits,
+
+    width: u32,
+    height: u32,
+
+    kind: ImageKind,
+    animation: AnimationState,
+
+    is_lossy: bool,
+    has_alpha: bool,
+    num_frames: u32,
+    loop_count: LoopCount,
+    loop_duration: u64,
+
+    chunks: HashMap<WebPRiffChunk, Range<u64>>,
+
+    webp_decode_options: WebPDecodeOptions,
+
+    stop: Option<&'a dyn enough::Stop>,
+}
+
+impl<'a> WebPDecoder<'a> {
+    /// Create a new `WebPDecoder` from the data slice (alias for [`new`](Self::new)).
+    ///
+    /// This method parses the WebP headers and prepares for decoding. Use [`info()`](Self::info)
+    /// to inspect metadata before calling decode methods.
+    ///
+    /// # Example - Two-phase decoding
+    ///
+    /// ```rust,no_run
+    /// use zenwebp::WebPDecoder;
+    ///
+    /// # let webp_data: &[u8] = &[]; // your WebP data
+    /// // Phase 1: Parse headers
+    /// let mut decoder = WebPDecoder::build(webp_data)?;
+    ///
+    /// // Phase 2: Inspect metadata
+    /// let info = decoder.info();
+    /// println!("{}x{}, alpha={}", info.width, info.height, info.has_alpha);
+    ///
+    /// // Phase 3: Decode (no re-parsing)
+    /// let mut output = vec![0u8; decoder.output_buffer_size().unwrap()];
+    /// decoder.read_image(&mut output)?;
+    /// # Ok::<(), whereat::At<zenwebp::DecodeError>>(())
+    /// ```
+    pub fn build(data: &'a [u8]) -> DecodeResult<Self> {
+        Self::new(data)
+    }
+
+    /// Create a new `WebPDecoder` from the data slice.
+    pub fn new(data: &'a [u8]) -> DecodeResult<Self> {
+        Self::new_with_options(data, WebPDecodeOptions::default())
+    }
+
+    /// Get image information without decoding the full image.
+    ///
+    /// Returns metadata that was parsed during construction. This is a zero-cost
+    /// operation that doesn't re-parse or decode any data.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use zenwebp::WebPDecoder;
+    ///
+    /// let webp_data: &[u8] = &[]; // your WebP data
+    /// let decoder = WebPDecoder::new(webp_data)?;
+    /// let info = decoder.info();
+    /// println!("Format: {:?}, {}x{}", info.format, info.width, info.height);
+    /// # Ok::<(), whereat::At<zenwebp::DecodeError>>(())
+    /// ```
+    pub fn info(&self) -> ImageInfo {
+        let icc_profile = self
+            .read_chunk_direct(WebPRiffChunk::ICCP, self.memory_limit)
+            .unwrap_or(None);
+        let exif = self
+            .read_chunk_direct(WebPRiffChunk::EXIF, self.memory_limit)
+            .unwrap_or(None);
+        let xmp = self
+            .read_chunk_direct(WebPRiffChunk::XMP, self.memory_limit)
+            .unwrap_or(None);
+        let orientation = exif
+            .as_deref()
+            .and_then(crate::exif_orientation::parse_orientation)
+            .and_then(zenpixels::Orientation::from_exif);
+        ImageInfo {
+            width: self.width,
+            height: self.height,
+            has_alpha: self.has_alpha,
+            is_lossy: self.is_lossy,
+            has_animation: self.is_animated(),
+            frame_count: self.num_frames,
+            format: if self.is_lossy {
+                BitstreamFormat::Lossy
+            } else {
+                BitstreamFormat::Lossless
+            },
+            orientation,
+            icc_profile,
+            exif,
+            xmp,
+        }
+    }
+
+    /// Create a new `WebPDecoder` from the data slice with the given options
+    /// and limits.
+    ///
+    /// `limits` MUST be supplied here rather than via a later `set_limits`
+    /// call: `read_data()` runs the container/header `check_dimensions` /
+    /// `check_frame_count` gates inline, so a limit applied afterward would
+    /// only ever see the default ceilings. (This was the bug that made
+    /// `DecodeConfig::limits(...)`'s dimension/pixel/frame caps dead on every
+    /// entry point.)
+    pub(crate) fn new_with_options_and_limits(
+        data: &'a [u8],
+        webp_decode_options: WebPDecodeOptions,
+        limits: super::limits::Limits,
+    ) -> DecodeResult<Self> {
+        // `Limits::max_file_size` had no caller on the native path — the
+        // documented 100 MB default was never enforced outside the zencodec
+        // adapter (#78).
+        limits.check_file_size(data.len() as u64)?;
+        let mut decoder = Self {
+            r: SliceReader::new(data),
+            width: 0,
+            height: 0,
+            num_frames: 0,
+            kind: ImageKind::Lossy,
+            chunks: HashMap::new(),
+            animation: Default::default(),
+            memory_limit: usize::MAX,
+            limits,
+            is_lossy: false,
+            has_alpha: false,
+            loop_count: LoopCount::Times(NonZeroU16::new(1).unwrap()),
+            loop_duration: 0,
+            webp_decode_options,
+            stop: None,
+        };
+        decoder.read_data()?;
+        Ok(decoder)
+    }
+
+    /// Create a new `WebPDecoder` with the given options and default limits.
+    pub(crate) fn new_with_options(
+        data: &'a [u8],
+        webp_decode_options: WebPDecodeOptions,
+    ) -> DecodeResult<Self> {
+        Self::new_with_options_and_limits(
+            data,
+            webp_decode_options,
+            super::limits::Limits::default(),
+        )
+    }
+
+    fn read_data(&mut self) -> DecodeResult<()> {
+        let (WebPRiffChunk::RIFF, riff_size, _) = read_chunk_header(&mut self.r)? else {
+            return Err(at!(DecodeError::ChunkHeaderInvalid(*b"RIFF")));
+        };
+
+        match &read_fourcc(&mut self.r)? {
+            WebPRiffChunk::WEBP => {}
+            fourcc => return Err(at!(DecodeError::WebpSignatureInvalid(fourcc.to_fourcc()))),
+        }
+
+        let (chunk, chunk_size, chunk_size_rounded) = read_chunk_header(&mut self.r)?;
+        let start = self.r.stream_position();
+
+        match chunk {
+            WebPRiffChunk::VP8 => {
+                let tag = self.r.read_u24_le()?;
+
+                let keyframe = tag & 1 == 0;
+                if !keyframe {
+                    return Err(at!(DecodeError::UnsupportedFeature(
+                        "Non-keyframe frames".into(),
+                    )));
+                }
+
+                let mut tag = [0u8; 3];
+                self.r.read_exact(&mut tag)?;
+                if tag != [0x9d, 0x01, 0x2a] {
+                    return Err(at!(DecodeError::Vp8MagicInvalid(tag)));
+                }
+
+                let w = self.r.read_u16_le()?;
+                let h = self.r.read_u16_le()?;
+
+                self.width = u32::from(w & 0x3FFF);
+                self.height = u32::from(h & 0x3FFF);
+                if self.width == 0 || self.height == 0 {
+                    return Err(at!(DecodeError::InconsistentImageSizes));
+                }
+
+                self.limits.check_dimensions(self.width, self.height)?;
+
+                self.chunks
+                    .insert(WebPRiffChunk::VP8, start..start + chunk_size);
+                self.kind = ImageKind::Lossy;
+                self.is_lossy = true;
+            }
+            WebPRiffChunk::VP8L => {
+                let signature = self.r.read_u8()?;
+                if signature != 0x2f {
+                    return Err(at!(DecodeError::LosslessSignatureInvalid(signature)));
+                }
+
+                let header = self.r.read_u32_le()?;
+                let version = header >> 29;
+                if version != 0 {
+                    return Err(at!(DecodeError::VersionNumberInvalid(version as u8)));
+                }
+
+                // Field + 1, NOT (1 + header) & mask: the latter carries into
+                // bit 14 for a max 0x3FFF field and wraps a legal 16384-wide
+                // image to 0 (then the VP8L decoder's own dimension check
+                // rejects the file). Matches decoder/lossless.rs.
+                self.width = (header & 0x3FFF) + 1;
+                self.height = ((header >> 14) & 0x3FFF) + 1;
+                self.limits.check_dimensions(self.width, self.height)?;
+                self.chunks
+                    .insert(WebPRiffChunk::VP8L, start..start + chunk_size);
+                self.kind = ImageKind::Lossless;
+                self.has_alpha = (header >> 28) & 1 != 0;
+            }
+            WebPRiffChunk::VP8X => {
+                let mut info = extended::read_extended_header(&mut self.r)?;
+                self.width = info.canvas_width;
+                self.height = info.canvas_height;
+                self.limits.check_dimensions(self.width, self.height)?;
+
+                let mut position = start + chunk_size_rounded;
+                let max_position = position + riff_size.saturating_sub(12);
+                self.r.seek_from_start(position)?;
+
+                // Whether compositing can leave transparent canvas pixels even
+                // though no frame carries alpha (see `anim_can_be_transparent`).
+                let mut anim_transparent = false;
+                // (dispose_to_background, frame covers canvas and is opaque) of
+                // the previous ANMF frame.
+                let mut prev_anmf: Option<bool> = None;
+
+                while position < max_position {
+                    match read_chunk_header(&mut self.r) {
+                        Ok((chunk, chunk_size, chunk_size_rounded)) => {
+                            let range = position + 8..position + 8 + chunk_size;
+                            position += 8 + chunk_size_rounded;
+
+                            if !chunk.is_unknown() {
+                                self.chunks.entry(chunk).or_insert(range);
+                            }
+
+                            if chunk == WebPRiffChunk::ANMF {
+                                self.num_frames += 1;
+                                self.limits.check_frame_count(self.num_frames as usize)?;
+                                if chunk_size < 24 {
+                                    return Err(at!(DecodeError::InvalidChunkSize));
+                                }
+
+                                let fx = extended::read_3_bytes(&mut self.r)? * 2;
+                                let fy = extended::read_3_bytes(&mut self.r)? * 2;
+                                let fw = extended::read_3_bytes(&mut self.r)? + 1;
+                                let fh = extended::read_3_bytes(&mut self.r)? + 1;
+                                let duration_flags = self.r.read_u32_le()?;
+                                let duration = duration_flags & 0xffffff;
+                                let dispose_bg = (duration_flags >> 24) & 1 != 0;
+                                self.loop_duration =
+                                    self.loop_duration.wrapping_add(u64::from(duration));
+
+                                // If the image is animated, the image data chunk will be inside the
+                                // ANMF chunks, so we must inspect them to determine whether the
+                                // image contains any lossy image data. VP8 chunks store lossy data
+                                // and the spec says that lossless images SHOULD NOT contain ALPH
+                                // chunks, so we treat both as indicators of lossy images.
+                                let (subchunk, ..) = read_chunk_header(&mut self.r)?;
+                                if let WebPRiffChunk::VP8 | WebPRiffChunk::ALPH = subchunk {
+                                    self.is_lossy = true;
+                                }
+                                let mut consumed = 24i64;
+                                let frame_alpha = match subchunk {
+                                    WebPRiffChunk::ALPH => true,
+                                    WebPRiffChunk::VP8 => false,
+                                    // VP8L `alpha_is_used`: bit 28 after the
+                                    // 0x2f signature byte.
+                                    WebPRiffChunk::VP8L if chunk_size >= 29 => {
+                                        let mut hdr = [0u8; 5];
+                                        self.r.read_exact(&mut hdr)?;
+                                        consumed += 5;
+                                        (u32::from_le_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) >> 28)
+                                            & 1
+                                            != 0
+                                    }
+                                    _ => true,
+                                };
+                                let opaque_full = !frame_alpha
+                                    && fx == 0
+                                    && fy == 0
+                                    && fw == info.canvas_width
+                                    && fh == info.canvas_height;
+                                anim_transparent |= frame_alpha
+                                    || match prev_anmf {
+                                        // Frame 1 must cover the zero-filled canvas.
+                                        None => !opaque_full,
+                                        // A background dispose leaves a hole
+                                        // unless this frame repaints everything.
+                                        Some(prev_dispose_bg) => prev_dispose_bg && !opaque_full,
+                                    };
+                                prev_anmf = Some(dispose_bg);
+                                self.r.seek_relative(chunk_size_rounded as i64 - consumed)?;
+
+                                continue;
+                            }
+
+                            self.r.seek_relative(chunk_size_rounded as i64)?;
+                        }
+                        Err(DecodeError::BitStreamError) => {
+                            break;
+                        }
+                        Err(e) => return Err(at!(e)),
+                    }
+                }
+                self.is_lossy = self.is_lossy || self.chunks.contains_key(&WebPRiffChunk::VP8);
+
+                // NOTE: We allow malformed images that have `info.icc_profile` set without a ICCP chunk,
+                // because this is relatively common.
+                if info.animation
+                    && (!self.chunks.contains_key(&WebPRiffChunk::ANIM)
+                        || !self.chunks.contains_key(&WebPRiffChunk::ANMF))
+                    || info.exif_metadata && !self.chunks.contains_key(&WebPRiffChunk::EXIF)
+                    || info.xmp_metadata && !self.chunks.contains_key(&WebPRiffChunk::XMP)
+                    || !info.animation
+                        && self.chunks.contains_key(&WebPRiffChunk::VP8)
+                            == self.chunks.contains_key(&WebPRiffChunk::VP8L)
+                {
+                    return Err(at!(DecodeError::ChunkMissing));
+                }
+
+                // Decode ANIM chunk.
+                if info.animation {
+                    match self.read_chunk(WebPRiffChunk::ANIM, 6) {
+                        Ok(Some(chunk)) => {
+                            let mut cursor = SliceReader::new(&chunk);
+                            cursor.read_exact(&mut info.background_color_hint)?;
+                            self.loop_count = match cursor.read_u16_le()? {
+                                0 => LoopCount::Forever,
+                                n => LoopCount::Times(NonZeroU16::new(n).unwrap()),
+                            };
+                            self.animation.next_frame_start =
+                                self.chunks.get(&WebPRiffChunk::ANMF).unwrap().start - 8;
+                        }
+                        Ok(None) => return Err(at!(DecodeError::ChunkMissing)),
+                        Err(ref e) if matches!(e.error(), DecodeError::MemoryLimitExceeded) => {
+                            return Err(at!(DecodeError::InvalidChunkSize));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                // If the image is animated, the image data chunk will be inside the ANMF chunks. We
+                // store the ALPH, VP8, and VP8L chunks (as applicable) of the first frame in the
+                // hashmap so that we can read them later.
+                if let Some(range) = self.chunks.get(&WebPRiffChunk::ANMF).cloned() {
+                    let mut position = range.start + 16;
+                    self.r.seek_from_start(position)?;
+                    for _ in 0..2 {
+                        let (subchunk, subchunk_size, subchunk_size_rounded) =
+                            read_chunk_header(&mut self.r)?;
+                        let subrange = position + 8..position + 8 + subchunk_size;
+                        self.chunks.entry(subchunk).or_insert(subrange.clone());
+
+                        position += 8 + subchunk_size_rounded;
+                        if position + 8 > range.end {
+                            break;
+                        }
+                    }
+                }
+
+                // libwebp's WebPAnimDecoder always yields RGBA. An animation
+                // whose VP8X alpha flag is clear (no frame carries alpha) can
+                // still composite to transparent canvas pixels — a first frame
+                // smaller than the canvas, or a background dispose the next
+                // frame does not fully repaint — so report alpha then too,
+                // or RGB output would turn those pixels opaque black.
+                self.has_alpha = info.alpha || (info.animation && anim_transparent);
+                self.kind = ImageKind::Extended(info);
+            }
+            _ => return Err(at!(DecodeError::ChunkHeaderInvalid(chunk.to_fourcc()))),
+        };
+
+        Ok(())
+    }
+
+    /// Set a cooperative cancellation token for decoding.
+    pub fn set_stop(&mut self, stop: Option<&'a dyn enough::Stop>) {
+        self.stop = stop;
+    }
+
+    /// Sets the maximum size in bytes of a metadata chunk (ICCP / EXIF / XMP)
+    /// the decoder will copy out for [`Self::icc_profile`],
+    /// [`Self::exif_metadata`] and [`Self::xmp_metadata`].
+    ///
+    /// This does **not** bound the image buffers — those are governed by
+    /// [`Limits::max_memory`](super::limits::Limits::max_memory) via
+    /// [`Self::set_limits`] / `DecodeConfig::limits`.
+    pub fn set_memory_limit(&mut self, limit: usize) {
+        self.memory_limit = limit;
+    }
+
+    /// Set decode limits for validation.
+    pub fn set_limits(&mut self, limits: super::limits::Limits) {
+        self.limits = limits;
+    }
+
+    /// Get the background color specified in the image file if the image is extended and animated webp.
+    pub fn background_color_hint(&self) -> Option<[u8; 4]> {
+        if let ImageKind::Extended(info) = &self.kind {
+            Some(info.background_color_hint)
+        } else {
+            None
+        }
+    }
+
+    /// Sets the background color if the image is an extended and animated webp.
+    pub fn set_background_color(&mut self, color: [u8; 4]) -> DecodeResult<()> {
+        if let ImageKind::Extended(info) = &mut self.kind {
+            info.background_color = Some(color);
+            Ok(())
+        } else {
+            Err(at!(DecodeError::InvalidParameter(
+                "Background color can only be set on animated webp".into(),
+            )))
+        }
+    }
+
+    /// Returns the (width, height) of the image in pixels.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Returns whether the image has an alpha channel. If so, the pixel format is Rgba8 and
+    /// otherwise Rgb8.
+    pub fn has_alpha(&self) -> bool {
+        self.has_alpha
+    }
+
+    /// Returns true if the image is animated.
+    pub fn is_animated(&self) -> bool {
+        match &self.kind {
+            ImageKind::Lossy | ImageKind::Lossless => false,
+            ImageKind::Extended(extended) => extended.animation,
+        }
+    }
+
+    /// Returns whether the image is lossy. For animated images, this is true if any frame is lossy.
+    pub fn is_lossy(&self) -> bool {
+        self.is_lossy
+    }
+
+    /// Returns the number of frames of a single loop of the animation, or zero if the image is not
+    /// animated.
+    pub fn num_frames(&self) -> u32 {
+        self.num_frames
+    }
+
+    /// Returns the number of times the animation should loop.
+    pub fn loop_count(&self) -> LoopCount {
+        self.loop_count
+    }
+
+    /// Returns the total duration of one loop through the animation in milliseconds, or zero if the
+    /// image is not animated.
+    ///
+    /// This is the sum of the durations of all individual frames of the image.
+    pub fn loop_duration(&self) -> u64 {
+        self.loop_duration
+    }
+
+    fn read_chunk(
+        &mut self,
+        chunk: WebPRiffChunk,
+        max_size: usize,
+    ) -> DecodeResult<Option<Vec<u8>>> {
+        self.read_chunk_direct(chunk, max_size)
+    }
+
+    fn read_chunk_direct(
+        &self,
+        chunk: WebPRiffChunk,
+        max_size: usize,
+    ) -> DecodeResult<Option<Vec<u8>>> {
+        match self.chunks.get(&chunk) {
+            Some(range) => {
+                let len = (range.end - range.start) as usize;
+                if len > max_size {
+                    return Err(at!(DecodeError::MemoryLimitExceeded));
+                }
+                let slice = self.chunk_slice(range)?;
+                Ok(Some(slice.to_vec()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get a slice of the underlying buffer for a chunk range, with bounds validation.
+    fn chunk_slice(&self, range: &core::ops::Range<u64>) -> DecodeResult<&[u8]> {
+        let buf = self.r.get_ref();
+        let start = range.start as usize;
+        let end = range.end as usize;
+        if end > buf.len() || start > end {
+            return Err(at!(DecodeError::InvalidChunkSize));
+        }
+        Ok(&buf[start..end])
+    }
+
+    /// Returns the raw bytes of the ICC profile, or None if there is no ICC profile.
+    pub fn icc_profile(&mut self) -> DecodeResult<Option<Vec<u8>>> {
+        self.read_chunk(WebPRiffChunk::ICCP, self.memory_limit)
+    }
+
+    /// Returns the raw bytes of the EXIF metadata, or None if there is no EXIF metadata.
+    pub fn exif_metadata(&mut self) -> DecodeResult<Option<Vec<u8>>> {
+        self.read_chunk(WebPRiffChunk::EXIF, self.memory_limit)
+    }
+
+    /// Returns the raw bytes of the XMP metadata, or None if there is no XMP metadata.
+    pub fn xmp_metadata(&mut self) -> DecodeResult<Option<Vec<u8>>> {
+        self.read_chunk(WebPRiffChunk::XMP, self.memory_limit)
+    }
+
+    /// Returns the number of bytes required to store the image or a single frame, or None if that
+    /// would take more than `usize::MAX` bytes.
+    pub fn output_buffer_size(&self) -> Option<usize> {
+        let bytes_per_pixel = if self.has_alpha() { 4 } else { 3 };
+        (self.width as usize)
+            .checked_mul(self.height as usize)?
+            .checked_mul(bytes_per_pixel)
+    }
+
+    /// Returns the raw bytes of the image. For animated images, this is the first frame.
+    ///
+    /// Fails with `ImageTooLarge` if `buf` has length different than `output_buffer_size()`
+    pub fn read_image(&mut self, buf: &mut [u8]) -> DecodeResult<()> {
+        if Some(buf.len()) != self.output_buffer_size() {
+            return Err(at!(DecodeError::ImageTooLarge));
+        }
+
+        if self.is_animated() {
+            let saved = core::mem::take(&mut self.animation);
+            self.animation.next_frame_start =
+                self.chunks.get(&WebPRiffChunk::ANMF).unwrap().start - 8;
+            let result = self.read_frame(buf);
+            self.animation = saved;
+            result?;
+        } else if let Some(range) = self.chunks.get(&WebPRiffChunk::VP8L) {
+            let data_slice = self.chunk_slice(range)?;
+            let mut decoder = LosslessDecoder::new(data_slice);
+            decoder.set_stop(self.stop);
+            decoder.set_limits(Some(&self.limits));
+
+            if self.has_alpha {
+                decoder.decode_frame(self.width, self.height, false, buf)?;
+            } else {
+                let alloc_size = self.width as usize * self.height as usize * 4;
+                self.limits.check_memory(alloc_size)?;
+                // Full-image RGBA scratch sized from the decoded header
+                // dimensions → fallible by default (graceful OOM on a
+                // malicious header).
+                let mut data =
+                    super::alloc_util::alloc_zeroed(self.limits.alloc_pref, true, alloc_size)
+                        .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+                decoder.decode_frame(self.width, self.height, false, &mut data)?;
+                garb::bytes::rgba_to_rgb(&data, buf).map_err(garb_err)?;
+            }
+        } else {
+            let range = self
+                .chunks
+                .get(&WebPRiffChunk::VP8)
+                .ok_or(DecodeError::ChunkMissing)?
+                .clone();
+            let data_buf = self.r.get_ref();
+            let vp8_data = data_buf
+                .get(range.start as usize..range.end as usize)
+                .ok_or(at!(DecodeError::InvalidChunkSize))?;
+
+            // Lossy VP8 direct decode path
+            let bpp = if self.has_alpha() { 4 } else { 3 };
+            self.animation
+                .ctx
+                .set_dithering_strength(self.webp_decode_options.dithering_strength);
+            self.animation
+                .ctx
+                .set_upsampling(self.webp_decode_options.lossy_upsampling);
+            // Honor the allocation-fallibility policy for the row cache and the
+            // RGB output buffer (set from the zencodec boundary; CodecDefault
+            // on the native API → behavior unchanged).
+            self.animation.ctx.set_alloc_pref(self.limits.alloc_pref);
+            let mut output = Vec::new();
+            let (w, h) = self
+                .animation
+                .ctx
+                .decode_to_rgb(vp8_data, &mut output, bpp)?;
+            if u32::from(w) != self.width || u32::from(h) != self.height {
+                return Err(at!(DecodeError::InconsistentImageSizes));
+            }
+
+            if self.has_alpha() {
+                buf.copy_from_slice(&output);
+
+                let alpha_range = self
+                    .chunks
+                    .get(&WebPRiffChunk::ALPH)
+                    .ok_or_else(|| at!(DecodeError::ChunkMissing))?
+                    .clone();
+                let alpha_slice = &data_buf[alpha_range.start as usize..alpha_range.end as usize];
+                let alpha_chunk = read_alpha_chunk(
+                    alpha_slice,
+                    self.width as u16,
+                    self.height as u16,
+                    &self.limits,
+                )?;
+
+                let fw = usize::from(w);
+                let fh = usize::from(h);
+                for y in 0..fh {
+                    for x in 0..fw {
+                        let predictor: u8 =
+                            get_alpha_predictor(x, y, fw, alpha_chunk.filtering_method, buf);
+
+                        let alpha_index = y * fw + x;
+                        let buffer_index = alpha_index * 4 + 3;
+
+                        buf[buffer_index] = predictor.wrapping_add(alpha_chunk.data[alpha_index]);
+                    }
+                }
+            } else {
+                buf.copy_from_slice(&output);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reads the next frame of the animation.
+    ///
+    /// The frame contents are written into `buf` and the method returns the duration of the frame
+    /// in milliseconds. If there are no more frames, the method returns
+    /// `DecodeError::NoMoreFrames` and `buf` is left unchanged.
+    ///
+    pub fn read_frame(&mut self, buf: &mut [u8]) -> DecodeResult<u32> {
+        if !self.is_animated() {
+            return Err(at!(DecodeError::InvalidParameter(String::from(
+                "not an animated WebP",
+            ))));
+        }
+        if Some(buf.len()) != self.output_buffer_size() {
+            return Err(at!(DecodeError::ImageTooLarge));
+        }
+
+        if self.animation.next_frame == self.num_frames {
+            return Err(at!(DecodeError::NoMoreFrames));
+        }
+
+        let ImageKind::Extended(info) = &self.kind else {
+            unreachable!()
+        };
+
+        self.r.seek_from_start(self.animation.next_frame_start)?;
+
+        let anmf_size = match read_chunk_header(&mut self.r)? {
+            (WebPRiffChunk::ANMF, size, _) if size >= 32 => size,
+            _ => return Err(at!(DecodeError::ChunkHeaderInvalid(*b"ANMF"))),
+        };
+
+        // Read ANMF chunk
+        let frame_x = extended::read_3_bytes(&mut self.r)? * 2;
+        let frame_y = extended::read_3_bytes(&mut self.r)? * 2;
+        let frame_width = extended::read_3_bytes(&mut self.r)? + 1;
+        let frame_height = extended::read_3_bytes(&mut self.r)? + 1;
+        if frame_width > 16384 || frame_height > 16384 {
+            return Err(at!(DecodeError::ImageTooLarge));
+        }
+        if frame_x + frame_width > self.width || frame_y + frame_height > self.height {
+            return Err(at!(DecodeError::FrameOutsideImage));
+        }
+        let duration = extended::read_3_bytes(&mut self.r)?;
+        let frame_info = self.r.read_u8()?;
+        let use_alpha_blending = frame_info & 0b00000010 == 0;
+        let dispose = frame_info & 0b00000001 != 0;
+
+        // Propagate dithering strength to the reusable decoder context.
+        self.animation
+            .ctx
+            .set_dithering_strength(self.webp_decode_options.dithering_strength);
+        self.animation
+            .ctx
+            .set_upsampling(self.webp_decode_options.lossy_upsampling);
+        // Propagate the allocation-fallibility policy to the reusable context.
+        self.animation.ctx.set_alloc_pref(self.limits.alloc_pref);
+
+        // Read normal bitstream now
+        let (chunk, chunk_size, chunk_size_rounded) = read_chunk_header(&mut self.r)?;
+        if chunk_size_rounded + 24 > anmf_size {
+            return Err(at!(DecodeError::ChunkHeaderInvalid(chunk.to_fourcc())));
+        }
+
+        // (bytes per pixel in frame_scratch, alpha flag as libwebp's demuxer
+        // reports it — used for the keyframe decision only).
+        let (frame_bpp, frame_declares_alpha): (usize, bool) = match chunk {
+            WebPRiffChunk::VP8 => {
+                // Lossy VP8 decode with buffer reuse across animation frames.
+                // DecoderContext is reused from self.animation.ctx, saving
+                // ~100KB of allocation per frame for coefficient/filter buffers.
+                let data_slice = self.r.take_slice(chunk_size as usize)?;
+                let (w, h) = self.animation.ctx.decode_to_rgb(
+                    data_slice,
+                    &mut self.animation.frame_scratch,
+                    3,
+                )?;
+                if u32::from(w) != frame_width || u32::from(h) != frame_height {
+                    return Err(at!(DecodeError::InconsistentImageSizes));
+                }
+                (3, false)
+            }
+            WebPRiffChunk::VP8L => {
+                let data_slice = self.r.take_slice(chunk_size as usize)?;
+                // VP8L header: 0x2f signature, then 14+14 bits of size and
+                // the `alpha_is_used` bit (bit 28 of the following LE u32).
+                let vp8l_alpha = data_slice
+                    .get(1..5)
+                    .is_some_and(|b| (u32::from_le_bytes([b[0], b[1], b[2], b[3]]) >> 28) & 1 != 0);
+                let mut lossless_decoder = LosslessDecoder::new(data_slice);
+                lossless_decoder.set_stop(self.stop);
+                lossless_decoder.set_limits(Some(&self.limits));
+                let frame_alloc = frame_width as usize * frame_height as usize * 4;
+                self.limits.check_memory(frame_alloc)?;
+                // Per-frame RGBA scratch sized from the frame header dimensions
+                // → fallible by default (graceful OOM on a malicious header).
+                super::alloc_util::try_resize_zeroed(
+                    self.limits.alloc_pref,
+                    true,
+                    &mut self.animation.frame_scratch,
+                    frame_alloc,
+                )
+                .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+                lossless_decoder.decode_frame(
+                    frame_width,
+                    frame_height,
+                    false,
+                    &mut self.animation.frame_scratch,
+                )?;
+                (4, vp8l_alpha)
+            }
+            WebPRiffChunk::ALPH => {
+                if chunk_size_rounded + 32 > anmf_size {
+                    return Err(at!(DecodeError::ChunkHeaderInvalid(chunk.to_fourcc())));
+                }
+
+                // read alpha
+                let alpha_slice = self.r.take_slice(chunk_size as usize)?;
+                // Skip padding if chunk_size is odd
+                if chunk_size_rounded > chunk_size {
+                    self.r
+                        .seek_relative((chunk_size_rounded - chunk_size) as i64)?;
+                }
+                let alpha_chunk = read_alpha_chunk(
+                    alpha_slice,
+                    frame_width as u16,
+                    frame_height as u16,
+                    &self.limits,
+                )?;
+
+                // read opaque — lossy decode with buffer reuse
+                let (next_chunk, next_chunk_size, _) = read_chunk_header(&mut self.r)?;
+                if chunk_size + next_chunk_size + 32 > anmf_size {
+                    return Err(at!(DecodeError::ChunkHeaderInvalid(next_chunk.to_fourcc())));
+                }
+
+                let vp8_slice = self.r.take_slice(next_chunk_size as usize)?;
+                let (w, h) = self.animation.ctx.decode_to_rgb(
+                    vp8_slice,
+                    &mut self.animation.frame_scratch,
+                    4,
+                )?;
+
+                // The alpha plane was sized from the ANMF frame dimensions, but the
+                // reconstruction loop below (and composite_frame afterwards) indexes it
+                // with the embedded VP8's own decoded dimensions. A crafted animated
+                // WebP whose VP8 keyframe declares different dims than its ANMF frame
+                // would otherwise index `alpha_chunk.data` (or `frame_scratch`) out of
+                // bounds and panic. Mirror the plain-VP8 arm and reject the mismatch.
+                if u32::from(w) != frame_width || u32::from(h) != frame_height {
+                    return Err(at!(DecodeError::InconsistentImageSizes));
+                }
+
+                let fw = usize::from(w);
+                let fh = usize::from(h);
+
+                for y in 0..fh {
+                    for x in 0..fw {
+                        let predictor: u8 = get_alpha_predictor(
+                            x,
+                            y,
+                            fw,
+                            alpha_chunk.filtering_method,
+                            &self.animation.frame_scratch,
+                        );
+
+                        let alpha_index = y * fw + x;
+                        let buffer_index = alpha_index * 4 + 3;
+
+                        self.animation.frame_scratch[buffer_index] =
+                            predictor.wrapping_add(alpha_chunk.data[alpha_index]);
+                    }
+                }
+
+                (4, true)
+            }
+            _ => return Err(at!(DecodeError::ChunkHeaderInvalid(chunk.to_fourcc()))),
+        };
+
+        // libwebp's WebPAnimDecoder ignores the ANIM background color and
+        // composites onto transparent black; a caller-set background
+        // (`set_background_color`) overrides that.
+        let clear_color = info.background_color.unwrap_or([0, 0, 0, 0]);
+
+        if self.animation.canvas.is_none() {
+            self.animation.canvas = {
+                let canvas_alloc = self.width as usize * self.height as usize * 4;
+                self.limits.check_memory(canvas_alloc)?;
+                // The animation canvas is the allocation `alloc_util`'s own
+                // doc names as fallible-by-default; it was a plain `vec!`
+                // until #63/#78-B. Frame 1 is always a keyframe, which fills it.
+                let canvas =
+                    super::alloc_util::alloc_zeroed(self.limits.alloc_pref, true, canvas_alloc)
+                        .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+                Some(canvas)
+            }
+        }
+        let prev = (self.animation.next_frame > 0).then_some(extended::PrevFrame {
+            x: self.animation.previous_frame_x_offset,
+            y: self.animation.previous_frame_y_offset,
+            width: self.animation.previous_frame_width,
+            height: self.animation.previous_frame_height,
+            dispose_to_background: self.animation.dispose_next_frame,
+            was_keyframe: self.animation.previous_frame_was_keyframe,
+        });
+        let is_keyframe = extended::composite_frame(
+            self.animation.canvas.as_mut().unwrap(),
+            self.width,
+            self.height,
+            clear_color,
+            &self.animation.frame_scratch,
+            frame_bpp,
+            frame_x,
+            frame_y,
+            frame_width,
+            frame_height,
+            frame_declares_alpha,
+            use_alpha_blending,
+            prev,
+        )?;
+
+        self.animation.previous_frame_width = frame_width;
+        self.animation.previous_frame_height = frame_height;
+        self.animation.previous_frame_x_offset = frame_x;
+        self.animation.previous_frame_y_offset = frame_y;
+        self.animation.previous_frame_was_keyframe = is_keyframe;
+
+        self.animation.dispose_next_frame = dispose;
+        self.animation.next_frame_start += anmf_size + 8;
+        self.animation.next_frame += 1;
+
+        if self.has_alpha() {
+            buf.copy_from_slice(self.animation.canvas.as_ref().unwrap());
+        } else {
+            garb::bytes::rgba_to_rgb(self.animation.canvas.as_ref().unwrap(), buf)
+                .map_err(garb_err)?;
+        }
+
+        Ok(duration)
+    }
+
+    /// Resets the animation to the first frame.
+    ///
+    pub fn reset_animation(&mut self) -> DecodeResult<()> {
+        if !self.is_animated() {
+            return Err(at!(DecodeError::InvalidParameter(String::from(
+                "not an animated WebP",
+            ))));
+        }
+        self.animation.next_frame = 0;
+        self.animation.next_frame_start = self.chunks.get(&WebPRiffChunk::ANMF).unwrap().start - 8;
+        self.animation.dispose_next_frame = true;
+        // Compositing state must restart from the fresh-decoder shape too:
+        // the canvas is re-created (background-filled) on the next frame,
+        // and there is no "previous frame" rectangle to dispose. Leaving the
+        // last pass's canvas + rectangle in place made frame 1 of the next
+        // pass clear only the LAST frame's rectangle and paint over stale
+        // pixels everywhere else (#78: `decode_all()` twice returned two
+        // different first frames).
+        self.animation.canvas = None;
+        self.animation.previous_frame_width = 0;
+        self.animation.previous_frame_height = 0;
+        self.animation.previous_frame_x_offset = 0;
+        self.animation.previous_frame_y_offset = 0;
+        self.animation.previous_frame_was_keyframe = false;
+        Ok(())
+    }
+
+    /// Sets the upsampling method that is used in lossy decoding
+    pub fn set_lossy_upsampling(&mut self, upsampling_method: UpsamplingMethod) {
+        self.webp_decode_options.lossy_upsampling = upsampling_method;
+    }
+}
+
+/// Convert a garb SizeError into a DecodeError.
+fn garb_err(e: garb::SizeError) -> DecodeError {
+    DecodeError::InvalidParameter(alloc::format!("pixel conversion: {e}"))
+}
+
+pub(crate) fn read_fourcc(r: &mut SliceReader) -> Result<WebPRiffChunk, DecodeError> {
+    let mut chunk_fourcc = [0; 4];
+    r.read_exact(&mut chunk_fourcc)?;
+    Ok(WebPRiffChunk::from_fourcc(chunk_fourcc))
+}
+
+pub(crate) fn read_chunk_header(
+    r: &mut SliceReader,
+) -> Result<(WebPRiffChunk, u64, u64), DecodeError> {
+    let chunk = read_fourcc(r)?;
+    let chunk_size = r.read_u32_le()?;
+    let chunk_size_rounded = chunk_size.saturating_add(chunk_size & 1);
+    Ok((chunk, chunk_size.into(), chunk_size_rounded.into()))
+}
+
+// ============================================================================
+// Internal decode helpers
+// ============================================================================
+
+/// Decode WebP data to its native pixel format (RGB or RGBA).
+/// Returns (pixels, width, height, has_alpha).
+fn decode_native_internal(
+    data: &[u8],
+    options: &WebPDecodeOptions,
+    limits: &super::limits::Limits,
+    stop: Option<&dyn enough::Stop>,
+) -> DecodeResult<(Vec<u8>, u32, u32, bool)> {
+    // Limits must reach the constructor so `read_data`'s dimension/frame
+    // gates enforce them; a later `set_limits` would run after those checks.
+    let mut decoder =
+        WebPDecoder::new_with_options_and_limits(data, options.clone(), limits.clone())?;
+    decoder.set_stop(stop);
+    let (w, h) = decoder.dimensions();
+    let output_size = decoder
+        .output_buffer_size()
+        .ok_or_else(|| at!(DecodeError::ImageTooLarge))?;
+    // Final decoded output buffer sized from the decoded header dimensions →
+    // fallible by default (graceful OOM on a malicious header).
+    let mut pixels = super::alloc_util::alloc_zeroed(limits.alloc_pref, true, output_size)
+        .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+    decoder.read_image(&mut pixels)?;
+    Ok((pixels, w, h, decoder.has_alpha()))
+}
+
+/// Decode WebP data to RGBA pixels (always 4 bytes per pixel).
+/// For lossless images with alpha, decodes directly to RGBA (no scratch buffer).
+/// For lossy/opaque images, decodes to native format then expands to RGBA.
+fn decode_to_rgba_internal(
+    data: &[u8],
+    options: &WebPDecodeOptions,
+    limits: &super::limits::Limits,
+    stop: Option<&dyn enough::Stop>,
+) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (native, w, h, has_alpha) = decode_native_internal(data, options, limits, stop)?;
+    if has_alpha {
+        Ok((native, w, h))
+    } else {
+        let pixel_count = (w as usize) * (h as usize);
+        let mut rgba = super::alloc_util::alloc_zeroed(limits.alloc_pref, true, pixel_count * 4)
+            .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+        garb::bytes::rgb_to_rgba(&native, &mut rgba).map_err(|e| at!(garb_err(e)))?;
+        Ok((rgba, w, h))
+    }
+}
+
+/// Convert RGBA source pixels to a strided output buffer, validating dimensions.
+///
+/// `bpp` is the bytes per pixel of the output format.
+/// `convert_fn` receives (src, dst, width, height, src_stride, dst_stride) and
+/// writes the converted pixels.
+fn convert_to_output(
+    rgba: &[u8],
+    output: &mut [u8],
+    w: u32,
+    h: u32,
+    bpp: usize,
+    stride_pixels: Option<u32>,
+    convert_fn: impl FnOnce(&[u8], &mut [u8], usize, usize, usize, usize) -> Result<(), DecodeError>,
+) -> DecodeResult<()> {
+    let wu = w as usize;
+    let hu = h as usize;
+    let stride_px = stride_pixels.unwrap_or(w) as usize;
+    if stride_px < wu {
+        return Err(at!(DecodeError::InvalidParameter(format!(
+            "stride_pixels {} < width {}",
+            stride_px, w
+        ))));
+    }
+    let dst_stride = stride_px * bpp;
+    let required = dst_stride * hu;
+    if output.len() < required {
+        return Err(at!(DecodeError::InvalidParameter(format!(
+            "output buffer too small: got {}, need {}",
+            output.len(),
+            required
+        ))));
+    }
+    let src_stride = wu * 4;
+    convert_fn(rgba, output, wu, hu, src_stride, dst_stride).map_err(|e| at!(e))
+}
+
+// ============================================================================
+// Convenience decode functions (webpx-compatible API)
+// ============================================================================
+
+/// Decode WebP data to RGBA pixels.
+///
+/// Returns the decoded pixels and dimensions.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// let webp_data: &[u8] = &[]; // your WebP data
+/// let (pixels, width, height) = zenwebp::oneshot::decode_rgba(webp_data)?;
+/// # Ok::<(), whereat::At<zenwebp::DecodeError>>(())
+/// ```
+#[track_caller]
+pub fn decode_rgba(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    DecodeRequest::new(&DecodeConfig::default(), data).decode_rgba()
+}
+
+/// Decode WebP data to RGB pixels (no alpha).
+///
+/// Returns the decoded pixels and dimensions.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// let webp_data: &[u8] = &[]; // your WebP data
+/// let (pixels, width, height) = zenwebp::oneshot::decode_rgb(webp_data)?;
+/// # Ok::<(), whereat::At<zenwebp::DecodeError>>(())
+/// ```
+#[track_caller]
+pub fn decode_rgb(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    DecodeRequest::new(&DecodeConfig::default(), data).decode_rgb()
+}
+
+/// Decode WebP data directly into a pre-allocated RGBA buffer.
+///
+/// # Arguments
+/// * `data` - WebP encoded data
+/// * `output` - Pre-allocated output buffer (must be at least `stride_pixels * height * 4` bytes)
+/// * `stride_pixels` - Row stride in pixels (must be >= width)
+///
+/// # Returns
+/// Width and height of the decoded image.
+#[track_caller]
+pub fn decode_rgba_into(
+    data: &[u8],
+    output: &mut [u8],
+    stride_pixels: u32,
+) -> DecodeResult<(u32, u32)> {
+    DecodeRequest::new(&DecodeConfig::default(), data)
+        .stride(stride_pixels)
+        .decode_rgba_into(output)
+}
+
+/// Decode WebP data directly into a pre-allocated RGB buffer.
+///
+/// # Arguments
+/// * `data` - WebP encoded data
+/// * `output` - Pre-allocated output buffer (must be at least `stride_pixels * height * 3` bytes)
+/// * `stride_pixels` - Row stride in pixels (must be >= width)
+///
+/// # Returns
+/// Width and height of the decoded image.
+#[track_caller]
+pub fn decode_rgb_into(
+    data: &[u8],
+    output: &mut [u8],
+    stride_pixels: u32,
+) -> DecodeResult<(u32, u32)> {
+    DecodeRequest::new(&DecodeConfig::default(), data)
+        .stride(stride_pixels)
+        .decode_rgb_into(output)
+}
+
+/// Image information obtained from WebP data header.
+#[derive(Debug, Clone)]
+pub struct ImageInfo {
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Whether the image has an alpha channel.
+    pub has_alpha: bool,
+    /// Whether the image uses lossy compression.
+    pub is_lossy: bool,
+    /// Whether the image is animated.
+    pub has_animation: bool,
+    /// Number of frames (1 for static images).
+    pub frame_count: u32,
+    /// Bitstream format (lossy or lossless).
+    pub format: BitstreamFormat,
+    /// EXIF orientation (1-8), parsed from the EXIF chunk if present.
+    ///
+    /// WebP does not apply orientation during decode — pixels are returned
+    /// in stored order. Use this value to transform for display.
+    /// `None` if no EXIF data or no orientation tag.
+    pub orientation: Option<zenpixels::Orientation>,
+    /// ICC color profile, if present.
+    pub icc_profile: Option<Vec<u8>>,
+    /// EXIF metadata, if present.
+    pub exif: Option<Vec<u8>>,
+    /// XMP metadata, if present.
+    pub xmp: Option<Vec<u8>>,
+}
+
+impl ImageInfo {
+    /// Minimum bytes needed to probe WebP metadata.
+    ///
+    /// This is a conservative estimate that covers the RIFF header, VP8/VP8L chunk
+    /// header, and enough data to read basic image metadata. Actual images may be
+    /// larger, but this is sufficient for probing.
+    pub const PROBE_BYTES: usize = 64;
+
+    /// Parse image information from WebP data (alias for [`from_webp`](Self::from_webp)).
+    ///
+    /// This is a fast probing operation that only parses headers without decoding
+    /// the full image data.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use zenwebp::ImageInfo;
+    ///
+    /// let webp_data: &[u8] = &[]; // your WebP data
+    /// let info = ImageInfo::from_bytes(webp_data)?;
+    /// println!("{}x{}, alpha={}", info.width, info.height, info.has_alpha);
+    /// # Ok::<(), whereat::At<zenwebp::DecodeError>>(())
+    /// ```
+    #[track_caller]
+    pub fn from_bytes(data: &[u8]) -> DecodeResult<Self> {
+        Self::from_webp(data)
+    }
+
+    /// Parse image information from WebP data.
+    ///
+    /// Extracts dimensions, format info, and metadata (ICC, EXIF, XMP) in a single
+    /// pass. This replaces the need to use both [`WebPDecoder`] and
+    /// [`WebPDemuxer`](crate::mux::WebPDemuxer) for probing.
+    #[track_caller]
+    pub fn from_webp(data: &[u8]) -> DecodeResult<Self> {
+        let mut decoder = WebPDecoder::new(data)?;
+        let (width, height) = decoder.dimensions();
+        let is_lossy = decoder.is_lossy();
+        let is_animated = decoder.is_animated();
+        let frame_count = if is_animated { decoder.num_frames() } else { 1 };
+        let format = if is_lossy {
+            BitstreamFormat::Lossy
+        } else {
+            BitstreamFormat::Lossless
+        };
+        let icc_profile = decoder.icc_profile().unwrap_or(None);
+        let exif = decoder.exif_metadata().unwrap_or(None);
+        let xmp = decoder.xmp_metadata().unwrap_or(None);
+        let orientation = exif
+            .as_deref()
+            .and_then(crate::exif_orientation::parse_orientation)
+            .and_then(zenpixels::Orientation::from_exif);
+        Ok(Self {
+            width,
+            height,
+            has_alpha: decoder.has_alpha(),
+            is_lossy,
+            has_animation: is_animated,
+            frame_count,
+            format,
+            orientation,
+            icc_profile,
+            exif,
+            xmp,
+        })
+    }
+
+    /// Estimate resource consumption for decoding this image.
+    ///
+    /// Returns memory, time, and output size estimates. See
+    /// [`heuristics::estimate_decode`](crate::heuristics::estimate_decode) for details.
+    #[must_use]
+    pub fn estimate_decode(&self, output_bpp: u8) -> crate::heuristics::DecodeEstimate {
+        if self.has_animation {
+            crate::heuristics::estimate_animation_decode(self.width, self.height, self.frame_count)
+        } else {
+            crate::heuristics::estimate_decode(self.width, self.height, output_bpp)
+        }
+    }
+}
+
+/// Bitstream compression format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum BitstreamFormat {
+    /// Lossy compression (VP8).
+    #[default]
+    Lossy,
+    /// Lossless compression (VP8L).
+    Lossless,
+}
+
+impl core::fmt::Display for BitstreamFormat {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BitstreamFormat::Lossy => f.write_str("lossy"),
+            BitstreamFormat::Lossless => f.write_str("lossless"),
+        }
+    }
+}
+
+/// Decoded YUV 4:2:0 planar image data.
+///
+/// Contains separate Y, U, and V planes at their native resolutions.
+/// Y is full resolution, U and V are half resolution in each dimension.
+#[derive(Debug, Clone)]
+pub struct YuvPlanes {
+    /// Luma plane (full resolution).
+    pub y: Vec<u8>,
+    /// Chroma blue plane (half resolution in each dimension).
+    pub u: Vec<u8>,
+    /// Chroma red plane (half resolution in each dimension).
+    pub v: Vec<u8>,
+    /// Width of the luma plane in pixels.
+    pub y_width: u32,
+    /// Height of the luma plane in pixels.
+    pub y_height: u32,
+    /// Width of each chroma plane in pixels.
+    pub uv_width: u32,
+    /// Height of each chroma plane in pixels.
+    pub uv_height: u32,
+}
+
+/// Decode WebP data to BGRA pixels (blue, green, red, alpha order).
+///
+/// Returns the decoded pixels and dimensions.
+#[track_caller]
+pub fn decode_bgra(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (mut rgba, w, h) = decode_rgba(data)?;
+    garb::bytes::rgba_to_bgra_inplace(&mut rgba).map_err(|e| at!(garb_err(e)))?;
+    Ok((rgba, w, h))
+}
+
+/// Decode WebP data to BGR pixels (blue, green, red order, no alpha).
+///
+/// Returns the decoded pixels and dimensions.
+#[track_caller]
+pub fn decode_bgr(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (rgba, w, h) = decode_rgba(data)?;
+    // Full-image conversion buffer sized from the (validated) header →
+    // fallible by default like the RGBA buffer it converts (#63).
+    let mut bgr = super::alloc_util::alloc_zeroed(
+        super::alloc_util::AllocPreference::CodecDefault,
+        true,
+        (w * h * 3) as usize,
+    )
+    .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+    garb::bytes::rgba_to_bgr(&rgba, &mut bgr).map_err(|e| at!(garb_err(e)))?;
+    Ok((bgr, w, h))
+}
+
+/// Decode WebP data directly into a pre-allocated BGRA buffer.
+///
+/// Also suitable for BGRX output -- alpha bytes are set to 255 for opaque images.
+///
+/// # Arguments
+/// * `data` - WebP encoded data
+/// * `output` - Pre-allocated output buffer (must be at least `stride_pixels * height * 4` bytes)
+/// * `stride_pixels` - Row stride in pixels (must be >= width)
+///
+/// # Returns
+/// Width and height of the decoded image.
+#[track_caller]
+pub fn decode_bgra_into(
+    data: &[u8],
+    output: &mut [u8],
+    stride_pixels: u32,
+) -> DecodeResult<(u32, u32)> {
+    let (rgba, w, h) = decode_rgba(data)?;
+    convert_to_output(
+        &rgba,
+        output,
+        w,
+        h,
+        4,
+        Some(stride_pixels),
+        |src, dst, w, h, ss, ds| {
+            garb::bytes::rgba_to_bgra_strided(src, dst, w, h, ss, ds).map_err(garb_err)
+        },
+    )?;
+    Ok((w, h))
+}
+
+/// Decode WebP data to ARGB pixels (alpha, red, green, blue order).
+///
+/// Returns the decoded pixels and dimensions.
+#[track_caller]
+pub fn decode_argb(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (mut rgba, w, h) = decode_rgba(data)?;
+    garb::bytes::rgba_to_argb_inplace(&mut rgba).map_err(|e| at!(garb_err(e)))?;
+    Ok((rgba, w, h))
+}
+
+/// Decode WebP data directly into a pre-allocated ARGB buffer.
+///
+/// Also suitable for XRGB output -- alpha bytes are set to 255 for opaque images.
+///
+/// # Arguments
+/// * `data` - WebP encoded data
+/// * `output` - Pre-allocated output buffer (must be at least `stride_pixels * height * 4` bytes)
+/// * `stride_pixels` - Row stride in pixels (must be >= width)
+///
+/// # Returns
+/// Width and height of the decoded image.
+#[track_caller]
+pub fn decode_argb_into(
+    data: &[u8],
+    output: &mut [u8],
+    stride_pixels: u32,
+) -> DecodeResult<(u32, u32)> {
+    let (rgba, w, h) = decode_rgba(data)?;
+    convert_to_output(
+        &rgba,
+        output,
+        w,
+        h,
+        4,
+        Some(stride_pixels),
+        |src, dst, w, h, ss, ds| {
+            garb::bytes::rgba_to_argb_strided(src, dst, w, h, ss, ds).map_err(garb_err)
+        },
+    )?;
+    Ok((w, h))
+}
+
+/// Decode WebP data directly into a pre-allocated BGR buffer.
+///
+/// # Arguments
+/// * `data` - WebP encoded data
+/// * `output` - Pre-allocated output buffer (must be at least `stride_pixels * height * 3` bytes)
+/// * `stride_pixels` - Row stride in pixels (must be >= width)
+///
+/// # Returns
+/// Width and height of the decoded image.
+#[track_caller]
+pub fn decode_bgr_into(
+    data: &[u8],
+    output: &mut [u8],
+    stride_pixels: u32,
+) -> DecodeResult<(u32, u32)> {
+    let (rgba, w, h) = decode_rgba(data)?;
+    convert_to_output(
+        &rgba,
+        output,
+        w,
+        h,
+        3,
+        Some(stride_pixels),
+        |src, dst, w, h, ss, ds| {
+            garb::bytes::rgba_to_bgr_strided(src, dst, w, h, ss, ds).map_err(garb_err)
+        },
+    )?;
+    Ok((w, h))
+}
+
+/// Decode WebP data to raw YUV 4:2:0 planes.
+///
+/// For VP8 lossy images, returns the native YUV planes without upsampling.
+/// For VP8L lossless images, decodes to RGBA then converts to YUV.
+///
+/// # Returns
+/// [`YuvPlanes`] containing separate Y, U, and V buffers.
+#[track_caller]
+pub fn decode_yuv420(data: &[u8]) -> DecodeResult<YuvPlanes> {
+    decode_yuv420_with_config(data, &DecodeConfig::default())
+}
+
+/// [`decode_yuv420`] under a caller-supplied [`DecodeConfig`]: the config's
+/// limits gate the header (dimensions / pixels / frames) and decide whether
+/// the plane buffers are allocated fallibly.
+#[track_caller]
+fn decode_yuv420_with_config(data: &[u8], config: &DecodeConfig) -> DecodeResult<YuvPlanes> {
+    let decoder =
+        WebPDecoder::new_with_options_and_limits(data, config.to_options(), config.limits.clone())?;
+    let alloc_pref = config.limits.alloc_pref;
+
+    if decoder.is_lossy() && !decoder.is_animated() {
+        // For lossy images, extract the native YUV planes from the VP8 frame
+        if let Some(range) = decoder.chunks.get(&WebPRiffChunk::VP8) {
+            let data_slice = decoder.chunk_slice(range)?;
+            let mut ctx = super::vp8v2::DecoderContext::new();
+            let frame = ctx.decode_to_frame(data_slice)?;
+
+            let w = u32::from(frame.width);
+            let h = u32::from(frame.height);
+            let uv_w = w.div_ceil(2);
+            let uv_h = h.div_ceil(2);
+
+            let buffer_width = {
+                let diff = w % 16;
+                if diff > 0 {
+                    (w + 16 - diff) as usize
+                } else {
+                    w as usize
+                }
+            };
+            let chroma_bw = buffer_width / 2;
+
+            // Plane buffers sized from the frame header → fallible by
+            // default (#63).
+            let oom = |_| at!(DecodeError::MemoryLimitExceeded);
+            let mut y = super::alloc_util::alloc_with_capacity(alloc_pref, true, (w * h) as usize)
+                .map_err(oom)?;
+            for row in 0..h as usize {
+                y.extend_from_slice(
+                    &frame.ybuf[row * buffer_width..row * buffer_width + w as usize],
+                );
+            }
+
+            let mut u =
+                super::alloc_util::alloc_with_capacity(alloc_pref, true, (uv_w * uv_h) as usize)
+                    .map_err(oom)?;
+            let mut v =
+                super::alloc_util::alloc_with_capacity(alloc_pref, true, (uv_w * uv_h) as usize)
+                    .map_err(oom)?;
+            for row in 0..uv_h as usize {
+                u.extend_from_slice(&frame.ubuf[row * chroma_bw..row * chroma_bw + uv_w as usize]);
+                v.extend_from_slice(&frame.vbuf[row * chroma_bw..row * chroma_bw + uv_w as usize]);
+            }
+
+            return Ok(YuvPlanes {
+                y,
+                u,
+                v,
+                y_width: w,
+                y_height: h,
+                uv_width: uv_w,
+                uv_height: uv_h,
+            });
+        }
+    }
+
+    // For lossless or animated images, decode to RGBA then convert to YUV
+    let (rgba, w, h) = decode_rgba(data)?;
+    let (y_bytes, u_bytes, v_bytes) =
+        super::yuv::convert_image_yuv::<4>(&rgba, w as u16, h as u16, w as usize);
+
+    let uv_w = w.div_ceil(2);
+    let uv_h = h.div_ceil(2);
+    let mb_width = (w as usize).div_ceil(16);
+
+    let luma_width = 16 * mb_width;
+    let chroma_width = 8 * mb_width;
+
+    // Tight plane buffers sized from the decoded dimensions → fallible by
+    // default, same policy as the lossy branch above (#63).
+    let oom = |_| at!(DecodeError::MemoryLimitExceeded);
+    let mut y =
+        super::alloc_util::alloc_with_capacity(alloc_pref, true, (w * h) as usize).map_err(oom)?;
+    for row in 0..h as usize {
+        y.extend_from_slice(&y_bytes[row * luma_width..row * luma_width + w as usize]);
+    }
+
+    let mut u = super::alloc_util::alloc_with_capacity(alloc_pref, true, (uv_w * uv_h) as usize)
+        .map_err(oom)?;
+    let mut v = super::alloc_util::alloc_with_capacity(alloc_pref, true, (uv_w * uv_h) as usize)
+        .map_err(oom)?;
+    for row in 0..uv_h as usize {
+        u.extend_from_slice(&u_bytes[row * chroma_width..row * chroma_width + uv_w as usize]);
+        v.extend_from_slice(&v_bytes[row * chroma_width..row * chroma_width + uv_w as usize]);
+    }
+
+    Ok(YuvPlanes {
+        y,
+        u,
+        v,
+        y_width: w,
+        y_height: h,
+        uv_width: uv_w,
+        uv_height: uv_h,
+    })
+}
+
+/// Premultiply 4-byte pixels in place exactly as libwebp's
+/// `WebPApplyAlphaMultiply` does: `C' = floor(C * A / 255)`, computed as
+/// `(C * A * 32897) >> 23` (bit-identical for all 8-bit `C`, `A`). Opaque
+/// pixels are left untouched. `alpha` is the alpha byte's index (0 or 3).
+fn premultiply_libwebp(pixels: &mut [u8], alpha: usize) {
+    for px in pixels.as_chunks_mut::<4>().0 {
+        let a = u32::from(px[alpha]);
+        if a != 255 {
+            let m = a * 32897;
+            for (i, c) in px.iter_mut().enumerate() {
+                if i != alpha {
+                    *c = ((u32::from(*c) * m) >> 23) as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Decode WebP data to premultiplied RGBA pixels.
+///
+/// Each color channel is multiplied by its alpha and rounded down,
+/// `C' = floor(C * A / 255)` — byte-identical to libwebp's `MODE_rgbA`.
+/// This is the native format for GPU compositing and avoids a per-pixel
+/// multiply during alpha blending. Lossy for low-alpha pixels.
+#[track_caller]
+pub fn decode_rgba_premultiplied(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (mut pixels, w, h) = decode_rgba(data)?;
+    premultiply_libwebp(&mut pixels, 3);
+    Ok((pixels, w, h))
+}
+
+/// Decode WebP data to premultiplied BGRA pixels.
+///
+/// `C' = floor(C * A / 255)`, byte-identical to libwebp's `MODE_bgrA`.
+#[track_caller]
+pub fn decode_bgra_premultiplied(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (mut pixels, w, h) = decode_bgra(data)?;
+    premultiply_libwebp(&mut pixels, 3);
+    Ok((pixels, w, h))
+}
+
+/// Decode WebP data to premultiplied ARGB pixels.
+///
+/// `C' = floor(C * A / 255)`, byte-identical to libwebp's `MODE_Argb`.
+#[track_caller]
+pub fn decode_argb_premultiplied(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (mut pixels, w, h) = decode_argb(data)?;
+    premultiply_libwebp(&mut pixels, 0);
+    Ok((pixels, w, h))
+}
+
+/// Pack decoded RGBA into a 2-byte-per-pixel format with `pack`.
+fn pack_16bit(data: &[u8], pack: fn(&[u8; 4]) -> [u8; 2]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    let (rgba, w, h) = decode_rgba(data)?;
+    // Full-image conversion buffer → fallible by default (#63).
+    let mut out = super::alloc_util::alloc_zeroed(
+        super::alloc_util::AllocPreference::CodecDefault,
+        true,
+        (w as usize) * (h as usize) * 2,
+    )
+    .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+    for (dst, src) in out
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .zip(rgba.as_chunks::<4>().0)
+    {
+        *dst = pack(src);
+    }
+    Ok((out, w, h))
+}
+
+/// Decode WebP data to RGB565 pixels (2 bytes per pixel).
+///
+/// Byte-identical to libwebp's `MODE_RGB_565` (default
+/// `WEBP_SWAP_16BIT_CSP=0`): channels are truncated to 5/6/5 bits (not
+/// rounded) and stored high byte first — byte 0 is `RRRRRGGG`, byte 1 is
+/// `GGGBBBBB` (i.e. the `R[15:11] G[10:5] B[4:0]` u16 in big-endian order).
+#[track_caller]
+pub fn decode_rgb565(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    pack_16bit(data, |p| {
+        [
+            (p[0] & 0xf8) | (p[1] >> 5),
+            ((p[1] << 3) & 0xe0) | (p[2] >> 3),
+        ]
+    })
+}
+
+/// Decode WebP data to RGBA4444 pixels (2 bytes per pixel, not premultiplied).
+///
+/// Byte-identical to libwebp's `MODE_RGBA_4444` (default
+/// `WEBP_SWAP_16BIT_CSP=0`): channels are truncated to 4 bits (not rounded)
+/// and stored high byte first — byte 0 is `RRRRGGGG`, byte 1 is `BBBBAAAA`
+/// (i.e. the `R[15:12] G[11:8] B[7:4] A[3:0]` u16 in big-endian order).
+#[track_caller]
+pub fn decode_rgba4444(data: &[u8]) -> DecodeResult<(Vec<u8>, u32, u32)> {
+    pack_16bit(data, |p| {
+        [(p[0] & 0xf0) | (p[1] >> 4), (p[2] & 0xf0) | (p[3] >> 4)]
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const RGB_BPP: usize = 3;
+
+    #[test]
+    fn add_with_overflow_size() {
+        let bytes = vec![
+            0x52, 0x49, 0x46, 0x46, 0xaf, 0x37, 0x80, 0x47, 0x57, 0x45, 0x42, 0x50, 0x6c, 0x64,
+            0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xfb, 0x7e, 0x73, 0x00, 0x06, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x65, 0x65, 0x65, 0x65, 0x65, 0x65,
+            0x40, 0xfb, 0xff, 0xff, 0x65, 0x65, 0x65, 0x65, 0x65, 0x65, 0x65, 0x65, 0x65, 0x65,
+            0x00, 0x00, 0x00, 0x00, 0x62, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49,
+            0x49, 0x54, 0x55, 0x50, 0x4c, 0x54, 0x59, 0x50, 0x45, 0x33, 0x37, 0x44, 0x4d, 0x46,
+        ];
+
+        let _ = WebPDecoder::new(&bytes);
+    }
+
+    #[test]
+    fn decode_2x2_single_color_image() {
+        // Image data created from imagemagick and output of xxd:
+        // $ convert -size 2x2 xc:#f00 red.webp
+        // $ xxd -g 1 red.webp | head
+
+        const NUM_PIXELS: usize = 2 * 2 * RGB_BPP;
+        // 2x2 red pixel image
+        let bytes = [
+            0x52, 0x49, 0x46, 0x46, 0x3c, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50,
+            0x38, 0x20, 0x30, 0x00, 0x00, 0x00, 0xd0, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x02, 0x00,
+            0x02, 0x00, 0x02, 0x00, 0x34, 0x25, 0xa0, 0x02, 0x74, 0xba, 0x01, 0xf8, 0x00, 0x03,
+            0xb0, 0x00, 0xfe, 0xf0, 0xc4, 0x0b, 0xff, 0x20, 0xb9, 0x61, 0x75, 0xc8, 0xd7, 0xff,
+            0x20, 0x3f, 0xe4, 0x07, 0xfc, 0x80, 0xff, 0xf8, 0xf2, 0x00, 0x00, 0x00,
+        ];
+
+        let mut data = [0; NUM_PIXELS];
+        let mut decoder = WebPDecoder::new(&bytes).unwrap();
+        decoder.read_image(&mut data).unwrap();
+
+        // All pixels should be the same (or very close) for a solid-color image.
+        // The `yuv` crate's bilinear chroma upsampling uses slightly different
+        // rounding than our hand-written upsample, so allow +-1 tolerance.
+        let first_pixel = &data[..RGB_BPP];
+        for (i, ch) in data.as_chunks::<3>().0.iter().enumerate() {
+            for c in 0..3 {
+                let diff = (ch[c] as i16 - first_pixel[c] as i16).unsigned_abs();
+                assert!(
+                    diff <= 1,
+                    "pixel {i} channel {c}: got {} expected {} (diff {diff})",
+                    ch[c],
+                    first_pixel[c]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decode_3x3_single_color_image() {
+        // Test that any odd pixel "tail" is decoded properly
+
+        const NUM_PIXELS: usize = 3 * 3 * RGB_BPP;
+        // 3x3 red pixel image
+        let bytes = [
+            0x52, 0x49, 0x46, 0x46, 0x3c, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50,
+            0x38, 0x20, 0x30, 0x00, 0x00, 0x00, 0xd0, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x03, 0x00,
+            0x03, 0x00, 0x02, 0x00, 0x34, 0x25, 0xa0, 0x02, 0x74, 0xba, 0x01, 0xf8, 0x00, 0x03,
+            0xb0, 0x00, 0xfe, 0xf0, 0xc4, 0x0b, 0xff, 0x20, 0xb9, 0x61, 0x75, 0xc8, 0xd7, 0xff,
+            0x20, 0x3f, 0xe4, 0x07, 0xfc, 0x80, 0xff, 0xf8, 0xf2, 0x00, 0x00, 0x00,
+        ];
+
+        let mut data = [0; NUM_PIXELS];
+        let mut decoder = WebPDecoder::new(&bytes).unwrap();
+        decoder.read_image(&mut data).unwrap();
+
+        // All pixels should be the same (or very close) for a solid-color image.
+        // The `yuv` crate's bilinear chroma upsampling uses slightly different
+        // rounding than our hand-written upsample, so allow +-1 tolerance.
+        let first_pixel = &data[..RGB_BPP];
+        for (i, ch) in data.as_chunks::<3>().0.iter().enumerate() {
+            for c in 0..3 {
+                let diff = (ch[c] as i16 - first_pixel[c] as i16).unsigned_abs();
+                assert!(
+                    diff <= 1,
+                    "pixel {i} channel {c}: got {} expected {} (diff {diff})",
+                    ch[c],
+                    first_pixel[c]
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod decode_category_tests {
+    use super::DecodeError;
+    use zencodec::{
+        CategorizedError, ErrorCategory as C, ImageError as IE, InvalidKind as IK, LimitKind as L,
+        RequestError as RE, ResourceError as ReE, UnsupportedImageKind as UIK,
+        UnsupportedOperation as UO,
+    };
+
+    #[test]
+    fn decode_error_category_mapping() {
+        assert_eq!(DecodeError::HuffmanError.codec_name(), Some("zenwebp"));
+
+        // Malformed bitstream content.
+        assert_eq!(
+            DecodeError::RiffSignatureInvalid([0; 4]).category(),
+            C::Image(IE::Malformed)
+        );
+        assert_eq!(
+            DecodeError::HuffmanError.category(),
+            C::Image(IE::Malformed)
+        );
+        assert_eq!(
+            DecodeError::BitStreamError.category(),
+            C::Image(IE::Malformed)
+        );
+        assert_eq!(
+            DecodeError::InvalidChunkSize.category(),
+            C::Image(IE::Malformed)
+        );
+        assert_eq!(
+            DecodeError::ChromaPredictionModeInvalid(9).category(),
+            C::Image(IE::Malformed)
+        );
+
+        // Truncated / end-of-input.
+        assert_eq!(
+            DecodeError::NotEnoughInitData.category(),
+            C::Image(IE::UnexpectedEof)
+        );
+        // NoMoreFrames is a normal end-of-animation control signal, NOT
+        // truncated/incomplete input — it must not read as Image(_) (see the
+        // reasoning at the category() match arm).
+        assert_eq!(
+            DecodeError::NoMoreFrames.category(),
+            C::Request(RE::Invalid(IK::State))
+        );
+
+        // Unimplemented feature / caller params.
+        assert_eq!(
+            DecodeError::UnsupportedFeature("x".into()).category(),
+            C::Image(IE::Unsupported(UIK::Feature))
+        );
+        assert_eq!(
+            DecodeError::InvalidParameter("x".into()).category(),
+            C::Request(RE::Invalid(IK::Parameters))
+        );
+
+        // Resource limits.
+        assert_eq!(
+            DecodeError::ImageTooLarge.category(),
+            C::Resource(ReE::Limits(L::Pixels))
+        );
+        assert_eq!(
+            DecodeError::MemoryLimitExceeded.category(),
+            C::Resource(ReE::Limits(L::Memory))
+        );
+
+        // Cancellation delegates to StopReason (cancel vs timeout preserved).
+        assert_eq!(
+            DecodeError::Cancelled(enough::StopReason::Cancelled).category(),
+            C::Stopped(enough::StopReason::Cancelled)
+        );
+        assert_eq!(
+            DecodeError::Cancelled(enough::StopReason::TimedOut).category(),
+            C::Stopped(enough::StopReason::TimedOut)
+        );
+
+        // Unsupported operation delegates to the zencodec cause type.
+        assert_eq!(
+            DecodeError::UnsupportedOperation(UO::AnimationDecode).category(),
+            C::Request(RE::Unsupported(UO::AnimationDecode))
+        );
+
+        // The At<E> blanket impl forwards both category and codec name.
+        let traced = whereat::at!(DecodeError::HuffmanError);
+        assert_eq!(traced.category(), C::Image(IE::Malformed));
+        assert_eq!(traced.codec_name(), Some("zenwebp"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn decode_io_error_is_io() {
+        assert_eq!(
+            DecodeError::IoError(std::io::Error::other("boom")).category(),
+            C::Io(zencodec::CodecIoKind::opaque())
+        );
+    }
+}
+
+#[cfg(test)]
+mod yuv420_config_tests {
+    use super::*;
+    use crate::decoder::alloc_util::AllocPreference;
+    use crate::decoder::limits::Limits;
+    use crate::{EncodeRequest, EncoderConfig, PixelLayout};
+
+    fn lossy_32x32() -> Vec<u8> {
+        let mut rgb = vec![0u8; 32 * 32 * 3];
+        for (i, px) in rgb.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+            px[0] = (i % 32 * 8) as u8;
+            px[1] = (i / 32 * 8) as u8;
+            px[2] = 128;
+        }
+        EncodeRequest::new(
+            &EncoderConfig::new_lossy().with_quality(80.0),
+            &rgb,
+            PixelLayout::Rgb8,
+            32,
+            32,
+        )
+        .encode()
+        .unwrap()
+    }
+
+    /// `DecodeRequest::decode_yuv420` used to call the config-less free
+    /// function, discarding the request's limits entirely (#78-B): a
+    /// dimension cap must reject the image on this path like on every
+    /// other. Watched to FAIL with the free-function call restored.
+    #[test]
+    fn decode_yuv420_honors_request_limits() {
+        let webp = lossy_32x32();
+        let ok = DecodeRequest::new(&DecodeConfig::default(), &webp)
+            .decode_yuv420()
+            .expect("32x32 decodes under default limits");
+        assert_eq!((ok.y_width, ok.y_height), (32, 32));
+        assert_eq!(ok.y.len(), 32 * 32);
+
+        let tight = DecodeConfig::default().limits(Limits::default().max_dimensions(8, 8));
+        assert!(
+            DecodeRequest::new(&tight, &webp).decode_yuv420().is_err(),
+            "max_dimensions(8, 8) must reject a 32x32 image on the YUV path"
+        );
+    }
+
+    /// The plane buffers now go through `alloc_util` (#63): every
+    /// allocation policy must yield identical planes.
+    #[test]
+    fn decode_yuv420_planes_identical_across_alloc_policies() {
+        let webp = lossy_32x32();
+        let planes = |pref: AllocPreference| {
+            let cfg = DecodeConfig::default().limits(Limits::default().with_alloc_pref(pref));
+            let p = DecodeRequest::new(&cfg, &webp).decode_yuv420().unwrap();
+            (p.y, p.u, p.v)
+        };
+        let base = planes(AllocPreference::CodecDefault);
+        assert_eq!(base, planes(AllocPreference::Fallible));
+        assert_eq!(base, planes(AllocPreference::Infallible));
+    }
+}

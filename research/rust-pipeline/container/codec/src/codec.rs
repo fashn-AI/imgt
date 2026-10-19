@@ -1,0 +1,4924 @@
+//! zencodec trait implementations for zenwebp.
+//!
+//! Provides [`WebpEncoderConfig`] and [`WebpDecoderConfig`] types that implement
+//! the 4-layer trait hierarchy from zencodec, wrapping the native zenwebp API.
+//!
+//! The native API remains untouched — this is a thin adapter layer.
+//!
+//! # Trait mapping
+//!
+//! | zencodec | zenwebp adapter |
+//! |----------------|-----------------|
+//! | `EncoderConfig` | [`WebpEncoderConfig`] |
+//! | `EncodeJob<'a>` | [`WebpEncodeJob`] |
+//! | `Encoder` | [`WebpEncoder`] |
+//! | `AnimationFrameEncoder` | [`WebpAnimationFrameEncoder`] |
+//! | `DecoderConfig` | [`WebpDecoderConfig`] |
+//! | `DecodeJob<'a>` | [`WebpDecodeJob`] |
+//! | `Decode` | [`WebpDecoder`] |
+//! | `AnimationFrameDecoder` | [`WebpAnimationFrameDecoder`] |
+
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use whereat::{At, ResultAtExt, at};
+use zencodec::decode::{AnimationFrame, DecodeOutput, OutputInfo, OwnedAnimationFrame, SinkError};
+use zencodec::encode::EncodeOutput;
+use zencodec::{
+    ImageFormat, ImageInfo, ImageSequence, Metadata, Orientation, OrientationHint, ResourceLimits,
+    UnsupportedOperation,
+};
+use zenpixels::{PixelBuffer, PixelDescriptor, PixelSlice};
+
+use crate::encoder::config::EncoderConfig;
+use crate::mux::{AnimationConfig, AnimationDecoder, AnimationEncoder, MuxError};
+use crate::{DecodeConfig, DecodeError, DecodeRequest, EncodeError, EncodeRequest, PixelLayout};
+
+/// Convert the public [`zencodec::AllocPreference`] into the decoder-internal
+/// [`crate::decoder::alloc_util::AllocPreference`] mirror.
+///
+/// This is the single boundary where the optional `zencodec` policy crosses
+/// into the codec-agnostic decoder. The native decode API never reaches here,
+/// so it always sees [`CodecDefault`](crate::decoder::alloc_util::AllocPreference::CodecDefault).
+#[inline]
+fn alloc_pref_from_zencodec(
+    pref: zencodec::AllocPreference,
+) -> crate::decoder::alloc_util::AllocPreference {
+    use crate::decoder::alloc_util::AllocPreference as Internal;
+    match pref {
+        zencodec::AllocPreference::Fallible => Internal::Fallible,
+        zencodec::AllocPreference::Infallible => Internal::Infallible,
+        // CodecDefault and any future #[non_exhaustive] variant → defer to the
+        // per-site default.
+        _ => Internal::CodecDefault,
+    }
+}
+
+// ── Error envelope bridges (Pattern B) ───────────────────────────────────────
+//
+// The zencodec trait impls below surface `At<zencodec::CodecError>` — the
+// codec-agnostic envelope — so a generic consumer recovers the
+// [`ErrorCategory`](zencodec::ErrorCategory) **and** the codec name *through
+// `Dyn*` dispatch*. Once a result is erased to a `BoxedError`
+// (`Box<dyn Error + Send + Sync>`), the concrete native error is no longer
+// downcastable, so a native `type Error` would lose its category; the envelope
+// is a single concrete type a consumer can recover after any erasure.
+//
+// The native [`EncodeError`] / [`DecodeError`] stay as the *detail* and the
+// *category source*: [`CodecError::of`](zencodec::CodecError::of) reads both the
+// category and `codec_name()` (`Some("zenwebp")`) from the value and keeps the
+// `At` location trace on the outside.
+//
+// Only `EncodeError` and `DecodeError` flow out of a zencodec trait method, so
+// only they need a bridge: `MuxError` is mapped to `EncodeError` before it exits,
+// `ValidationError` is config-only (not on any trait path), and `ProbeError` is
+// discarded on the `source_encoding_details` probe.
+//
+// Two conversion shapes appear below:
+// - A **bare** native value (`EncodeError::from(op)`) → these `From` impls give a
+//   plain `.into()` / `?` (used by the `reject` / policy-decline stubs).
+// - An **already-located** `At<native>` (the common case: every `at!(...)` site
+//   and every helper that returns `At<native>`) → converted explicitly with
+//   [`CodecError::of`](zencodec::CodecError::of), which keeps the existing `at!`
+//   location trace on the *outside* as `At<CodecError>`. `At` is a foreign,
+//   non-`#[fundamental]` type, so `From<At<native>> for At<CodecError>` is
+//   forbidden by the orphan rule — hence the explicit `.map_err(CodecError::of)`
+//   rather than a blanket `?`.
+
+impl From<EncodeError> for At<zencodec::CodecError> {
+    #[track_caller]
+    fn from(e: EncodeError) -> Self {
+        use whereat::ErrorAtExt;
+        zencodec::CodecError::of(e.start_at())
+    }
+}
+
+impl From<DecodeError> for At<zencodec::CodecError> {
+    #[track_caller]
+    fn from(e: DecodeError) -> Self {
+        use whereat::ErrorAtExt;
+        zencodec::CodecError::of(e.start_at())
+    }
+}
+
+/// Bridge a decode-sink error into the envelope. [`copy_decode_to_sink`] wants a
+/// `fn(SinkError) -> J::Error` pointer, so this is a named function rather than a
+/// closure.
+///
+/// [`copy_decode_to_sink`]: zencodec::helpers::copy_decode_to_sink
+fn wrap_sink_to_codec(e: SinkError) -> At<zencodec::CodecError> {
+    zencodec::CodecError::of(at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))
+}
+
+// ── Encoding ────────────────────────────────────────────────────────────────
+
+/// WebP encoder configuration implementing [`zencodec::encode::EncoderConfig`].
+///
+/// Wraps the native [`EncoderConfig`] (lossy/lossless enum) and tracks
+/// universal quality/effort settings for the trait interface.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use zencodec::encode::EncoderConfig;
+/// use zenwebp::zencodec::WebpEncoderConfig;
+///
+/// let enc = WebpEncoderConfig::lossy()
+///     .with_quality(85.0)
+///     .with_sharp_yuv(true);
+/// ```
+#[derive(Clone, Debug)]
+pub struct WebpEncoderConfig {
+    inner: EncoderConfig,
+    /// Trait-level effort (0-10 signed scale).
+    trait_effort: Option<i32>,
+    /// Trait-level calibrated quality (0.0-100.0).
+    trait_quality: Option<f32>,
+}
+
+impl WebpEncoderConfig {
+    /// Create a lossy encoder config with defaults.
+    #[must_use]
+    pub fn lossy() -> Self {
+        Self {
+            inner: EncoderConfig::new_lossy(),
+            trait_effort: None,
+            trait_quality: None,
+        }
+    }
+
+    /// Create a lossless encoder config with defaults.
+    #[must_use]
+    pub fn lossless() -> Self {
+        Self {
+            inner: EncoderConfig::new_lossless(),
+            trait_effort: None,
+            trait_quality: None,
+        }
+    }
+
+    /// Create from a preset with the given quality.
+    #[must_use]
+    pub fn with_preset(preset: crate::Preset, quality: f32) -> Self {
+        Self {
+            inner: EncoderConfig::with_preset(preset, quality),
+            trait_effort: None,
+            trait_quality: None,
+        }
+    }
+
+    /// Set encoding quality (0.0 = smallest, 100.0 = best).
+    #[must_use]
+    pub fn with_quality(mut self, quality: f32) -> Self {
+        self.inner = self.inner.with_quality(quality);
+        self
+    }
+
+    /// Set quality/speed tradeoff (0-10, mapped to WebP method 0-6).
+    #[must_use]
+    pub fn with_effort_u32(mut self, effort: u32) -> Self {
+        let method = ((effort as u64 * 6) / 10).min(6) as u8;
+        self.inner = self.inner.with_method(method);
+        self
+    }
+
+    /// Enable or disable lossless encoding (inherent method).
+    #[must_use]
+    pub fn with_lossless_mode(mut self, lossless: bool) -> Self {
+        self.inner = self.inner.with_lossless(lossless);
+        self
+    }
+
+    /// Set alpha plane quality (0.0-100.0).
+    #[must_use]
+    pub fn with_alpha_quality_value(mut self, quality: f32) -> Self {
+        let aq = quality.clamp(0.0, 100.0) as u8;
+        match &mut self.inner {
+            EncoderConfig::Lossy(cfg) => cfg.alpha_quality = aq,
+            EncoderConfig::Lossless(cfg) => cfg.alpha_quality = aq,
+        }
+        self
+    }
+
+    /// Enable sharp YUV conversion (lossy only). Expert-only — see
+    /// [`crate::InternalParams`].
+    #[cfg(feature = "__expert")]
+    #[must_use]
+    pub fn with_sharp_yuv(mut self, enable: bool) -> Self {
+        self.inner = self.inner.with_sharp_yuv(enable);
+        self
+    }
+
+    /// Set SNS strength (lossy only, 0-100).
+    #[must_use]
+    pub fn with_sns_strength(mut self, strength: u8) -> Self {
+        self.inner = self.inner.with_sns_strength(strength);
+        self
+    }
+
+    /// Set near-lossless preprocessing (lossless only, 0-100, 100=off).
+    #[must_use]
+    pub fn with_near_lossless(mut self, value: u8) -> Self {
+        self.inner = self.inner.with_near_lossless(value);
+        self
+    }
+
+    /// Preserve exact RGB values under fully transparent pixels (lossless only).
+    ///
+    /// No-op if the config is lossy.
+    #[must_use]
+    pub fn with_exact(mut self, exact: bool) -> Self {
+        if let crate::encoder::config::EncoderConfig::Lossless(ref mut cfg) = self.inner {
+            *cfg = cfg.clone().with_exact(exact);
+        }
+        self
+    }
+
+    /// Set filter strength (lossy only, 0-100).
+    #[must_use]
+    pub fn with_filter_strength(mut self, strength: u8) -> Self {
+        self.inner = self.inner.with_filter_strength(strength);
+        self
+    }
+
+    /// Set filter sharpness (lossy only, 0-7).
+    #[must_use]
+    pub fn with_filter_sharpness(mut self, sharpness: u8) -> Self {
+        self.inner = self.inner.with_filter_sharpness(sharpness);
+        self
+    }
+
+    /// Set target file size in bytes (lossy/lossless). 0 = disabled.
+    #[must_use]
+    pub fn with_target_size(mut self, bytes: u32) -> Self {
+        self.inner = self.inner.with_target_size(bytes);
+        self
+    }
+
+    /// Set target PSNR in dB (lossy only). 0.0 = disabled.
+    #[must_use]
+    pub fn with_target_psnr(mut self, psnr: f32) -> Self {
+        self.inner = self.inner.with_target_psnr(psnr);
+        self
+    }
+
+    /// Set number of segments (lossy only, 1-4).
+    #[must_use]
+    pub fn with_segments(mut self, segments: u8) -> Self {
+        self.inner = self.inner.with_segments(segments);
+        self
+    }
+
+    /// Set content-aware preset (lossy only).
+    #[must_use]
+    pub fn with_preset_value(mut self, preset: crate::Preset) -> Self {
+        if let crate::encoder::config::EncoderConfig::Lossy(ref mut cfg) = self.inner {
+            *cfg = cfg.clone().with_preset_value(preset);
+        }
+        self
+    }
+
+    /// Set encoding method directly (0-6). Prefer `with_effort_u32` for normalized 0-100 input.
+    #[must_use]
+    pub fn with_method(mut self, method: u8) -> Self {
+        self.inner = self.inner.with_method(method);
+        self
+    }
+
+    /// Access the underlying [`EncoderConfig`].
+    #[must_use]
+    pub fn inner(&self) -> &EncoderConfig {
+        &self.inner
+    }
+
+    /// Mutably access the underlying [`EncoderConfig`].
+    pub fn inner_mut(&mut self) -> &mut EncoderConfig {
+        &mut self.inner
+    }
+
+    /// Set calibrated quality (inherent convenience, delegates to trait).
+    #[must_use]
+    pub fn with_calibrated_quality(self, quality: f32) -> Self {
+        <Self as zencodec::encode::EncoderConfig>::with_generic_quality(self, quality)
+    }
+
+    /// Get calibrated quality (inherent convenience, delegates to trait).
+    pub fn calibrated_quality(&self) -> Option<f32> {
+        <Self as zencodec::encode::EncoderConfig>::generic_quality(self)
+    }
+
+    /// Set effort (inherent convenience, delegates to trait).
+    #[must_use]
+    pub fn with_effort(self, effort: i32) -> Self {
+        <Self as zencodec::encode::EncoderConfig>::with_generic_effort(self, effort)
+    }
+
+    /// Get effort (inherent convenience, delegates to trait).
+    pub fn effort(&self) -> Option<i32> {
+        <Self as zencodec::encode::EncoderConfig>::generic_effort(self)
+    }
+}
+
+static ENCODE_DESCRIPTORS: &[PixelDescriptor] = &[
+    PixelDescriptor::RGB8_SRGB,
+    PixelDescriptor::RGBA8_SRGB,
+    PixelDescriptor::BGRA8_SRGB,
+    PixelDescriptor::RGBX8_SRGB,
+    PixelDescriptor::BGRX8_SRGB,
+    PixelDescriptor::GRAY8_SRGB,
+    PixelDescriptor::RGBF32_LINEAR,
+    PixelDescriptor::RGBAF32_LINEAR,
+    PixelDescriptor::GRAYF32_LINEAR,
+];
+
+static ENCODE_CAPABILITIES: zencodec::encode::EncodeCapabilities =
+    zencodec::encode::EncodeCapabilities::new()
+        .with_icc(true)
+        .with_exif(true)
+        .with_xmp(true)
+        // WebP has no CICP carrier: color is signaled only via an embedded ICC
+        // profile. Declare this explicitly so `resolve_color_emit` knows a
+        // CICP-only source must synthesize an ICC rather than emit CICP. The two
+        // carrier flags (`cicp_is_valid_carrier` / `cicp_safe_sole_carrier`)
+        // stay at their `false` default for the same reason.
+        .with_cicp(false)
+        .with_stop(true)
+        .with_lossy(true)
+        .with_lossless(true)
+        .with_animation(true)
+        .with_animation_timing(true)
+        .with_push_rows(true)
+        .with_native_alpha(true)
+        .with_effort_range(0, 10)
+        .with_quality_range(0.0, 100.0)
+        .with_enforces_max_pixels(true)
+        .with_enforces_max_memory(true);
+
+/// Map generic quality (libjpeg-turbo scale) to WebP native quality.
+///
+/// Calibrated on CID22-512 corpus (209 images) to produce the same median
+/// SSIMULACRA2 as libjpeg-turbo at each quality level.
+fn calibrated_webp_quality(generic_q: f32) -> f32 {
+    const TABLE: &[(f32, f32)] = &[
+        (5.0, 5.0),
+        (10.0, 5.0),
+        (15.0, 5.0),
+        (20.0, 10.4),
+        (25.0, 18.0),
+        (30.0, 25.4),
+        (35.0, 32.3),
+        (40.0, 37.8),
+        (45.0, 43.4),
+        (50.0, 49.2),
+        (55.0, 54.3),
+        (60.0, 59.5),
+        (65.0, 65.8),
+        (70.0, 73.4),
+        (72.0, 76.0),
+        (75.0, 78.1),
+        (78.0, 80.3),
+        (80.0, 81.8),
+        (82.0, 83.4),
+        (85.0, 85.9),
+        (87.0, 87.5),
+        (90.0, 90.5),
+        (92.0, 92.2),
+        (95.0, 97.4),
+        (97.0, 99.0),
+        (99.0, 99.0),
+    ];
+    interp_quality(TABLE, generic_q)
+}
+
+/// Set the **native** VP8 quality dial directly, bypassing the generic→native
+/// [`calibrated_webp_quality`] remap. The Fidelity metric tables were swept
+/// against the native dial (`LossyConfig::with_quality`, the same entry point
+/// the zenmetrics omni fleet sweep used), so a table value must reach the
+/// encoder un-recalibrated; routing it through `with_generic_quality` would
+/// re-apply the calibration and encode at the wrong quality.
+fn set_native_quality(mut cfg: WebpEncoderConfig, q: f32) -> WebpEncoderConfig {
+    let clamped = q.clamp(0.0, 100.0);
+    cfg.trait_quality = Some(clamped);
+    cfg.inner = cfg.inner.with_quality(clamped);
+    cfg
+}
+
+/// Piecewise linear interpolation with clamping at table bounds.
+fn interp_quality(table: &[(f32, f32)], x: f32) -> f32 {
+    if x <= table[0].0 {
+        return table[0].1;
+    }
+    if x >= table[table.len() - 1].0 {
+        return table[table.len() - 1].1;
+    }
+    for i in 1..table.len() {
+        if x <= table[i].0 {
+            let (x0, y0) = table[i - 1];
+            let (x1, y1) = table[i];
+            let t = (x - x0) / (x1 - x0);
+            return y0 + t * (y1 - y0);
+        }
+    }
+    table[table.len() - 1].1
+}
+
+impl zencodec::encode::EncoderConfig for WebpEncoderConfig {
+    type Error = At<zencodec::CodecError>;
+    type Job = WebpEncodeJob;
+
+    fn format() -> ImageFormat {
+        ImageFormat::WebP
+    }
+
+    fn supported_descriptors() -> &'static [PixelDescriptor] {
+        ENCODE_DESCRIPTORS
+    }
+
+    fn capabilities() -> &'static zencodec::encode::EncodeCapabilities {
+        &ENCODE_CAPABILITIES
+    }
+
+    fn with_generic_effort(mut self, effort: i32) -> Self {
+        let clamped = effort.clamp(0, 10);
+        self.trait_effort = Some(clamped);
+        let method = ((clamped as u64 * 6) / 10).min(6) as u8;
+        self.inner = self.inner.with_method(method);
+        self
+    }
+
+    fn generic_effort(&self) -> Option<i32> {
+        self.trait_effort
+    }
+
+    fn with_generic_quality(mut self, quality: f32) -> Self {
+        let clamped = quality.clamp(0.0, 100.0);
+        self.trait_quality = Some(clamped);
+        let native = calibrated_webp_quality(clamped);
+        self.inner = self.inner.with_quality(native);
+        self
+    }
+
+    fn generic_quality(&self) -> Option<f32> {
+        self.trait_quality
+    }
+
+    fn with_lossless(mut self, lossless: bool) -> Self {
+        self.inner = self.inner.with_lossless(lossless);
+        self
+    }
+
+    fn is_lossless(&self) -> Option<bool> {
+        Some(matches!(self.inner, EncoderConfig::Lossless(_)))
+    }
+
+    /// Honor a [`Fidelity`](zencodec::encode::Fidelity) target as natively as
+    /// WebP allows.
+    ///
+    /// - `Lossless` → VP8L lossless.
+    /// - `Lossy(CodecSpecificQuality(q))` → the VP8 quality dial.
+    /// - `Lossy(ApproxSsim2(s))` → the VP8 quality that *measured* SSIM2 `s` on
+    ///   the omni fleet sweep (WebP has no native SSIM2 loop; reported as
+    ///   `codec_quality`).
+    /// - `Lossy(ApproxButteraugli(d))` → the VP8 quality that measured
+    ///   butteraugli max-norm `d`.
+    ///
+    /// The two metric arms interpolate a measured inverse table (median over
+    /// 600 images × 3 knobs × 15 q from the cvvdp-v15rc / multi-codec omni
+    /// fleet sweep, 2026-06-23) rather than a linear guess — `100 − 12·d` put
+    /// `d = 2.41` at quality 71, but it measures quality 95; the old SSIM2
+    /// pass-through over-shot (quality 70 lands near SSIM2 81, not 70). See
+    /// `benchmarks/codec_metric_to_q_2026-06-23.md`.
+    ///
+    /// The lossy arms switch to VP8 first (`with_lossless(false)`, which
+    /// preserves quality/method) so the request is honored and
+    /// `resolved_target_fidelity` reports it correctly even from a
+    /// lossless-configured start.
+    fn with_fidelity(self, fidelity: zencodec::encode::Fidelity) -> Self {
+        use zencodec::encode::{Fidelity, LossyTarget};
+
+        // Measured metric → VP8-quality inverse tables, sorted ascending by the
+        // metric. `BUTTER_MAX_TO_Q` is keyed on butteraugli max-norm distance
+        // (lower = better, so quality descends); `SSIM2_TO_Q` on SSIM2 (higher =
+        // better, quality ascends). Provenance above.
+        const BUTTER_MAX_TO_Q: &[(f32, f32)] = &[
+            (2.41, 95.0),
+            (2.57, 90.0),
+            (2.86, 85.0),
+            (2.93, 80.0),
+            (3.39, 75.0),
+            (3.51, 65.0),
+            (3.72, 60.0),
+            (3.80, 55.0),
+            (4.00, 45.0),
+            (4.90, 35.0),
+            (5.57, 25.0),
+            (6.55, 15.0),
+            (7.47, 10.0),
+            (9.07, 5.0),
+        ];
+        const SSIM2_TO_Q: &[(f32, f32)] = &[
+            (53.1, 5.0),
+            (58.3, 10.0),
+            (62.6, 15.0),
+            (69.0, 25.0),
+            (71.1, 30.0),
+            (73.2, 35.0),
+            (76.6, 45.0),
+            (78.8, 55.0),
+            (79.7, 60.0),
+            (80.5, 65.0),
+            (82.1, 75.0),
+            (84.0, 80.0),
+            (85.3, 85.0),
+            (86.8, 90.0),
+            (87.8, 95.0),
+        ];
+
+        match fidelity {
+            Fidelity::Lossless => self.with_lossless(true),
+            Fidelity::Lossy(LossyTarget::CodecSpecificQuality(q)) => {
+                self.with_lossless(false).with_generic_quality(q)
+            }
+            Fidelity::Lossy(LossyTarget::ApproxSsim2(s)) => {
+                let q = interp_quality(SSIM2_TO_Q, s).clamp(0.0, 100.0);
+                set_native_quality(self.with_lossless(false), q)
+            }
+            Fidelity::Lossy(LossyTarget::ApproxButteraugli(d)) => {
+                let q = interp_quality(BUTTER_MAX_TO_Q, d).clamp(0.0, 100.0);
+                set_native_quality(self.with_lossless(false), q)
+            }
+            // Unsupported metric targets keep the selected quality. Report
+            // that actual fallback rather than claiming the metric or None.
+            _ => {
+                let mut config = self.with_lossless(false);
+                config
+                    .trait_quality
+                    .get_or_insert(config.inner.get_quality());
+                config
+            }
+        }
+    }
+
+    fn resolved_target_fidelity(&self) -> Option<zencodec::encode::Fidelity> {
+        use zencodec::encode::Fidelity;
+        if self.is_lossless() == Some(true) {
+            Some(Fidelity::Lossless)
+        } else {
+            self.generic_quality().map(Fidelity::codec_quality)
+        }
+    }
+
+    fn estimate_encode_resources(
+        &self,
+        image: &zencodec::estimate::ImageCharacteristics,
+        compute: &zencodec::estimate::ComputeEnvironment,
+    ) -> zencodec::estimate::ResourceEstimate {
+        use zencodec::estimate::{ResourceEstimate, ThreadingInformation};
+        let bpp = image.descriptor().bytes_per_pixel() as u8;
+        // zenwebp encode is single-threaded; model it as SERIAL.
+        let e = crate::heuristics::estimate_encode(image.width(), image.height(), bpp, &self.inner);
+        // heuristics models the encoder's working set (VmHWM marginal); the zencodec
+        // convention (ResourceEstimate::conservative) is total peak = input buffer
+        // (held by the caller during encode) + working, so add the input buffer.
+        let input = image.input_bytes();
+        ResourceEstimate::new(e.peak_memory_bytes.saturating_add(input), e.time_ms as u64)
+            .with_peak_max(e.peak_memory_bytes_max.saturating_add(input))
+            .with_threading(ThreadingInformation::SERIAL)
+            .at_cores(compute.cores())
+    }
+
+    fn with_alpha_quality(self, quality: f32) -> Self {
+        self.with_alpha_quality_value(quality)
+    }
+
+    fn alpha_quality(&self) -> Option<f32> {
+        let aq = match &self.inner {
+            EncoderConfig::Lossy(cfg) => cfg.alpha_quality,
+            EncoderConfig::Lossless(cfg) => cfg.alpha_quality,
+        };
+        Some(aq as f32)
+    }
+
+    fn job(self) -> WebpEncodeJob {
+        WebpEncodeJob {
+            config: self,
+            stop: None,
+            icc: None,
+            exif: None,
+            xmp: None,
+            cicp: None,
+            orientation: Orientation::Identity,
+            limits: ResourceLimits::none(),
+            canvas_size: None,
+            loop_count: None,
+            policy: None,
+        }
+    }
+}
+
+// ── Encode Job ──────────────────────────────────────────────────────────────
+
+/// Per-operation WebP encode job.
+pub struct WebpEncodeJob {
+    config: WebpEncoderConfig,
+    stop: Option<zencodec::StopToken>,
+    icc: Option<Arc<[u8]>>,
+    exif: Option<Arc<[u8]>>,
+    xmp: Option<Arc<[u8]>>,
+    /// CICP from `Metadata::cicp`. WebP has no CICP carrier, so this never
+    /// reaches the bitstream directly; it feeds `resolve_color_emit`, which may
+    /// decide to synthesize an ICC profile from it (the only color carrier WebP
+    /// has) when the source had no ICC of its own.
+    cicp: Option<zencodec::Cicp>,
+    orientation: Orientation,
+    limits: ResourceLimits,
+    canvas_size: Option<(u32, u32)>,
+    loop_count: Option<Option<u32>>,
+    policy: Option<zencodec::encode::EncodePolicy>,
+}
+
+impl WebpEncodeJob {
+    #[allow(deprecated)] // Retained shared serializer; no local TIFF writer.
+    fn prepared_exif(&self) -> Result<Option<Arc<[u8]>>, At<zencodec::CodecError>> {
+        let original = self.exif.as_deref();
+        let tagged = original.and_then(zencodec::helpers::parse_exif_orientation);
+        if tagged == Some(self.orientation)
+            || (self.orientation == Orientation::Identity && tagged.is_none())
+        {
+            return Ok(self.exif.clone());
+        }
+        let mut exif = match original {
+            Some(bytes) => zencodec::exif::Exif::parse(bytes).ok_or_else(|| {
+                at!(zencodec::CodecError::new(
+                    Some("zenwebp"),
+                    zencodec::ErrorCategory::Request(zencodec::RequestError::Invalid(
+                        zencodec::InvalidKind::Parameters
+                    ))
+                ))
+            })?,
+            None => zencodec::exif::Exif::default(),
+        };
+        exif.set_orientation(self.orientation);
+        Ok(Some(Arc::from(exif.to_bytes())))
+    }
+
+    fn build_inner_config(&self) -> EncoderConfig {
+        let mut inner = self.config.inner.clone();
+        let mut limits = crate::Limits::none();
+        if let Some(px) = self.limits.max_pixels {
+            limits = limits.max_total_pixels(px);
+        }
+        // `max_memory_bytes` is deliberately NOT forwarded: `crate::Limits` is
+        // the decoder's allocation-budget type, and the native ENCODE path
+        // never reads its `max_memory` — forwarding it stored a limit nothing
+        // checked. The encode memory budget is enforced honestly in one place:
+        // `WebpEncoder::do_encode`'s pre-flight against the calibrated
+        // `heuristics::estimate_encode` peak. Dimension/pixel caps stay
+        // forwarded — the native encode genuinely validates those.
+        if self.limits.max_width.is_some() || self.limits.max_height.is_some() {
+            limits = limits.max_dimensions(
+                self.limits.max_width.unwrap_or(u32::MAX),
+                self.limits.max_height.unwrap_or(u32::MAX),
+            );
+        }
+        // `prefer_fallible_allocations` reaches the encoder's top-level
+        // O(pixels) buffers through `EncoderParams::alloc_pref` (#63): every
+        // encoder site defaults to infallible, so only `Fallible` changes
+        // behaviour (allocation failure → `LimitExceeded(Memory)`).
+        limits = limits.with_alloc_pref(alloc_pref_from_zencodec(
+            self.limits.prefer_fallible_allocations,
+        ));
+        inner = inner.limits(limits);
+        inner
+    }
+
+    fn _build_metadata(&self) -> crate::ImageMetadata<'_> {
+        let mut meta = crate::ImageMetadata::new();
+        if let Some(ref icc) = self.icc {
+            meta = meta.with_icc_profile(icc.as_ref());
+        }
+        if let Some(ref exif) = self.exif {
+            meta = meta.with_exif(exif.as_ref());
+        }
+        if let Some(ref xmp) = self.xmp {
+            meta = meta.with_xmp(xmp.as_ref());
+        }
+        meta
+    }
+
+    fn _has_metadata(&self) -> bool {
+        self.icc.is_some() || self.exif.is_some() || self.xmp.is_some()
+    }
+}
+
+impl zencodec::encode::EncodeJob for WebpEncodeJob {
+    type Error = At<zencodec::CodecError>;
+    type Enc = WebpEncoder;
+    type AnimationFrameEnc = WebpAnimationFrameEncoder;
+
+    fn with_stop(mut self, stop: zencodec::StopToken) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    fn with_policy(mut self, policy: zencodec::encode::EncodePolicy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    // Required by the trait (codecs must store the bytes). Callers should prefer
+    // the provided `with_metadata_policy`, which filters via `Metadata::filtered`
+    // (sub-field EXIF retention + orientation-tag reconciliation) before handing
+    // the result here. `#[allow(deprecated)]` because the trait method itself
+    // carries `#[deprecated]`.
+    #[allow(deprecated)]
+    fn with_metadata(mut self, meta: Metadata) -> Self {
+        self.icc = meta.icc_profile;
+        self.exif = meta.exif;
+        self.xmp = meta.xmp;
+        // Capture CICP so the color-emit resolver can synthesize an ICC from it
+        // when the source carries CICP but no ICC (WebP's only color carrier).
+        self.cicp = meta.cicp;
+        self.orientation = meta.orientation;
+        self
+    }
+
+    fn with_limits(mut self, limits: ResourceLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    fn with_canvas_size(mut self, width: u32, height: u32) -> Self {
+        self.canvas_size = Some((width, height));
+        self
+    }
+
+    fn with_loop_count(mut self, count: Option<u32>) -> Self {
+        self.loop_count = Some(count);
+        self
+    }
+
+    fn encoder(self) -> Result<WebpEncoder, At<zencodec::CodecError>> {
+        let exif = self.prepared_exif()?;
+        let inner_config = self.build_inner_config();
+        let policy = self.policy.unwrap_or_default();
+        // Metadata retention is no longer gated here with a coarse all-or-nothing
+        // `resolve_icc/exif/xmp` switch. The blessed path is
+        // `EncodeJob::with_metadata_policy`, whose provided default filters via
+        // `Metadata::filtered` (sub-field EXIF retention, ICC drop rules, and
+        // orientation-tag reconciliation) *before* the bytes reach this job — so
+        // by the time we get here, `self.icc/exif/xmp` already reflect the
+        // caller's retention choice. Pass them through verbatim.
+        //
+        // The color carrier (ICC vs synthesized-from-CICP) is resolved later in
+        // `do_encode` via `resolve_color_emit`, under this policy.
+        Ok(WebpEncoder {
+            inner_config,
+            stop: self.stop,
+            icc: self.icc,
+            exif,
+            xmp: self.xmp,
+            cicp: self.cicp,
+            color_policy: policy.resolve_color(zencodec::ColorEmitPolicy::Balanced),
+            limits: self.limits,
+            canvas_size: self.canvas_size,
+            stream: None,
+        })
+    }
+
+    fn animation_frame_encoder(
+        self,
+    ) -> Result<WebpAnimationFrameEncoder, At<zencodec::CodecError>> {
+        let inner_config = self.build_inner_config();
+        let loop_count = match self.loop_count {
+            Some(Some(0)) | None => crate::decoder::LoopCount::Forever,
+            Some(None) => crate::decoder::LoopCount::Forever,
+            Some(Some(n)) => {
+                let n16 = (n.min(u16::MAX as u32)) as u16;
+                crate::decoder::LoopCount::Times(
+                    core::num::NonZeroU16::new(n16)
+                        .unwrap_or(core::num::NonZeroU16::new(1).unwrap()),
+                )
+            }
+        };
+        Ok(WebpAnimationFrameEncoder {
+            inner_config,
+            anim_enc: None,
+            cumulative_ms: 0,
+            timing: zencodec::animation::TimingQuantizer::new(1000, 0x00ff_ffff)
+                .expect("valid WebP clock"),
+            last_frame_duration_ms: 100,
+            canvas_size: self.canvas_size,
+            loop_count,
+            limits: self.limits,
+        })
+    }
+}
+
+// ── Encoder ─────────────────────────────────────────────────────────────────
+
+/// Streaming accumulation state for row-level encoding.
+///
+/// Rows are kept in the layout `encode` would hand the encoder, and
+/// `finish` runs the same encode on them, so `push_rows` + `finish` gives the
+/// bytes `encode` gives. (A YUV accumulator that converted row pairs during
+/// push was removed on 2026-10-15: it used its own converter with a fixed
+/// chroma precision, so its pixels differed from `encode` at method >= 1.)
+enum StreamAccum {
+    /// Accumulated pixel bytes in the encode layout.
+    Raw {
+        pixels: Vec<u8>,
+        layout: PixelLayout,
+        width: u32,
+        total_rows: u32,
+    },
+}
+
+/// Single-image WebP encoder.
+pub struct WebpEncoder {
+    inner_config: EncoderConfig,
+    stop: Option<zencodec::StopToken>,
+    icc: Option<Arc<[u8]>>,
+    exif: Option<Arc<[u8]>>,
+    xmp: Option<Arc<[u8]>>,
+    /// CICP carried from the source metadata. Feeds `resolve_color_emit` in
+    /// `do_encode`; WebP has no CICP carrier so it is never emitted as-is.
+    cicp: Option<zencodec::Cicp>,
+    /// Resolved color-emission policy (from the job's `EncodePolicy`, defaulting
+    /// to `ColorEmitPolicy::Balanced`).
+    color_policy: zencodec::ColorEmitPolicy,
+    limits: ResourceLimits,
+    canvas_size: Option<(u32, u32)>,
+    stream: Option<StreamAccum>,
+}
+
+impl WebpEncoder {
+    /// f32 input is stored as 8-bit sRGB (`pixels_to_webp_input`). A CICP
+    /// calling it linear described the input, not the file: move its
+    /// transfer to sRGB, keeping the primaries, before an ICC is synthesized
+    /// from it.
+    fn describe_stored_f32(&mut self, desc: PixelDescriptor) {
+        if desc.channel_type() == zenpixels::ChannelType::F32
+            && let Some(c) = self.cicp.as_mut()
+            && c.transfer_characteristics == 8
+        {
+            c.transfer_characteristics = 13;
+        }
+    }
+
+    fn do_encode(
+        self,
+        pixels: &[u8],
+        layout: PixelLayout,
+        w: u32,
+        h: u32,
+        stride_pixels: usize,
+    ) -> Result<EncodeOutput, At<EncodeError>> {
+        self.limits
+            .check_dimensions(w, h)
+            .map_err(|e| at!(EncodeError::LimitExceeded(e.kind(), alloc::format!("{e}"))))?;
+        let bpp = layout.bytes_per_pixel() as u64;
+        // Honest pre-flight: gate on the calibrated peak estimate — the
+        // encoder's working set (`heuristics::estimate_encode`, VmHWM-marginal
+        // calibrated, 2026-06-23 sweep, safe-upper-bound `_EST` fit) PLUS the
+        // input buffer held for the encode's duration — not just the
+        // `w*h*bpp` input buffer, which under-states the real peak (lossless:
+        // 18 MB fixed + 24 B/px working vs a 3-4 B/px input). Same
+        // input+working convention as `estimate_encode_resources`. This is
+        // the single encode-side memory enforcement point.
+        let input_bytes = w as u64 * h as u64 * bpp;
+        let est = crate::heuristics::estimate_encode(w, h, bpp as u8, &self.inner_config);
+        let estimated_mem = est.peak_memory_bytes.saturating_add(input_bytes);
+        self.limits
+            .check_memory(estimated_mem)
+            .map_err(|e| at!(EncodeError::LimitExceeded(e.kind(), alloc::format!("{e}"))))?;
+
+        let mut req =
+            EncodeRequest::new(&self.inner_config, pixels, layout, w, h).with_stride(stride_pixels);
+        if let Some(ref stop) = self.stop {
+            req = req.with_stop(stop);
+        }
+        // Holds any synthesized ICC bytes (bundled `&'static`, or a
+        // cms-moxcms-generated profile) alive until `req.encode()` below: `meta`
+        // borrows the bytes and is moved into `req`, so the holder must outlive
+        // the metadata block. Assigned unconditionally inside it.
+        let synth_holder;
+        {
+            // Resolve which color description WebP should embed. WebP's only
+            // color carrier is an embedded ICC profile (no CICP carrier), so the
+            // plan's `cicp` field is intentionally ignored — the whole point of
+            // running the resolver is to turn a CICP-only source into a
+            // synthesized ICC instead of silently emitting an untagged
+            // (sRGB-assumed) WebP.
+            let channel_count: u8 = match layout {
+                PixelLayout::L8 => 1,
+                PixelLayout::La8 => 2,
+                PixelLayout::Rgb8 | PixelLayout::Bgr8 | PixelLayout::Yuv420 => 3,
+                PixelLayout::Rgba8 | PixelLayout::Bgra8 | PixelLayout::Argb8 => 4,
+            };
+            let mut src = zencodec::SourceColor::default().with_channel_count(channel_count);
+            if let Some(cicp) = self.cicp {
+                src = src
+                    .with_cicp(cicp)
+                    .with_color_authority(zencodec::ColorAuthority::Cicp);
+            }
+            if let Some(ref icc) = self.icc {
+                // ICC is WebP's authoritative carrier; if both are present prefer
+                // it (matches the decode-side authority).
+                src = src
+                    .with_icc_profile(icc.clone())
+                    .with_color_authority(zencodec::ColorAuthority::Icc);
+            }
+            let plan = zencodec::resolve_color_emit(&src, &ENCODE_CAPABILITIES, self.color_policy);
+
+            // Lower the ICC disposition to bytes that outlive the local `meta`.
+            // `SynthesizeFrom` lowers a full CICP via the transfer-aware
+            // `synthesize_icc_for_cicp` (so a BT.2020-PQ source never gets the
+            // SDR-TRC Rec.2020 profile). `Profile` → bundled `&'static` bytes, or
+            // a cms-moxcms-generated profile held alive in `synth_holder`;
+            // `NotNeeded` (sRGB default) → embed no ICC.
+            //
+            // Every other outcome is an ERROR, not a silent skip: WebP has NO
+            // CICP carrier, so an embedded ICC is the ONLY way this color
+            // survives — emitting without it would misrepresent the image as
+            // sRGB. The `cms` feature (icc-db blob synthesis) covers the full
+            // ITU-T H.273 grid incl PQ/HLG, with no moxcms dependency.
+            synth_holder = match &plan.icc {
+                zencodec::IccDisposition::SynthesizeFrom(cicp) => {
+                    use zenpixels_convert::icc_profiles::SynthesizedIcc;
+                    match zenpixels_convert::icc_profiles::synthesize_icc_for_cicp(*cicp) {
+                        SynthesizedIcc::Profile(bytes) => Some(bytes),
+                        SynthesizedIcc::NotNeeded => None,
+                        outcome => {
+                            return Err(at!(EncodeError::IccSynthesisUnavailable(alloc::format!(
+                                "CICP primaries {} / transfer {} ({outcome:?}); enable \
+                                 zenwebp's `cms` feature, supply an ICC profile, or drop \
+                                 the CICP",
+                                cicp.color_primaries,
+                                cicp.transfer_characteristics
+                            ))));
+                        }
+                    }
+                }
+                _ => None,
+            };
+            let icc_bytes: Option<&[u8]> = match plan.icc {
+                zencodec::IccDisposition::KeepSource => self.icc.as_deref(),
+                zencodec::IccDisposition::SynthesizeFrom(_) => synth_holder.as_deref(),
+                zencodec::IccDisposition::Drop => None,
+                // `IccDisposition` is #[non_exhaustive]; embed nothing for any
+                // future disposition we don't yet understand.
+                _ => None,
+            };
+
+            let mut meta = crate::ImageMetadata::new();
+            if let Some(icc) = icc_bytes {
+                meta = meta.with_icc_profile(icc);
+            }
+            if let Some(ref exif) = self.exif {
+                meta = meta.with_exif(exif.as_ref());
+            }
+            if let Some(ref xmp) = self.xmp {
+                meta = meta.with_xmp(xmp.as_ref());
+            }
+            req = req.with_metadata(meta);
+        }
+        let data = req.encode()?;
+        self.limits
+            .check_output_size(data.len() as u64)
+            .map_err(|e| at!(EncodeError::LimitExceeded(e.kind(), alloc::format!("{e}"))))?;
+        Ok(EncodeOutput::new(data, ImageFormat::WebP))
+    }
+}
+
+/// Convert a type-erased PixelSlice to raw bytes + PixelLayout for the native WebP API.
+///
+/// Returns `(bytes, layout, width, height, stride_pixels)`.
+/// For passthrough formats (RGB8, RGBA8), bytes may be borrowed zero-copy.
+/// For converted formats, bytes are always owned and contiguous (stride = width).
+/// Cast `&[u8]` to `&[f32]`, copying to an aligned buffer only if needed.
+fn as_f32_slice(data: &[u8]) -> Cow<'_, [f32]> {
+    match bytemuck::try_cast_slice(data) {
+        Ok(s) => Cow::Borrowed(s),
+        Err(bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned) => Cow::Owned(
+            data.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_ne_bytes(*c))
+                .collect(),
+        ),
+        Err(e) => panic!("cannot cast &[u8] to &[f32]: {e:?}"),
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn pixels_to_webp_input<'a>(
+    pixels: &'a PixelSlice<'a>,
+) -> Result<(alloc::borrow::Cow<'a, [u8]>, PixelLayout, u32, u32, usize), At<EncodeError>> {
+    use alloc::borrow::Cow;
+
+    let desc = pixels.descriptor();
+    let w = pixels.width();
+    let h = pixels.rows();
+
+    let stride_pixels = pixels.stride() / desc.bytes_per_pixel();
+
+    if desc == PixelDescriptor::RGB8_SRGB {
+        Ok((
+            Cow::Borrowed(pixels.as_strided_bytes()),
+            PixelLayout::Rgb8,
+            w,
+            h,
+            stride_pixels,
+        ))
+    } else if desc == PixelDescriptor::RGBA8_SRGB {
+        Ok((
+            Cow::Borrowed(pixels.as_strided_bytes()),
+            PixelLayout::Rgba8,
+            w,
+            h,
+            stride_pixels,
+        ))
+    } else if desc == PixelDescriptor::BGRA8_SRGB {
+        let raw = pixels.contiguous_bytes();
+        let mut rgba = alloc::vec![0u8; raw.len()];
+        garb::bytes::bgra_to_rgba(&raw, &mut rgba)
+            .map_err(|e| EncodeError::InvalidBufferSize(alloc::format!("pixel conversion: {e}")))?;
+        Ok((Cow::Owned(rgba), PixelLayout::Rgba8, w, h, w as usize))
+    } else if desc == PixelDescriptor::RGBX8_SRGB {
+        // Byte 3 is padding — strip to 3-channel RGB.
+        let raw = pixels.contiguous_bytes();
+        let mut rgb = alloc::vec![0u8; (w as usize) * (h as usize) * 3];
+        garb::bytes::rgba_to_rgb(&raw, &mut rgb)
+            .map_err(|e| EncodeError::InvalidBufferSize(alloc::format!("pixel conversion: {e}")))?;
+        Ok((Cow::Owned(rgb), PixelLayout::Rgb8, w, h, w as usize))
+    } else if desc == PixelDescriptor::BGRX8_SRGB {
+        // BGRA layout with padding byte — strip to 3-channel RGB via swap.
+        let raw = pixels.contiguous_bytes();
+        let mut rgb = alloc::vec![0u8; (w as usize) * (h as usize) * 3];
+        garb::bytes::bgra_to_rgb(&raw, &mut rgb)
+            .map_err(|e| EncodeError::InvalidBufferSize(alloc::format!("pixel conversion: {e}")))?;
+        Ok((Cow::Owned(rgb), PixelLayout::Rgb8, w, h, w as usize))
+    } else if desc == PixelDescriptor::GRAY8_SRGB {
+        // Pass through as L8 — encoder accepts grayscale natively in both
+        // lossy (constant U=V=128 chroma plane) and lossless (gray→RGBA
+        // happens inside encode_lossless_full) paths. Avoids the 3× alloc
+        // that gray→RGB expansion required.
+        Ok((
+            Cow::Borrowed(pixels.as_strided_bytes()),
+            PixelLayout::L8,
+            w,
+            h,
+            stride_pixels,
+        ))
+    } else if desc == PixelDescriptor::RGBF32_LINEAR {
+        let raw = pixels.contiguous_bytes();
+        let floats = as_f32_slice(&raw);
+        let mut rgb = alloc::vec![0u8; floats.len()];
+        linear_srgb::default::linear_to_srgb_u8_slice(&floats, &mut rgb);
+        Ok((Cow::Owned(rgb), PixelLayout::Rgb8, w, h, w as usize))
+    } else if desc == PixelDescriptor::RGBAF32_LINEAR {
+        let raw = pixels.contiguous_bytes();
+        let floats = as_f32_slice(&raw);
+        let mut rgba = alloc::vec![0u8; floats.len()];
+        linear_srgb::default::linear_to_srgb_u8_rgba_slice(&floats, &mut rgba);
+        Ok((Cow::Owned(rgba), PixelLayout::Rgba8, w, h, w as usize))
+    } else if desc == PixelDescriptor::GRAYF32_LINEAR {
+        let raw = pixels.contiguous_bytes();
+        let floats = as_f32_slice(&raw);
+        let mut gray_u8 = alloc::vec![0u8; floats.len()];
+        linear_srgb::default::linear_to_srgb_u8_slice(&floats, &mut gray_u8);
+        // gray→rgb: no garb::gray_to_rgb without experimental feature, expand manually
+        let mut rgb = alloc::vec![0u8; floats.len() * 3];
+        for (i, &g) in gray_u8.iter().enumerate() {
+            rgb[i * 3] = g;
+            rgb[i * 3 + 1] = g;
+            rgb[i * 3 + 2] = g;
+        }
+        Ok((Cow::Owned(rgb), PixelLayout::Rgb8, w, h, w as usize))
+    } else {
+        Err(at!(EncodeError::InvalidBufferSize(alloc::format!(
+            "unsupported pixel format for WebP encode: {:?}",
+            desc
+        ))))
+    }
+}
+
+impl zencodec::encode::Encoder for WebpEncoder {
+    type Error = At<zencodec::CodecError>;
+
+    fn reject(op: UnsupportedOperation) -> At<zencodec::CodecError> {
+        EncodeError::from(op).into()
+    }
+
+    fn preferred_strip_height(&self) -> u32 {
+        match &self.inner_config {
+            // Row pair for chroma subsampling (YUV420 processes 2 rows at a time)
+            EncoderConfig::Lossy(_) => 2,
+            // Lossless has no row-level preference
+            EncoderConfig::Lossless(_) => 1,
+        }
+    }
+
+    fn encode(mut self, pixels: PixelSlice<'_>) -> Result<EncodeOutput, At<zencodec::CodecError>> {
+        self.describe_stored_f32(pixels.descriptor());
+        let (buf, layout, w, h, stride) =
+            pixels_to_webp_input(&pixels).map_err(zencodec::CodecError::of)?;
+        self.do_encode(&buf, layout, w, h, stride)
+            .map_err(zencodec::CodecError::of)
+    }
+
+    fn push_rows(&mut self, rows: PixelSlice<'_>) -> Result<(), At<zencodec::CodecError>> {
+        let strip_h = rows.rows();
+        if strip_h == 0 {
+            return Ok(());
+        }
+        self.describe_stored_f32(rows.descriptor());
+        // Each strip is converted to the layout `encode` would use;
+        // `finish` encodes the accumulated rows exactly as `encode` does.
+        let (buf, layout, _, _, _) =
+            pixels_to_webp_input(&rows).map_err(zencodec::CodecError::of)?;
+        let canvas = self.canvas_size;
+        let StreamAccum::Raw {
+            pixels, total_rows, ..
+        } = self.stream.get_or_insert_with(|| {
+            let (cw, ch) = canvas.unwrap_or((rows.width(), 0));
+            StreamAccum::Raw {
+                pixels: Vec::with_capacity(cw as usize * ch as usize * layout.bytes_per_pixel()),
+                layout,
+                width: cw,
+                total_rows: 0,
+            }
+        });
+        pixels.extend_from_slice(&buf);
+        *total_rows += strip_h;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<EncodeOutput, At<zencodec::CodecError>> {
+        let stream = self.stream.take().ok_or_else(|| {
+            zencodec::CodecError::of(at!(EncodeError::InvalidBufferSize("no rows pushed".into())))
+        })?;
+
+        match stream {
+            StreamAccum::Raw {
+                pixels,
+                layout,
+                width,
+                total_rows,
+            } => self
+                .do_encode(&pixels, layout, width, total_rows, width as usize)
+                .map_err(zencodec::CodecError::of),
+        }
+    }
+}
+
+// ── Full Frame Encoder ──────────────────────────────────────────────────────
+
+/// Animation WebP full-frame encoder.
+///
+/// The animation encoder is created lazily on the first frame push
+/// (to determine canvas dimensions).
+pub struct WebpAnimationFrameEncoder {
+    inner_config: EncoderConfig,
+    anim_enc: Option<AnimationEncoder>,
+    cumulative_ms: u32,
+    timing: zencodec::animation::TimingQuantizer,
+    last_frame_duration_ms: u32,
+    canvas_size: Option<(u32, u32)>,
+    loop_count: crate::decoder::LoopCount,
+    limits: ResourceLimits,
+}
+
+/// Convert a [`MuxError`] to an [`EncodeError`].
+fn mux_to_encode_err(e: MuxError) -> EncodeError {
+    use alloc::string::ToString;
+    match e {
+        MuxError::EncodeError(e) => e,
+        MuxError::InvalidDimensions { .. } => EncodeError::InvalidDimensions,
+        other => EncodeError::InvalidBufferSize(other.to_string()),
+    }
+}
+
+impl WebpAnimationFrameEncoder {
+    fn ensure_encoder(&mut self, frame_w: u32, frame_h: u32) -> Result<(), At<EncodeError>> {
+        if self.anim_enc.is_none() {
+            let (cw, ch) = self.canvas_size.unwrap_or((frame_w, frame_h));
+            let config = AnimationConfig {
+                loop_count: self.loop_count,
+                ..AnimationConfig::default()
+            };
+            let enc = AnimationEncoder::new(cw, ch, config).map_err_at(mux_to_encode_err)?;
+            self.anim_enc = Some(enc);
+        }
+        Ok(())
+    }
+}
+
+impl zencodec::encode::AnimationFrameEncoder for WebpAnimationFrameEncoder {
+    type Error = At<zencodec::CodecError>;
+
+    fn reject(op: UnsupportedOperation) -> At<zencodec::CodecError> {
+        EncodeError::from(op).into()
+    }
+
+    fn push_frame_timed(
+        &mut self,
+        pixels: PixelSlice<'_>,
+        duration: zencodec::animation::FrameDuration,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<zencodec::animation::FrameDuration, Self::Error> {
+        let mut timing = self.timing;
+        let encoded = timing
+            .quantize(duration)
+            .map_err(|_| Self::reject(UnsupportedOperation::AnimationTiming))?;
+        self.push_frame_exact(pixels, encoded, stop)?;
+        self.timing = timing;
+        Ok(encoded)
+    }
+
+    fn push_frame_exact(
+        &mut self,
+        pixels: PixelSlice<'_>,
+        duration: zencodec::animation::FrameDuration,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<(), Self::Error> {
+        let ticks = duration
+            .ticks_at(1000)
+            .ok()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| Self::reject(UnsupportedOperation::AnimationTiming))?;
+        self.push_frame(pixels, ticks, stop)
+    }
+
+    fn push_frame(
+        &mut self,
+        pixels: PixelSlice<'_>,
+        duration_ms: u32,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<(), At<zencodec::CodecError>> {
+        if duration_ms > 0x00ff_ffff {
+            return Err(Self::reject(UnsupportedOperation::AnimationTiming));
+        }
+        let cumulative_ms = self
+            .cumulative_ms
+            .checked_add(duration_ms)
+            .ok_or_else(|| Self::reject(UnsupportedOperation::AnimationTiming))?;
+        if let Some(s) = stop {
+            s.check()
+                .map_err(|e| zencodec::CodecError::of(at!(EncodeError::from(e))))?;
+        }
+        let (buf, layout, w, h, stride_pixels) =
+            pixels_to_webp_input(&pixels).map_err(zencodec::CodecError::of)?;
+        // AnimationEncoder::add_frame assumes tightly-packed rows
+        // (stride == width). Pack to contiguous if the caller's PixelSlice has
+        // padded rows — e.g. imageflow's SIMD-aligned bitmaps, where the t_stride
+        // may be larger than width * bytes_per_pixel.
+        let bpp = layout.bytes_per_pixel();
+        let tight_stride = w as usize;
+        let buf: alloc::borrow::Cow<'_, [u8]> = if stride_pixels == tight_stride {
+            buf
+        } else {
+            let src_stride_bytes = stride_pixels * bpp;
+            let dst_stride_bytes = tight_stride * bpp;
+            let mut packed = alloc::vec![0u8; dst_stride_bytes * h as usize];
+            for row in 0..h as usize {
+                let src_off = row * src_stride_bytes;
+                let dst_off = row * dst_stride_bytes;
+                packed[dst_off..dst_off + dst_stride_bytes]
+                    .copy_from_slice(&buf[src_off..src_off + dst_stride_bytes]);
+            }
+            alloc::borrow::Cow::Owned(packed)
+        };
+        self.ensure_encoder(w, h)
+            .map_err(zencodec::CodecError::of)?;
+        let timestamp_ms = self.cumulative_ms;
+        let enc = self.anim_enc.as_mut().unwrap();
+        enc.add_frame(&buf, layout, timestamp_ms, &self.inner_config)
+            .map_err_at(mux_to_encode_err)
+            .map_err(zencodec::CodecError::of)?;
+        self.cumulative_ms = cumulative_ms;
+        self.last_frame_duration_ms = duration_ms;
+        Ok(())
+    }
+
+    fn finish(
+        self,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<EncodeOutput, At<zencodec::CodecError>> {
+        if let Some(s) = stop {
+            s.check()
+                .map_err(|e| zencodec::CodecError::of(at!(EncodeError::from(e))))?;
+        }
+        let enc = self
+            .anim_enc
+            .ok_or_else(|| EncodeError::InvalidBufferSize("no frames added".into()))
+            .map_err(|e| zencodec::CodecError::of(at!(e)))?;
+        let data = enc
+            .finalize(self.last_frame_duration_ms)
+            .map_err_at(mux_to_encode_err)
+            .map_err(zencodec::CodecError::of)?;
+        self.limits
+            .check_output_size(data.len() as u64)
+            .map_err(|e| {
+                zencodec::CodecError::of(at!(EncodeError::LimitExceeded(
+                    e.kind(),
+                    alloc::format!("{e}")
+                )))
+            })?;
+        Ok(EncodeOutput::new(data, ImageFormat::WebP))
+    }
+}
+
+// ── Decoding ────────────────────────────────────────────────────────────────
+
+/// WebP decoder configuration implementing [`zencodec::decode::DecoderConfig`].
+///
+/// Wraps [`DecodeConfig`] for the trait interface.
+#[derive(Clone, Debug)]
+pub struct WebpDecoderConfig {
+    inner: DecodeConfig,
+}
+
+impl WebpDecoderConfig {
+    /// Create a new decoder config with defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: DecodeConfig::default(),
+        }
+    }
+
+    /// Set the chroma upsampling method.
+    #[must_use]
+    pub fn with_upsampling(mut self, method: crate::decoder::UpsamplingMethod) -> Self {
+        self.inner = self.inner.upsampling(method);
+        self
+    }
+
+    /// Set chroma dithering strength (0=off, 100=max). Default: 50.
+    #[must_use]
+    pub fn with_dithering_strength(mut self, strength: u8) -> Self {
+        self.inner = self.inner.with_dithering_strength(strength);
+        self
+    }
+
+    /// Set resource limits on the inner decode config.
+    #[must_use]
+    pub fn with_limits(mut self, limits: ResourceLimits) -> Self {
+        if let Some(px) = limits.max_pixels {
+            self.inner.limits = self.inner.limits.max_total_pixels(px);
+        }
+        if let Some(mem) = limits.max_memory_bytes {
+            self.inner.limits = self.inner.limits.max_memory(mem);
+        }
+        if limits.max_width.is_some() || limits.max_height.is_some() {
+            self.inner.limits = self.inner.limits.max_dimensions(
+                limits.max_width.unwrap_or(u32::MAX),
+                limits.max_height.unwrap_or(u32::MAX),
+            );
+        }
+        self
+    }
+
+    /// Access the underlying [`DecodeConfig`].
+    #[must_use]
+    pub fn inner(&self) -> &DecodeConfig {
+        &self.inner
+    }
+
+    /// Mutably access the underlying [`DecodeConfig`].
+    pub fn inner_mut(&mut self) -> &mut DecodeConfig {
+        &mut self.inner
+    }
+
+    /// Convenience: probe image header.
+    pub fn probe_header(&self, data: &[u8]) -> Result<ImageInfo, At<zencodec::CodecError>> {
+        use zencodec::decode::{DecodeJob, DecoderConfig};
+        <Self as DecoderConfig>::job(self.clone()).probe(data)
+    }
+
+    /// Convenience: decode image with this config.
+    pub fn decode(&self, data: &[u8]) -> Result<DecodeOutput, At<zencodec::CodecError>> {
+        use zencodec::decode::{Decode, DecodeJob, DecoderConfig};
+        <Self as DecoderConfig>::job(self.clone())
+            .decoder(Cow::Borrowed(data), &[])
+            .at()?
+            .decode()
+    }
+}
+
+impl Default for WebpDecoderConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static DECODE_DESCRIPTORS: &[PixelDescriptor] = &[
+    PixelDescriptor::RGB8_SRGB,
+    PixelDescriptor::RGBA8_SRGB,
+    PixelDescriptor::BGRA8_SRGB,
+];
+
+static DECODE_CAPABILITIES: zencodec::decode::DecodeCapabilities =
+    zencodec::decode::DecodeCapabilities::new()
+        .with_incremental(true)
+        .with_icc(true)
+        .with_exif(true)
+        .with_xmp(true)
+        .with_stop(true)
+        .with_animation(true)
+        .with_cheap_probe(true)
+        .with_native_alpha(true)
+        .with_streaming(true)
+        .with_inventory(cfg!(feature = "inventory"))
+        .with_enforces_max_pixels(true)
+        .with_enforces_max_memory(true)
+        .with_enforces_max_input_bytes(true);
+
+impl zencodec::decode::DecoderConfig for WebpDecoderConfig {
+    type Error = At<zencodec::CodecError>;
+    type Job<'a> = WebpDecodeJob;
+
+    fn formats() -> &'static [ImageFormat] {
+        &[ImageFormat::WebP]
+    }
+
+    fn supported_descriptors() -> &'static [PixelDescriptor] {
+        DECODE_DESCRIPTORS
+    }
+
+    fn capabilities() -> &'static zencodec::decode::DecodeCapabilities {
+        &DECODE_CAPABILITIES
+    }
+
+    fn estimate_decode_resources(
+        &self,
+        image: &zencodec::estimate::ImageCharacteristics,
+        compute: &zencodec::estimate::ComputeEnvironment,
+    ) -> zencodec::estimate::ResourceEstimate {
+        use zencodec::estimate::{ResourceEstimate, ThreadingInformation};
+        let bpp = image.descriptor().bytes_per_pixel() as u8;
+        // `estimate_decode` returns the VP8 working set (fixed decoder state +
+        // ~12 B/px for the row cache, reconstruction buffer and loop-filter
+        // accumulator) separately from the output buffer; peak holds both at
+        // once. zenwebp decode is single-threaded (the 2-thread pipeline was
+        // measured net-negative — see CLAUDE.md), so model it as SERIAL.
+        let d = crate::heuristics::estimate_decode(image.width(), image.height(), bpp);
+        let peak = d.peak_memory_bytes.saturating_add(d.output_bytes);
+        ResourceEstimate::new(peak, d.time_ms as u64)
+            .with_threading(ThreadingInformation::SERIAL)
+            .at_cores(compute.cores())
+    }
+
+    fn job<'a>(self) -> Self::Job<'a> {
+        WebpDecodeJob {
+            config: self,
+            stop: None,
+            limits: ResourceLimits::none(),
+            start_frame_index: 0,
+            policy: None,
+            preferred: Vec::new(),
+            orientation: OrientationHint::Preserve,
+        }
+    }
+}
+
+// ── Decode Job ──────────────────────────────────────────────────────────────
+
+/// Per-operation WebP decode job.
+#[derive(Clone)]
+pub struct WebpDecodeJob {
+    config: WebpDecoderConfig,
+    stop: Option<zencodec::StopToken>,
+    limits: ResourceLimits,
+    start_frame_index: u32,
+    policy: Option<zencodec::decode::DecodePolicy>,
+    preferred: Vec<PixelDescriptor>,
+    /// How to handle the image's stored EXIF orientation.
+    ///
+    /// Default: [`OrientationHint::Preserve`] — the zencodec ecosystem default.
+    /// Under `Preserve` the decoder does **not** bake the orientation into the
+    /// pixels: [`decode`](zencodec::decode::Decode::decode) returns pixels in
+    /// stored orientation and [`ImageInfo`] reports the stored (coded)
+    /// dimensions plus the intrinsic EXIF [`Orientation`]. Under
+    /// [`Correct`](OrientationHint::Correct) the decoder applies the orientation
+    /// and reports display dimensions with [`Orientation::Identity`]. Either way
+    /// [`ImageInfo::display_width`]/[`display_height`](ImageInfo::display_height)
+    /// yield the upright dimensions.
+    ///
+    /// Set per-job via
+    /// [`DecodeJob::with_orientation`](zencodec::decode::DecodeJob::with_orientation).
+    orientation: OrientationHint,
+}
+
+impl WebpDecodeJob {
+    /// Set preferred pixel formats for `output_info()` prediction.
+    ///
+    /// This is an inherent method (not part of the trait) because
+    /// `output_info()` does not receive a `preferred` list.
+    /// Call this before `output_info()` to predict the actual decode format.
+    #[must_use]
+    pub fn with_preferred(mut self, preferred: &[PixelDescriptor]) -> Self {
+        self.preferred = preferred.to_vec();
+        self
+    }
+
+    /// Apply decode policy to strip metadata from an `ImageInfo`.
+    fn apply_policy_to_info(&self, mut info: ImageInfo) -> ImageInfo {
+        if let Some(ref policy) = self.policy {
+            if !policy.resolve_icc(true) {
+                info.source_color.icc_profile = None;
+            }
+            if !policy.resolve_exif(true) {
+                info.embedded_metadata.exif = None;
+            }
+            if !policy.resolve_xmp(true) {
+                info.embedded_metadata.xmp = None;
+            }
+        }
+        info
+    }
+
+    fn build_config(&self) -> DecodeConfig {
+        let mut cfg = self.config.inner.clone();
+        if let Some(px) = self.limits.max_pixels {
+            cfg.limits = cfg.limits.max_total_pixels(px);
+        }
+        if let Some(mem) = self.limits.max_memory_bytes {
+            cfg.limits = cfg.limits.max_memory(mem);
+        }
+        if self.limits.max_width.is_some() || self.limits.max_height.is_some() {
+            cfg.limits = cfg.limits.max_dimensions(
+                self.limits.max_width.unwrap_or(u32::MAX),
+                self.limits.max_height.unwrap_or(u32::MAX),
+            );
+        }
+        if let Some(max_frames) = self.limits.max_frames {
+            cfg.limits = cfg.limits.max_frame_count(max_frames as u64);
+        }
+        // Honor the allocation-fallibility preference for the big
+        // untrusted-sized decode buffers (output, VP8 row cache, lossless
+        // plane). The native decode API leaves this at CodecDefault.
+        cfg.limits = cfg.limits.with_alloc_pref(alloc_pref_from_zencodec(
+            self.limits.prefer_fallible_allocations,
+        ));
+        cfg
+    }
+
+    fn effective_input_size_limit(&self) -> Option<u64> {
+        self.limits
+            .max_input_bytes
+            .or(self.config.inner.limits.max_file_size)
+    }
+    fn native_streaming_decoder<'a>(
+        self,
+        data: Cow<'a, [u8]>,
+        preferred: &[PixelDescriptor],
+    ) -> Result<WebpStreamingDecoder, At<zencodec::CodecError>> {
+        if let Some(max) = self.effective_input_size_limit()
+            && data.len() as u64 > max
+        {
+            return Err(zencodec::CodecError::of(at!(
+                DecodeError::InvalidParameter(alloc::format!(
+                    "input size {} exceeds limit {}",
+                    data.len(),
+                    max
+                ))
+            )));
+        }
+
+        let cfg = self.build_config();
+        let dither_strength = cfg.dithering_strength;
+        // The strip pipeline only implements fancy upsampling. Reject
+        // point-sampled requests so callers fall back to the full decode,
+        // which honors `UpsamplingMethod::Simple`.
+        if cfg.upsampling == crate::decoder::UpsamplingMethod::Simple {
+            return Err(zencodec::CodecError::of(at!(
+                DecodeError::UnsupportedFeature(
+                    "streaming decode supports fancy upsampling only".into(),
+                )
+            )));
+        }
+
+        // Determine bpp from preferred list
+        let has_alpha_preferred = preferred.contains(&PixelDescriptor::RGBA8_SRGB)
+            || preferred.contains(&PixelDescriptor::BGRA8_SRGB);
+        let default_bpp: usize = if has_alpha_preferred { 4 } else { 3 };
+
+        // Parse RIFF/WebP container
+        let data_ref: &[u8] = &data;
+        if data_ref.len() < 20 {
+            return Err(zencodec::CodecError::of(at!(
+                DecodeError::NotEnoughInitData
+            )));
+        }
+        if &data_ref[..4] != b"RIFF" {
+            let mut sig = [0u8; 4];
+            sig.copy_from_slice(&data_ref[..4]);
+            return Err(zencodec::CodecError::of(at!(
+                DecodeError::RiffSignatureInvalid(sig)
+            )));
+        }
+        if &data_ref[8..12] != b"WEBP" {
+            let mut sig = [0u8; 4];
+            sig.copy_from_slice(&data_ref[8..12]);
+            return Err(zencodec::CodecError::of(at!(
+                DecodeError::WebpSignatureInvalid(sig)
+            )));
+        }
+
+        let first_chunk = &data_ref[12..16];
+
+        match first_chunk {
+            b"VP8 " => {
+                let chunk_size =
+                    u32::from_le_bytes([data_ref[16], data_ref[17], data_ref[18], data_ref[19]])
+                        as usize;
+                let vp8_start = 20;
+                let vp8_end = (vp8_start + chunk_size).min(data_ref.len());
+                let vp8_data = &data_ref[vp8_start..vp8_end];
+
+                // Probe info for the trait
+                let native_info = crate::ImageInfo::from_webp(data_ref).ok();
+                let info = if let Some(ref ni) = native_info {
+                    to_image_info(ni, None)
+                } else {
+                    // Fallback: will be populated after header parse
+                    ImageInfo::new(0, 0, ImageFormat::WebP)
+                };
+
+                WebpStreamingDecoder::new(
+                    vp8_data,
+                    None,
+                    default_bpp,
+                    preferred,
+                    info,
+                    dither_strength,
+                    cfg.limits.alloc_pref,
+                )
+                .map_err(zencodec::CodecError::of)
+            }
+            b"VP8X" => {
+                use crate::mux::WebPDemuxer;
+                let demuxer = WebPDemuxer::new(data_ref)
+                    .map_err_at(|inner| {
+                        DecodeError::InvalidParameter(alloc::format!("demux error: {inner}"))
+                    })
+                    .map_err(zencodec::CodecError::of)?;
+
+                if demuxer.is_animated() {
+                    return Err(zencodec::CodecError::of(at!(
+                        DecodeError::UnsupportedFeature(
+                            "streaming decode does not support animation".into()
+                        )
+                    )));
+                }
+
+                let frame = demuxer
+                    .frame(1)
+                    .ok_or_else(|| zencodec::CodecError::of(at!(DecodeError::ChunkMissing)))?;
+
+                if !frame.is_lossy {
+                    return Err(zencodec::CodecError::of(at!(
+                        DecodeError::UnsupportedFeature(
+                            "streaming decode only supports lossy VP8, got VP8L".into()
+                        )
+                    )));
+                }
+
+                // Decode alpha plane up front (it's small: width*height bytes)
+                let alpha_plane = if let Some(alpha_data) = frame.alpha_data {
+                    let native_info =
+                        crate::ImageInfo::from_webp(data_ref).map_err(zencodec::CodecError::of)?;
+                    let w = native_info.width as u16;
+                    let h = native_info.height as u16;
+                    let alpha_chunk =
+                        crate::decoder::extended::read_alpha_chunk(alpha_data, w, h, &cfg.limits)
+                            .map_err(zencodec::CodecError::of)?;
+
+                    // Apply alpha filtering to produce final alpha plane
+                    let fw = usize::from(w);
+                    let fh = usize::from(h);
+                    // Full-frame alpha plane from header dims → fallible by
+                    // default (#63/#78-B).
+                    let mut alpha_out = crate::decoder::alloc_util::alloc_zeroed(
+                        cfg.limits.alloc_pref,
+                        true,
+                        fw * fh,
+                    )
+                    .map_err(|_| zencodec::CodecError::of(at!(DecodeError::MemoryLimitExceeded)))?;
+                    for y in 0..fh {
+                        for x in 0..fw {
+                            let predictor =
+                                crate::decoder::extended::get_alpha_predictor_from_alpha(
+                                    x,
+                                    y,
+                                    fw,
+                                    alpha_chunk.filtering_method,
+                                    &alpha_out,
+                                );
+                            let idx = y * fw + x;
+                            alpha_out[idx] = predictor.wrapping_add(alpha_chunk.data[idx]);
+                        }
+                    }
+                    Some(alpha_out)
+                } else {
+                    None
+                };
+
+                let native_info = crate::ImageInfo::from_webp(data_ref).ok();
+                let info = if let Some(ref ni) = native_info {
+                    to_image_info(ni, None)
+                } else {
+                    ImageInfo::new(0, 0, ImageFormat::WebP)
+                };
+
+                let bpp = if alpha_plane.is_some() {
+                    4
+                } else {
+                    default_bpp
+                };
+
+                WebpStreamingDecoder::new(
+                    frame.bitstream,
+                    alpha_plane,
+                    bpp,
+                    preferred,
+                    info,
+                    dither_strength,
+                    cfg.limits.alloc_pref,
+                )
+                .map_err(zencodec::CodecError::of)
+            }
+            b"VP8L" => Err(zencodec::CodecError::of(at!(
+                DecodeError::UnsupportedFeature(
+                    "streaming decode does not support lossless VP8L".into()
+                )
+            ))),
+            _ => Err(zencodec::CodecError::of(at!(
+                DecodeError::UnsupportedFeature(alloc::format!(
+                    "streaming decode: unsupported chunk type {first_chunk:?}"
+                ))
+            ))),
+        }
+    }
+}
+
+impl<'a> zencodec::decode::DecodeJob<'a> for WebpDecodeJob {
+    type Error = At<zencodec::CodecError>;
+    type Dec = WebpDecoder<'a>;
+    type StreamDec = WebpStreamingDecoder;
+    type AnimationFrameDec = WebpAnimationFrameDecoder;
+
+    fn with_stop(mut self, stop: zencodec::StopToken) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    fn with_limits(mut self, limits: ResourceLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    fn with_policy(mut self, policy: zencodec::decode::DecodePolicy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    fn with_orientation(mut self, hint: OrientationHint) -> Self {
+        self.orientation = hint;
+        self
+    }
+
+    fn with_start_frame_index(mut self, index: u32) -> Self {
+        self.start_frame_index = index;
+        self
+    }
+
+    fn probe(&self, data: &[u8]) -> Result<ImageInfo, At<zencodec::CodecError>> {
+        let mut info = match crate::ImageInfo::from_webp(data) {
+            Ok(native) => to_image_info(&native, None),
+            Err(error)
+                if matches!(error.error(), DecodeError::ChunkMissing)
+                    && data.len() >= 30
+                    && (data.len() as u64)
+                        < u64::from(u32::from_le_bytes(data[4..8].try_into().unwrap())) + 8
+                    && &data[12..16] == b"VP8X"
+                    && data[16..20] == 10u32.to_le_bytes() =>
+            {
+                // The VP8X canvas header is complete even when no image chunk
+                // has arrived. Reuse the native parser; frame count is unknown
+                // until the container walk sees the frames.
+                let mut reader = crate::slice_reader::SliceReader::new(&data[20..30]);
+                let header = crate::decoder::extended::read_extended_header(&mut reader)
+                    .map_err(zencodec::CodecError::of)?;
+                let mut info =
+                    ImageInfo::new(header.canvas_width, header.canvas_height, ImageFormat::WebP)
+                        .with_alpha(header.alpha)
+                        .with_bit_depth(8)
+                        .with_channel_count(if header.alpha { 4 } else { 3 });
+                if header.animation {
+                    info = info.with_sequence(ImageSequence::Animation {
+                        frame_count: None,
+                        loop_count: None,
+                        random_access: false,
+                    });
+                }
+                info
+            }
+            Err(error) => return Err(zencodec::CodecError::of(error)),
+        };
+        // Report consistently with what `decode()` will produce. `Preserve`
+        // (default) keeps `to_image_info`'s stored dims + intrinsic EXIF tag.
+        // The bake hints report the display (post-orientation) dims + Identity.
+        info = report_probe_for_hint(info, self.orientation);
+        if let Ok(probe) = crate::detect::probe(data) {
+            info = info.with_source_encoding_details(probe);
+        }
+        Ok(self.apply_policy_to_info(info))
+    }
+
+    #[cfg(feature = "inventory")]
+    fn inventory(
+        &self,
+        data: &[u8],
+    ) -> Result<zencodec::inventory::Inventory, At<zencodec::CodecError>> {
+        if let Some(ref stop) = self.stop {
+            enough::Stop::check(stop)
+                .map_err(|e| zencodec::CodecError::of(at!(DecodeError::Cancelled(e))))?;
+        }
+        if let Some(max) = self.effective_input_size_limit()
+            && data.len() as u64 > max
+        {
+            use zencodec::CategorizedError;
+            let error = zencodec::LimitExceeded::InputSize {
+                actual: data.len() as u64,
+                max,
+            };
+            return Err(at!(zencodec::CodecError::from_parts(
+                Some("zenwebp"),
+                error.category(),
+                alloc::boxed::Box::new(error)
+            )));
+        }
+        let mut job = crate::inventory::JobView::default();
+        if let Some(ref policy) = self.policy {
+            job.strip_icc = !policy.resolve_icc(true);
+            job.strip_exif = !policy.resolve_exif(true);
+            job.strip_xmp = !policy.resolve_xmp(true);
+            job.deny_animation = !policy.resolve_animation(true);
+        }
+        // `do_decode` checks the job's limits against `from_webp`'s dimensions,
+        // and `build_config` hands the frame limit to `read_data` on the general
+        // (animated) path. `probe()` applies neither.
+        if let Ok(info) = crate::ImageInfo::from_webp(data) {
+            if let Err(e) = self.limits.check_dimensions(info.width, info.height) {
+                job.decode_fails = Some(alloc::format!("{e}"));
+            } else if info.has_animation
+                && let Some(max) = self.limits.max_frames
+                && u64::from(info.frame_count) > max as u64
+            {
+                job.decode_fails = Some(alloc::format!(
+                    "frame count {} exceeds limit {max}",
+                    info.frame_count
+                ));
+            }
+        }
+        let stop = self.stop.clone();
+        let mut check = || -> Result<(), crate::inventory::WalkError> {
+            if let Some(ref s) = stop {
+                use enough::Stop;
+                s.check()
+                    .map_err(|e| crate::inventory::WalkError::Decode(DecodeError::from(e)))?;
+            }
+            Ok(())
+        };
+        crate::inventory::walk(data, &mut check, &job).map_err(|e| match e {
+            crate::inventory::WalkError::Decode(e) => zencodec::CodecError::of(at!(e)),
+            crate::inventory::WalkError::Parts(e) => {
+                use zencodec::CategorizedError;
+                at!(zencodec::CodecError::from_parts(
+                    Some("zenwebp"),
+                    e.category(),
+                    alloc::boxed::Box::new(e)
+                ))
+            }
+        })
+    }
+
+    fn output_info(&self, data: &[u8]) -> Result<OutputInfo, At<zencodec::CodecError>> {
+        let native = crate::ImageInfo::from_webp(data).map_err(zencodec::CodecError::of)?;
+        let mut desc = if native.has_alpha {
+            PixelDescriptor::RGBA8_SRGB
+        } else {
+            PixelDescriptor::RGB8_SRGB
+        };
+        // Apply RGBA→BGRA negotiation if the stored preferred list requests it.
+        if !self.preferred.is_empty()
+            && self.preferred.contains(&PixelDescriptor::BGRA8_SRGB)
+            && desc == PixelDescriptor::RGBA8_SRGB
+        {
+            desc = PixelDescriptor::BGRA8_SRGB;
+        }
+        // Report the post-orientation output geometry + the transform the
+        // decoder will apply. `Preserve` applies nothing (output = stored dims);
+        // a bake hint outputs the resolved orientation's dims and records it.
+        let intrinsic = native
+            .exif
+            .as_ref()
+            .and_then(|e| crate::exif_orientation::parse_orientation(e))
+            .and_then(Orientation::from_exif)
+            .unwrap_or(Orientation::Identity);
+        let resolved = if hint_bakes(self.orientation) {
+            resolve_orientation(self.orientation, intrinsic)
+        } else {
+            Orientation::Identity
+        };
+        let (ow, oh) = resolved.output_dimensions(native.width, native.height);
+        Ok(OutputInfo::full_decode(ow, oh, desc).with_orientation_applied(resolved))
+    }
+
+    fn decoder(
+        mut self,
+        data: Cow<'a, [u8]>,
+        preferred: &[PixelDescriptor],
+    ) -> Result<WebpDecoder<'a>, At<zencodec::CodecError>> {
+        let cfg = self.build_config();
+        let stop = self.stop.take();
+        Ok(WebpDecoder {
+            config: cfg,
+            stop,
+            input_size_limit: self.effective_input_size_limit(),
+            limits: self.limits,
+            data,
+            preferred: preferred.to_vec(),
+            policy: self.policy,
+            orientation: self.orientation,
+        })
+    }
+
+    fn streaming_decoder(
+        self,
+        data: Cow<'a, [u8]>,
+        preferred: &[PixelDescriptor],
+    ) -> Result<WebpStreamingDecoder, At<zencodec::CodecError>> {
+        use zencodec::decode::Decode;
+        let info = self.probe(&data)?;
+        self.limits.check_image_info(&info).map_err(|error| {
+            use zencodec::CategorizedError;
+            at!(zencodec::CodecError::from_parts(
+                Some("zenwebp"),
+                error.category(),
+                alloc::boxed::Box::new(error)
+            ))
+        })?;
+        // The strip core handles native lossy pixels. Other modes use the
+        // one-shot decoder as a full-image batch, which StreamingDecode permits.
+        // This also preserves orientation, policy, format and limit semantics.
+        if !hint_bakes(self.orientation)
+            && self.policy.is_none()
+            && self.stop.is_none()
+            && self.limits.max_memory_bytes.is_none()
+            && preferred.is_empty()
+            && let Ok(stream) = self
+                .clone()
+                .native_streaming_decoder(Cow::Borrowed(&data), preferred)
+        {
+            return Ok(stream);
+        }
+        let output = self.decoder(data, preferred)?.decode()?;
+        Ok(WebpStreamingDecoder::from_output(output))
+    }
+
+    fn push_decoder(
+        self,
+        data: Cow<'a, [u8]>,
+        sink: &mut dyn zencodec::decode::DecodeRowSink,
+        preferred: &[PixelDescriptor],
+    ) -> Result<OutputInfo, Self::Error> {
+        push_decoder_impl(self, data, sink, preferred)
+    }
+
+    fn animation_frame_decoder(
+        self,
+        data: Cow<'a, [u8]>,
+        preferred: &[PixelDescriptor],
+    ) -> Result<WebpAnimationFrameDecoder, At<zencodec::CodecError>> {
+        // Block animation if policy denies it.
+        if let Some(ref policy) = self.policy
+            && !policy.resolve_animation(true)
+        {
+            return Err(DecodeError::from(UnsupportedOperation::AnimationDecode).into());
+        }
+
+        if let Some(max) = self.effective_input_size_limit()
+            && data.len() as u64 > max
+        {
+            return Err(zencodec::CodecError::of(at!(
+                DecodeError::InvalidParameter(alloc::format!(
+                    "input size {} exceeds limit {}",
+                    data.len(),
+                    max
+                ))
+            )));
+        }
+
+        let cfg = self.build_config();
+
+        // Parse container info before moving data into the self-referential struct.
+        let native_info = crate::ImageInfo::from_webp(&data).ok();
+
+        if native_info.as_ref().is_some_and(|info| !info.has_animation) {
+            use zencodec::decode::Decode;
+            self.limits.check_frames(1).map_err(|error| {
+                use zencodec::CategorizedError;
+                at!(zencodec::CodecError::from_parts(
+                    Some("zenwebp"),
+                    error.category(),
+                    alloc::boxed::Box::new(error)
+                ))
+            })?;
+            let emitted = self.start_frame_index != 0;
+            let output = self.decoder(data, preferred)?.decode()?;
+            let info = alloc::boxed::Box::new(output.info().clone());
+            return Ok(WebpAnimationFrameDecoder {
+                inner: WebpAnimationInner::Still {
+                    pixels: Some(output.into_buffer()),
+                    info,
+                    emitted,
+                },
+            });
+        }
+
+        // Probe animation metadata with a temporary decoder.
+        let probe_anim =
+            AnimationDecoder::new_with_config(&data, &cfg).map_err(zencodec::CodecError::of)?;
+        let anim_info = probe_anim.info();
+        let total_frames = anim_info.frame_count;
+        let anim_loop_count = match anim_info.loop_count {
+            crate::decoder::LoopCount::Forever => Some(0),
+            crate::decoder::LoopCount::Times(n) => Some(n.get() as u32),
+        };
+        let base_info = if let Some(ref ni) = native_info {
+            to_image_info(ni, Some(anim_loop_count))
+        } else {
+            ImageInfo::new(
+                anim_info.canvas_width,
+                anim_info.canvas_height,
+                ImageFormat::WebP,
+            )
+            .with_alpha(anim_info.has_alpha)
+            .with_bit_depth(8)
+            .with_channel_count(if anim_info.has_alpha { 4 } else { 3 })
+            .with_sequence(ImageSequence::Animation {
+                frame_count: Some(anim_info.frame_count),
+                loop_count: anim_loop_count,
+                random_access: false,
+            })
+        };
+        let base_info = self.apply_policy_to_info(base_info);
+        let shared_info = Arc::new(base_info);
+        drop(probe_anim);
+
+        // Build the self-referential struct: owned data + borrowing AnimationDecoder.
+        // The AnimationDecoder borrows &[u8] from the owned Vec, so we use self_cell
+        // to safely express this relationship without unsafe code.
+        let owned_data = data.into_owned();
+        let alloc_pref = cfg.limits.alloc_pref;
+        let decoder = OwnedAnimDecoder::try_new(
+            AnimDecoderOwner {
+                data: owned_data,
+                config: cfg,
+            },
+            |owner| AnimationDecoder::new_with_config(&owner.data, &owner.config),
+        )
+        .map_err(zencodec::CodecError::of)?;
+
+        let has_alpha = anim_info.has_alpha;
+        let canvas_width = anim_info.canvas_width;
+        let canvas_height = anim_info.canvas_height;
+        let bpp: usize = if has_alpha { 4 } else { 3 };
+        let buf_size = canvas_width as usize * canvas_height as usize * bpp;
+        // Canvas-sized composited-frame buffer → fallible by default (#63).
+        let frame_buf = crate::decoder::alloc_util::alloc_zeroed(alloc_pref, true, buf_size)
+            .map_err(|_| zencodec::CodecError::of(at!(DecodeError::MemoryLimitExceeded)))?;
+        let source_desc = if has_alpha {
+            PixelDescriptor::RGBA8_SRGB
+        } else {
+            PixelDescriptor::RGB8_SRGB
+        };
+
+        Ok(WebpAnimationFrameDecoder {
+            inner: WebpAnimationInner::Native(alloc::boxed::Box::new(
+                NativeAnimationFrameDecoder {
+                    decoder,
+                    preferred: preferred.to_vec(),
+                    frame_buf,
+                    alloc_pref,
+                    has_alpha,
+                    canvas_width,
+                    canvas_height,
+                    current_duration_ms: 0,
+                    current_descriptor: source_desc,
+                    next_frame_index: 0,
+                    start_frame_index: self.start_frame_index,
+                    frames_skipped: false,
+                    info: shared_info,
+                    total_frames,
+                    anim_loop_count,
+                    limits: self.limits,
+                    accumulated_duration_ms: 0,
+                },
+            )),
+        })
+    }
+
+    /// Incremental (sans-I/O) decode: the header is reported as soon as it
+    /// probes, and the image decodes through `push_decoder` once the whole
+    /// file is offered (VP8 parsing and reconstruction are fused per macroblock and VP8L transforms run on the whole image, so neither can yet resume between inputs).
+    fn dyn_incremental_decoder(
+        self,
+        preferred: &[PixelDescriptor],
+    ) -> Result<
+        alloc::boxed::Box<zencodec::decode::DynIncrementalDecoder>,
+        zencodec::decode::BoxedError,
+    > {
+        let mut limits = self.limits;
+        limits.max_input_bytes = self.effective_input_size_limit();
+        Ok(zencodec::decode::erase_incremental(
+            crate::whole_file::LimitedWholeFile::new(
+                self.clone(),
+                self,
+                preferred,
+                limits,
+                "zenwebp",
+            ),
+        ))
+    }
+}
+
+// ── Decoder ─────────────────────────────────────────────────────────────────
+
+/// Single-image WebP decoder.
+pub struct WebpDecoder<'a> {
+    config: DecodeConfig,
+    stop: Option<zencodec::StopToken>,
+    input_size_limit: Option<u64>,
+    limits: ResourceLimits,
+    data: Cow<'a, [u8]>,
+    preferred: Vec<PixelDescriptor>,
+    policy: Option<zencodec::decode::DecodePolicy>,
+    /// How to handle the image's stored EXIF orientation. Inherited from the
+    /// [`WebpDecodeJob`]. Default [`OrientationHint::Preserve`].
+    orientation: OrientationHint,
+}
+
+impl WebpDecoder<'_> {
+    /// Apply decode policy to strip metadata from an `ImageInfo`.
+    fn apply_policy_to_info(&self, mut info: ImageInfo) -> ImageInfo {
+        if let Some(ref policy) = self.policy {
+            if !policy.resolve_icc(true) {
+                info.source_color.icc_profile = None;
+            }
+            if !policy.resolve_exif(true) {
+                info.embedded_metadata.exif = None;
+            }
+            if !policy.resolve_xmp(true) {
+                info.embedded_metadata.xmp = None;
+            }
+        }
+        info
+    }
+
+    fn check_input_size(&self, data: &[u8]) -> Result<(), At<DecodeError>> {
+        if let Some(max) = self.input_size_limit
+            && data.len() as u64 > max
+        {
+            return Err(at!(DecodeError::InvalidParameter(alloc::format!(
+                "input size {} exceeds limit {}",
+                data.len(),
+                max
+            ))));
+        }
+        Ok(())
+    }
+
+    fn do_decode(&self, data: &[u8]) -> Result<DecodeOutput, At<DecodeError>> {
+        // Honor cancellation before any work, and never swallow a
+        // cancellation from the lossy fast path by retrying the general
+        // path — a pre-stopped token must fail the decode.
+        if let Some(ref stop) = self.stop {
+            enough::Stop::check(stop).map_err(|e| at!(DecodeError::Cancelled(e)))?;
+        }
+        self.check_input_size(data)?;
+
+        if let Ok(info) = crate::ImageInfo::from_webp(data) {
+            self.limits
+                .check_dimensions(info.width, info.height)
+                .map_err(|e| at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))?;
+        }
+
+        // Try lossy VP8 direct path (faster, streaming cache)
+        match self.do_decode_lossy(data) {
+            Ok(result) => return Ok(result),
+            // Preserve the cancellation trace — don't retry the general path.
+            Err(e) if matches!(e.error(), DecodeError::Cancelled(_)) => return Err(e),
+            Err(_) => {}
+        }
+
+        // General path (lossless, animation, etc)
+        self.do_decode_general(data)
+    }
+
+    /// Decode lossy VP8 direct path (with alpha support).
+    fn do_decode_lossy(&self, data: &[u8]) -> Result<DecodeOutput, At<DecodeError>> {
+        let dither_strength = self.config.dithering_strength;
+
+        // Use DecodeRequest's lossy path which handles container parsing.
+        // Wire the stop token like do_decode_general — without it the lossy
+        // fast path silently ignored cancellation.
+        let mut req = DecodeRequest::new(&self.config, data);
+        if let Some(ref stop) = self.stop {
+            req = req.stop(stop);
+        }
+        let (pixels, w, h) = req.decode_rgba_lossy()?;
+
+        let w = u32::from(w);
+        let h = u32::from(h);
+        let _ = dither_strength; // already applied inside decode_rgba_lossy
+
+        let has_alpha = {
+            let native_info = crate::ImageInfo::from_webp(data).ok();
+            native_info.as_ref().is_some_and(|i| i.has_alpha)
+        };
+
+        let buf = if has_alpha {
+            PixelBuffer::from_vec(pixels, w, h, PixelDescriptor::RGBA8_SRGB)
+                .map_err(|_| at!(DecodeError::InvalidParameter("pixel count mismatch".into())))?
+        } else {
+            // Strip alpha channel — lossy path always decodes to RGBA when alpha is present,
+            // but for no-alpha images decode_rgba_lossy returns RGBA with alpha=255.
+            // Convert to RGB to save memory.
+            let pixel_count = (w as usize) * (h as usize);
+            // Full-image conversion buffer → fallible by default (#63).
+            let mut rgb = crate::decoder::alloc_util::alloc_zeroed(
+                alloc_pref_from_zencodec(self.limits.prefer_fallible_allocations),
+                true,
+                pixel_count * 3,
+            )
+            .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+            garb::bytes::rgba_to_rgb(&pixels, &mut rgb)
+                .map_err(|e| at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))?;
+            PixelBuffer::from_vec(rgb, w, h, PixelDescriptor::RGB8_SRGB)
+                .map_err(|_| at!(DecodeError::InvalidParameter("pixel count mismatch".into())))?
+        };
+
+        let native_info = crate::ImageInfo::from_webp(data).ok();
+        let info = if let Some(ref ni) = native_info {
+            to_image_info(ni, None)
+        } else {
+            ImageInfo::new(w, h, ImageFormat::WebP)
+                .with_alpha(has_alpha)
+                .with_bit_depth(8)
+                .with_channel_count(if has_alpha { 4 } else { 3 })
+        };
+        let info = self.apply_policy_to_info(info);
+
+        let mut output = DecodeOutput::new(buf, info);
+        if let Ok(probe) = crate::detect::probe(data) {
+            output = output.with_source_encoding_details(probe);
+        }
+        Ok(output)
+    }
+
+    /// General decode path (handles lossless, animation frames, etc.).
+    fn do_decode_general(&self, data: &[u8]) -> Result<DecodeOutput, At<DecodeError>> {
+        let mut req = DecodeRequest::new(&self.config, data);
+        if let Some(ref stop) = self.stop {
+            req = req.stop(stop);
+        }
+
+        let (pixels, w, h, layout) = req.decode()?;
+
+        let buf: PixelBuffer = match layout {
+            PixelLayout::Rgb8 => PixelBuffer::from_vec(pixels, w, h, PixelDescriptor::RGB8_SRGB)
+                .map_err(|_| at!(DecodeError::InvalidParameter("pixel count mismatch".into())))?,
+            PixelLayout::Rgba8 => PixelBuffer::from_vec(pixels, w, h, PixelDescriptor::RGBA8_SRGB)
+                .map_err(|_| at!(DecodeError::InvalidParameter("pixel count mismatch".into())))?,
+            _ => {
+                // Fallback: decode as RGBA
+                let rgba_req = DecodeRequest::new(&self.config, data);
+                let (rgba_pixels, rw, rh) = if let Some(ref stop) = self.stop {
+                    rgba_req.stop(stop).decode_rgba()?
+                } else {
+                    rgba_req.decode_rgba()?
+                };
+                PixelBuffer::from_vec(rgba_pixels, rw, rh, PixelDescriptor::RGBA8_SRGB).map_err(
+                    |_| at!(DecodeError::InvalidParameter("pixel count mismatch".into())),
+                )?
+            }
+        };
+
+        let has_alpha = buf.has_alpha();
+        let native_info = crate::ImageInfo::from_webp(data).ok();
+        let info = if let Some(ref ni) = native_info {
+            to_image_info(ni, None)
+        } else {
+            ImageInfo::new(w, h, ImageFormat::WebP)
+                .with_alpha(has_alpha)
+                .with_bit_depth(8)
+                .with_channel_count(if has_alpha { 4 } else { 3 })
+        };
+        let info = self.apply_policy_to_info(info);
+
+        let mut output = DecodeOutput::new(buf, info);
+        if let Ok(probe) = crate::detect::probe(data) {
+            output = output.with_source_encoding_details(probe);
+        }
+        Ok(output)
+    }
+}
+
+/// Apply preferred format negotiation to decoded output.
+fn negotiate_format(pixels: PixelBuffer, preferred: &[PixelDescriptor]) -> PixelBuffer {
+    if preferred.is_empty() {
+        return pixels;
+    }
+    let desc = pixels.descriptor();
+    // Check if BGRA is preferred and we have RGBA
+    if preferred.contains(&PixelDescriptor::BGRA8_SRGB) && desc == PixelDescriptor::RGBA8_SRGB {
+        let w = pixels.width();
+        let h = pixels.height();
+        let mut raw = pixels.into_vec();
+        garb::bytes::rgba_to_bgra_inplace(&mut raw)
+            .expect("negotiate_format: validated 4bpp buffer");
+        return PixelBuffer::from_vec(raw, w, h, PixelDescriptor::BGRA8_SRGB)
+            .expect("negotiate_format: dimensions unchanged");
+    }
+    pixels
+}
+
+impl zencodec::decode::Decode for WebpDecoder<'_> {
+    type Error = At<zencodec::CodecError>;
+
+    fn decode(self) -> Result<DecodeOutput, At<zencodec::CodecError>> {
+        let output = self
+            .do_decode(&self.data)
+            .map_err(zencodec::CodecError::of)?;
+        let output = if self.preferred.is_empty() {
+            output
+        } else {
+            let info = output.info().clone();
+            let pixels = negotiate_format(output.into_buffer(), &self.preferred);
+            DecodeOutput::new(pixels, info)
+        };
+        // Honor the orientation hint. On the default `Preserve` path this is a
+        // no-op (`hint_bakes` is false): pixels stay stored-orientation and the
+        // info keeps the intrinsic EXIF tag. On `Correct`/`ExactTransform`/
+        // `CorrectAndTransform` the resolved orientation is baked into the
+        // pixels and the info reports display dims + `Identity`.
+        Ok(apply_orientation_to_output(output, self.orientation))
+    }
+}
+
+// ── push_decoder dispatch ─────────────────────────────────────────────────
+
+/// Return `true` iff the input is a lossy VP8 single image eligible for
+/// zero-copy streaming decode.
+///
+/// The check is intentionally quick — just enough to decide between the
+/// native streaming path and the full-decode fallback:
+///
+/// * `VP8 ` chunk after the RIFF/WEBP magic → lossy bitstream, eligible.
+/// * `VP8X` chunk → inspect VP8X flags. Animations, VP8L bitstreams, and
+///   truly unknown encodings disqualify; plain lossy (optionally with ALPH)
+///   qualifies.
+/// * Anything else (VP8L as the first chunk, truncated, unknown) is not
+///   eligible.
+fn is_lossy_streaming_candidate(data: &[u8]) -> bool {
+    let Ok(info) = crate::detect::probe(data) else {
+        return false;
+    };
+    !info.has_animation && matches!(info.bitstream, crate::detect::BitstreamType::Lossy { .. })
+}
+
+/// Native row-streaming `push_decoder` for lossy VP8.
+///
+/// Feeds each macroblock-row strip directly to the sink, skipping the
+/// full-frame RGB/RGBA allocation that [`zencodec::helpers::copy_decode_to_sink`]
+/// requires. For lossless (VP8L), animations, or lossy streams where the
+/// internal streaming decoder cannot be constructed, transparently falls
+/// back to the full-decode helper so the caller still gets a correct image.
+fn push_decoder_impl<'a>(
+    job: WebpDecodeJob,
+    data: Cow<'a, [u8]>,
+    sink: &mut dyn zencodec::decode::DecodeRowSink,
+    preferred: &[PixelDescriptor],
+) -> Result<OutputInfo, At<zencodec::CodecError>> {
+    // Fast path only applies to lossy single-image VP8. For VP8L, animation,
+    // or anything the container scanner can't classify, fall back to the
+    // helper-driven full decode — it handles all the same cases `decode()` does.
+    if !is_lossy_streaming_candidate(&data) {
+        return zencodec::helpers::copy_decode_to_sink(
+            job,
+            data,
+            sink,
+            preferred,
+            wrap_sink_to_codec,
+        );
+    }
+
+    // Dimension limit enforcement (matches `WebpDecoder::do_decode`).
+    if let Ok(info) = crate::ImageInfo::from_webp(&data) {
+        job.limits
+            .check_dimensions(info.width, info.height)
+            .map_err(|e| {
+                zencodec::CodecError::of(at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))
+            })?;
+    }
+
+    use zencodec::decode::{DecodeJob, StreamingDecode};
+
+    // Clone stop out of the job so we can still check cancellation after
+    // `streaming_decoder` consumes `job` below.
+    let stop = job.stop.clone();
+    let fallback_job = job.clone();
+
+    // Build the streaming decoder. If this rejects the input (e.g.
+    // extra_y_rows < 2 — filter disabled — or any other edge case we
+    // haven't pre-filtered), retry with the full-decode helper using a
+    // cloned job so `self` is not consumed.
+    let mut stream = match job.streaming_decoder(Cow::Borrowed(&data), preferred) {
+        Ok(s) => s,
+        Err(_) => {
+            return zencodec::helpers::copy_decode_to_sink(
+                fallback_job,
+                data,
+                sink,
+                preferred,
+                wrap_sink_to_codec,
+            );
+        }
+    };
+
+    let (width, height) = stream.dimensions();
+    let descriptor = stream.descriptor();
+    let bpp = descriptor.bytes_per_pixel();
+
+    // Tell the sink what's coming. After this, any error path must not
+    // call `sink.finish()`.
+    sink.begin(width, height, descriptor)
+        .map_err(wrap_sink_to_codec)?;
+
+    let row_bytes = width as usize * bpp;
+
+    while let Some((y_start, pixel_slice)) = stream.next_batch()? {
+        // Cooperative cancellation between strips.
+        if let Some(ref s) = stop {
+            use enough::Stop;
+            s.check()
+                .map_err(|e| zencodec::CodecError::of(at!(DecodeError::from(e))))?;
+        }
+
+        let num_rows: u32 = pixel_slice.rows();
+        if num_rows == 0 {
+            continue;
+        }
+
+        let mut dst = sink
+            .provide_next_buffer(y_start, num_rows, width, descriptor)
+            .map_err(wrap_sink_to_codec)?;
+
+        for row in 0..num_rows {
+            let src = pixel_slice.row(row);
+            let dst_row = dst.row_mut(row);
+            // PixelSlice rows are width*bpp; sink buffers may be wider
+            // (stride padding). Copy only the pixel bytes.
+            dst_row[..row_bytes].copy_from_slice(&src[..row_bytes]);
+        }
+        drop(dst);
+    }
+
+    sink.finish().map_err(wrap_sink_to_codec)?;
+
+    Ok(OutputInfo::full_decode(width, height, descriptor))
+}
+
+// ── Streaming Decoder ─────────────────────────────────────────────────────
+
+/// WebP scanline-batch decoder. Native lossy VP8 uses macroblock-row strips;
+/// VP8L, animation first frames and settings requiring a full decode yield one
+/// full-image batch. Both paths preserve the one-shot pixels and metadata.
+pub struct WebpStreamingDecoder {
+    inner: WebpStreamingInner,
+}
+
+enum WebpStreamingInner {
+    Native(alloc::boxed::Box<Vp8StreamingDecoder>),
+    Full {
+        pixels: PixelBuffer,
+        info: alloc::boxed::Box<ImageInfo>,
+        emitted: bool,
+    },
+}
+
+impl WebpStreamingDecoder {
+    fn new(
+        vp8_data: &[u8],
+        alpha_plane: Option<Vec<u8>>,
+        bpp: usize,
+        preferred: &[PixelDescriptor],
+        info: ImageInfo,
+        dither_strength: u8,
+        alloc_pref: crate::decoder::alloc_util::AllocPreference,
+    ) -> Result<Self, At<DecodeError>> {
+        Vp8StreamingDecoder::new(
+            vp8_data,
+            alpha_plane,
+            bpp,
+            preferred,
+            info,
+            dither_strength,
+            alloc_pref,
+        )
+        .map(|native| Self {
+            inner: WebpStreamingInner::Native(alloc::boxed::Box::new(native)),
+        })
+    }
+
+    fn from_output(output: DecodeOutput) -> Self {
+        let info = alloc::boxed::Box::new(output.info().clone());
+        Self {
+            inner: WebpStreamingInner::Full {
+                pixels: output.into_buffer(),
+                info,
+                emitted: false,
+            },
+        }
+    }
+
+    fn dimensions(&self) -> (u32, u32) {
+        match &self.inner {
+            WebpStreamingInner::Native(s) => (s.width, s.height),
+            WebpStreamingInner::Full { pixels, .. } => (pixels.width(), pixels.height()),
+        }
+    }
+
+    fn descriptor(&self) -> PixelDescriptor {
+        match &self.inner {
+            WebpStreamingInner::Native(s) => s.descriptor,
+            WebpStreamingInner::Full { pixels, .. } => pixels.descriptor(),
+        }
+    }
+}
+
+impl zencodec::decode::StreamingDecode for WebpStreamingDecoder {
+    type Error = At<zencodec::CodecError>;
+
+    fn next_batch(&mut self) -> Result<Option<(u32, PixelSlice<'_>)>, Self::Error> {
+        match &mut self.inner {
+            WebpStreamingInner::Native(native) => native.next_batch(),
+            WebpStreamingInner::Full {
+                pixels, emitted, ..
+            } => {
+                if *emitted {
+                    return Ok(None);
+                }
+                *emitted = true;
+                Ok(Some((0, pixels.as_slice())))
+            }
+        }
+    }
+
+    fn info(&self) -> &ImageInfo {
+        match &self.inner {
+            WebpStreamingInner::Native(native) => native.info(),
+            WebpStreamingInner::Full { info, .. } => info,
+        }
+    }
+}
+
+struct Vp8StreamingDecoder {
+    /// VP8 decoder context (owns row cache and decode state).
+    ctx: crate::decoder::vp8v2::DecoderContext,
+    /// Reusable strip buffer for RGB/RGBA output.
+    strip_buf: Vec<u8>,
+    /// Current MB row index (0-based, incremented after each next_batch).
+    current_mby: usize,
+    /// Total MB row count.
+    mbheight: usize,
+    /// Visible pixel width.
+    width: u32,
+    /// Visible pixel height.
+    height: u32,
+    /// Bytes per pixel (3 for RGB, 4 for RGBA).
+    bpp: usize,
+    /// Pixel descriptor for the output.
+    descriptor: PixelDescriptor,
+    /// Image info for the trait.
+    info: Arc<ImageInfo>,
+    /// Decoded alpha plane (if VP8X with alpha). Applied per-strip.
+    alpha_plane: Option<Vec<u8>>,
+}
+
+impl Vp8StreamingDecoder {
+    /// Construct a streaming decoder from parsed VP8 data.
+    ///
+    /// `vp8_data` is the raw VP8 bitstream (after container parsing).
+    /// `alpha_data` is the optional alpha chunk (already decompressed into a plane).
+    fn new(
+        vp8_data: &[u8],
+        alpha_plane: Option<Vec<u8>>,
+        bpp: usize,
+        preferred: &[PixelDescriptor],
+        info: ImageInfo,
+        dither_strength: u8,
+        alloc_pref: crate::decoder::alloc_util::AllocPreference,
+    ) -> Result<Self, At<DecodeError>> {
+        let mut ctx =
+            crate::decoder::vp8v2::DecoderContext::new().with_dithering_strength(dither_strength);
+        // Set the allocation-fallibility policy BEFORE `read_frame_header`,
+        // which triggers `ensure_capacity` (the untrusted-sized VP8 row cache).
+        ctx.set_alloc_pref(alloc_pref);
+        ctx.read_frame_header(vp8_data)?;
+
+        let width = ctx.width();
+        let height = ctx.height();
+        let mbheight = usize::from(ctx.mbheight());
+        let extra_y_rows = ctx.extra_y_rows();
+
+        // Check that extra_y_rows >= 2 for streaming (fancy upsampling)
+        if extra_y_rows < 2 {
+            // Fallback: for no-filter case, streaming is not supported.
+            // This is extremely rare (very high quality / filter disabled).
+            return Err(at!(DecodeError::UnsupportedFeature(
+                "streaming decode requires filter (extra_y_rows >= 2)".into(),
+            )));
+        }
+
+        ctx.init_streaming_uv_buffers();
+
+        // Determine output format
+        let has_alpha = alpha_plane.is_some();
+        let effective_bpp = if has_alpha { 4 } else { bpp };
+        let mut descriptor = if has_alpha || effective_bpp == 4 {
+            PixelDescriptor::RGBA8_SRGB
+        } else {
+            PixelDescriptor::RGB8_SRGB
+        };
+
+        // Apply BGRA negotiation
+        if !preferred.is_empty()
+            && preferred.contains(&PixelDescriptor::BGRA8_SRGB)
+            && descriptor == PixelDescriptor::RGBA8_SRGB
+        {
+            descriptor = PixelDescriptor::BGRA8_SRGB;
+        }
+
+        // Max strip rows: last MB row may emit extra_y_rows + 16 rows.
+        // For the first row of a single-row image, it's 16.
+        let max_strip_rows = if mbheight == 1 { 16 } else { extra_y_rows + 16 };
+        // One strip's worth of output, sized from the (untrusted) header width →
+        // fallible by default. Guard the size against overflow from malicious
+        // dimensions before allocating.
+        let strip_buf_size = usize::from(width)
+            .checked_mul(max_strip_rows)
+            .and_then(|n| n.checked_mul(effective_bpp))
+            .ok_or_else(|| at!(DecodeError::ImageTooLarge))?;
+        let strip_buf = crate::decoder::alloc_util::alloc_zeroed(alloc_pref, true, strip_buf_size)
+            .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+
+        Ok(Self {
+            ctx,
+            strip_buf,
+            current_mby: 0,
+            mbheight,
+            width: u32::from(width),
+            height: u32::from(height),
+            bpp: effective_bpp,
+            descriptor,
+            info: Arc::new(info),
+            alpha_plane,
+        })
+    }
+}
+
+impl zencodec::decode::StreamingDecode for Vp8StreamingDecoder {
+    type Error = At<zencodec::CodecError>;
+
+    fn next_batch(&mut self) -> Result<Option<(u32, PixelSlice<'_>)>, At<zencodec::CodecError>> {
+        if self.current_mby >= self.mbheight {
+            return Ok(None);
+        }
+
+        let mby = self.current_mby;
+        let (y_start, num_rows) = self
+            .ctx
+            .decode_strip_mb_row(mby, &mut self.strip_buf, self.bpp)
+            .map_err(|e| zencodec::CodecError::of(at!(DecodeError::from(e))))?;
+
+        self.current_mby += 1;
+
+        if num_rows == 0 {
+            return Ok(None);
+        }
+
+        let width = self.width as usize;
+        let row_bytes = width * self.bpp;
+        let strip_bytes = num_rows * row_bytes;
+
+        // Apply alpha plane if present
+        if let Some(ref alpha) = self.alpha_plane
+            && self.bpp == 4
+        {
+            let fw = width;
+            for row in 0..num_rows {
+                let img_y = y_start + row;
+                if img_y >= self.height as usize {
+                    break;
+                }
+                for x in 0..fw {
+                    let alpha_index = img_y * fw + x;
+                    let strip_index = row * row_bytes + x * 4 + 3;
+                    if alpha_index < alpha.len() && strip_index < self.strip_buf.len() {
+                        self.strip_buf[strip_index] = alpha[alpha_index];
+                    }
+                }
+            }
+        }
+
+        // Apply RGBA→BGRA swizzle if negotiated
+        if self.descriptor == PixelDescriptor::BGRA8_SRGB {
+            let strip_data = &mut self.strip_buf[..strip_bytes];
+            let _ = garb::bytes::rgba_to_bgra_inplace(strip_data);
+        }
+
+        let slice = PixelSlice::new(
+            &self.strip_buf[..strip_bytes],
+            self.width,
+            num_rows as u32,
+            row_bytes,
+            self.descriptor,
+        )
+        .map_err(|_| {
+            zencodec::CodecError::of(at!(DecodeError::InvalidParameter(
+                "strip slice mismatch".into()
+            )))
+        })?;
+
+        Ok(Some((y_start as u32, slice)))
+    }
+
+    fn info(&self) -> &ImageInfo {
+        &self.info
+    }
+}
+
+// ── Full Frame Decoder ──────────────────────────────────────────────────────
+
+/// Owned data for the self-referential animation decoder.
+struct AnimDecoderOwner {
+    data: Vec<u8>,
+    config: DecodeConfig,
+}
+
+// Safety: self_cell uses only safe Rust internally. AnimationDecoder<'a> is
+// covariant in 'a, so the #[covariant] annotation is correct.
+self_cell::self_cell! {
+    struct OwnedAnimDecoder {
+        owner: AnimDecoderOwner,
+        #[covariant]
+        dependent: AnimationDecoder,
+    }
+}
+
+/// Animation WebP full-frame decoder.
+///
+/// Decodes frames lazily — each `render_next_frame` call decodes exactly one
+/// frame via the underlying [`AnimationDecoder`]. Zero per-frame allocations
+/// on the borrowing path (`render_next_frame`); one allocation on the owned
+/// path (`render_next_frame_owned`).
+///
+/// Memory usage is O(canvas_size) instead of O(N_frames × canvas_size).
+///
+/// The [`AnimationDecoder`] borrows `&[u8]` from the input data. A self-referential
+/// struct ([`OwnedAnimDecoder`] via `self_cell`) stores the owned data alongside
+/// the borrowing decoder, satisfying the `'static` requirement on `AnimationFrameDec`.
+pub struct WebpAnimationFrameDecoder {
+    inner: WebpAnimationInner,
+}
+
+enum WebpAnimationInner {
+    Native(alloc::boxed::Box<NativeAnimationFrameDecoder>),
+    Still {
+        pixels: Option<PixelBuffer>,
+        info: alloc::boxed::Box<ImageInfo>,
+        emitted: bool,
+    },
+}
+
+impl zencodec::decode::AnimationFrameDecoder for WebpAnimationFrameDecoder {
+    type Error = At<zencodec::CodecError>;
+
+    fn wrap_sink_error(err: SinkError) -> Self::Error {
+        NativeAnimationFrameDecoder::wrap_sink_error(err)
+    }
+
+    fn info(&self) -> &ImageInfo {
+        match &self.inner {
+            WebpAnimationInner::Native(native) => native.info(),
+            WebpAnimationInner::Still { info, .. } => info,
+        }
+    }
+
+    fn frame_count(&self) -> Option<u32> {
+        match &self.inner {
+            WebpAnimationInner::Native(native) => native.frame_count(),
+            WebpAnimationInner::Still { .. } => Some(1),
+        }
+    }
+
+    fn loop_count(&self) -> Option<u32> {
+        match &self.inner {
+            WebpAnimationInner::Native(native) => native.loop_count(),
+            WebpAnimationInner::Still { .. } => None,
+        }
+    }
+
+    fn render_next_frame(
+        &mut self,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<Option<AnimationFrame<'_>>, Self::Error> {
+        if let Some(stop) = stop {
+            stop.check()
+                .map_err(|e| zencodec::CodecError::of(at!(DecodeError::from(e))))?;
+        }
+        match &mut self.inner {
+            WebpAnimationInner::Native(native) => native.render_next_frame(stop),
+            WebpAnimationInner::Still {
+                pixels, emitted, ..
+            } => {
+                if *emitted {
+                    return Ok(None);
+                }
+                *emitted = true;
+                Ok(pixels
+                    .as_ref()
+                    .map(|pixels| AnimationFrame::new(pixels.as_slice(), 0, 0)))
+            }
+        }
+    }
+
+    fn render_next_frame_owned(
+        &mut self,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<Option<OwnedAnimationFrame>, Self::Error> {
+        if let Some(stop) = stop {
+            stop.check()
+                .map_err(|e| zencodec::CodecError::of(at!(DecodeError::from(e))))?;
+        }
+        match &mut self.inner {
+            WebpAnimationInner::Native(native) => native.render_next_frame_owned(stop),
+            WebpAnimationInner::Still {
+                pixels, emitted, ..
+            } => {
+                if *emitted {
+                    return Ok(None);
+                }
+                *emitted = true;
+                Ok(pixels
+                    .take()
+                    .map(|pixels| OwnedAnimationFrame::new(pixels, 0, 0)))
+            }
+        }
+    }
+    fn render_next_frame_to_sink(
+        &mut self,
+        stop: Option<&dyn enough::Stop>,
+        sink: &mut dyn zencodec::decode::DecodeRowSink,
+    ) -> Result<Option<OutputInfo>, Self::Error> {
+        if let WebpAnimationInner::Native(native) = &mut self.inner {
+            return native.render_next_frame_to_sink(stop, sink);
+        }
+        zencodec::helpers::copy_frame_to_sink(self, stop, sink)
+    }
+}
+
+struct NativeAnimationFrameDecoder {
+    decoder: OwnedAnimDecoder,
+    preferred: Vec<PixelDescriptor>,
+    /// Reusable buffer for composited frame data. Pre-allocated to canvas size;
+    /// reused across frames without reallocating.
+    frame_buf: Vec<u8>,
+    /// Allocation policy for re-creating `frame_buf` after it was taken.
+    alloc_pref: crate::decoder::alloc_util::AllocPreference,
+    /// Whether the animation has alpha (RGBA vs RGB output).
+    has_alpha: bool,
+    /// Canvas dimensions.
+    canvas_width: u32,
+    canvas_height: u32,
+    /// Duration of the most recently decoded frame.
+    current_duration_ms: u32,
+    /// Descriptor after format negotiation for the current frame.
+    current_descriptor: PixelDescriptor,
+    /// Frame index of the next frame to yield.
+    next_frame_index: u32,
+    /// Frames before this index are decoded (for compositing) but not returned.
+    start_frame_index: u32,
+    /// Whether we've already skipped past start_frame_index.
+    frames_skipped: bool,
+    info: Arc<ImageInfo>,
+    total_frames: u32,
+    anim_loop_count: Option<u32>,
+    /// Resource limits for frame count and animation duration enforcement.
+    limits: ResourceLimits,
+    /// Accumulated duration of all yielded frames in milliseconds.
+    accumulated_duration_ms: u64,
+}
+
+impl NativeAnimationFrameDecoder {
+    /// Decode and discard frames before `start_frame_index` (needed for
+    /// correct compositing state). Called lazily on first `render_next_frame`.
+    fn skip_to_start(&mut self) -> Result<(), At<DecodeError>> {
+        if self.frames_skipped {
+            return Ok(());
+        }
+        self.frames_skipped = true;
+        let skip_count = self.start_frame_index as usize;
+        for _ in 0..skip_count {
+            let done = self
+                .decoder
+                .with_dependent_mut(|_, anim| match anim.decode_next() {
+                    Ok(Some(_)) => Ok(false),
+                    Ok(None) => Ok(true),
+                    Err(e) => Err(e),
+                })
+                .at()?;
+            if done {
+                break;
+            }
+        }
+        self.next_frame_index = self.start_frame_index;
+        Ok(())
+    }
+
+    /// Decode next frame into `self.frame_buf` (zero-alloc: reuses buffer).
+    /// Returns `true` if a frame was decoded, `false` if no more frames.
+    fn decode_next_into_buf(&mut self) -> Result<bool, At<DecodeError>> {
+        // Re-allocate if frame_buf was taken by render_next_frame_owned.
+        let expected_size = self.stride() * self.canvas_height as usize;
+        if self.frame_buf.len() < expected_size {
+            crate::decoder::alloc_util::try_resize_zeroed(
+                self.alloc_pref,
+                true,
+                &mut self.frame_buf,
+                expected_size,
+            )
+            .map_err(|_| at!(DecodeError::MemoryLimitExceeded))?;
+        }
+
+        let frame_buf = &mut self.frame_buf;
+        let result = self
+            .decoder
+            .with_dependent_mut(|_, anim| {
+                match anim.decode_next() {
+                    Ok(Some(info)) => {
+                        let data = anim.current_frame_data();
+                        // frame_buf is pre-allocated to canvas size; this is a memcpy, no alloc.
+                        frame_buf[..data.len()].copy_from_slice(data);
+                        Ok(Some(info.duration_ms))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(e),
+                }
+            })
+            .at()?;
+
+        match result {
+            Some(duration_ms) => {
+                self.current_duration_ms = duration_ms;
+                // Apply RGBA→BGRA swizzle in-place if preferred.
+                let source = if self.has_alpha {
+                    PixelDescriptor::RGBA8_SRGB
+                } else {
+                    PixelDescriptor::RGB8_SRGB
+                };
+                self.current_descriptor =
+                    negotiate_format_inplace(&mut self.frame_buf, source, &self.preferred);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Byte stride for the current frame format.
+    fn stride(&self) -> usize {
+        let bpp: usize = if self.has_alpha { 4 } else { 3 };
+        self.canvas_width as usize * bpp
+    }
+}
+
+/// Apply RGBA→BGRA swizzle in-place if the preferred list requests BGRA.
+/// Returns the descriptor that matches the buffer contents after the call.
+fn negotiate_format_inplace(
+    data: &mut [u8],
+    source: PixelDescriptor,
+    preferred: &[PixelDescriptor],
+) -> PixelDescriptor {
+    if !preferred.is_empty()
+        && preferred.contains(&PixelDescriptor::BGRA8_SRGB)
+        && source == PixelDescriptor::RGBA8_SRGB
+    {
+        garb::bytes::rgba_to_bgra_inplace(data)
+            .expect("negotiate_format_inplace: validated 4bpp buffer");
+        return PixelDescriptor::BGRA8_SRGB;
+    }
+    source
+}
+
+impl zencodec::decode::AnimationFrameDecoder for NativeAnimationFrameDecoder {
+    type Error = At<zencodec::CodecError>;
+
+    fn wrap_sink_error(err: SinkError) -> At<zencodec::CodecError> {
+        zencodec::CodecError::of(at!(DecodeError::InvalidParameter(alloc::format!("{err}"))))
+    }
+
+    fn info(&self) -> &ImageInfo {
+        &self.info
+    }
+
+    fn frame_count(&self) -> Option<u32> {
+        Some(self.total_frames)
+    }
+
+    fn loop_count(&self) -> Option<u32> {
+        self.anim_loop_count
+    }
+
+    fn render_next_frame(
+        &mut self,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<Option<AnimationFrame<'_>>, At<zencodec::CodecError>> {
+        if let Some(s) = stop {
+            s.check()
+                .map_err(|e| zencodec::CodecError::of(at!(DecodeError::from(e))))?;
+        }
+        self.skip_to_start().map_err(zencodec::CodecError::of)?;
+
+        if !self
+            .decode_next_into_buf()
+            .map_err(zencodec::CodecError::of)?
+        {
+            return Ok(None);
+        }
+        let idx = self.next_frame_index;
+        self.next_frame_index += 1;
+
+        // Enforce max_frames limit.
+        self.limits
+            .check_frames(self.next_frame_index)
+            .map_err(|e| {
+                zencodec::CodecError::of(at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))
+            })?;
+
+        // Enforce max_animation_ms limit.
+        self.accumulated_duration_ms = self
+            .accumulated_duration_ms
+            .saturating_add(self.current_duration_ms as u64);
+        self.limits
+            .check_animation_ms(self.accumulated_duration_ms)
+            .map_err(|e| {
+                zencodec::CodecError::of(at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))
+            })?;
+
+        // Zero-alloc: create PixelSlice directly from the reusable frame_buf.
+        let stride = self.stride();
+        let slice = PixelSlice::new(
+            &self.frame_buf,
+            self.canvas_width,
+            self.canvas_height,
+            stride,
+            self.current_descriptor,
+        )
+        .map_err(|_| {
+            zencodec::CodecError::of(at!(DecodeError::InvalidParameter(
+                "frame buffer mismatch".into(),
+            )))
+        })?;
+        Ok(Some(AnimationFrame::new(
+            slice,
+            self.current_duration_ms,
+            idx,
+        )))
+    }
+
+    fn render_next_frame_owned(
+        &mut self,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<Option<OwnedAnimationFrame>, At<zencodec::CodecError>> {
+        if let Some(s) = stop {
+            s.check()
+                .map_err(|e| zencodec::CodecError::of(at!(DecodeError::from(e))))?;
+        }
+        self.skip_to_start().map_err(zencodec::CodecError::of)?;
+
+        if !self
+            .decode_next_into_buf()
+            .map_err(zencodec::CodecError::of)?
+        {
+            return Ok(None);
+        }
+        let idx = self.next_frame_index;
+        self.next_frame_index += 1;
+
+        // Enforce max_frames limit.
+        self.limits
+            .check_frames(self.next_frame_index)
+            .map_err(|e| {
+                zencodec::CodecError::of(at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))
+            })?;
+
+        // Enforce max_animation_ms limit.
+        self.accumulated_duration_ms = self
+            .accumulated_duration_ms
+            .saturating_add(self.current_duration_ms as u64);
+        self.limits
+            .check_animation_ms(self.accumulated_duration_ms)
+            .map_err(|e| {
+                zencodec::CodecError::of(at!(DecodeError::InvalidParameter(alloc::format!("{e}"))))
+            })?;
+
+        // Take the frame_buf for the owned PixelBuffer. A fresh buffer will
+        // be allocated on the next call (unavoidable for owned output).
+        let data = core::mem::take(&mut self.frame_buf);
+        let buf = PixelBuffer::from_vec(
+            data,
+            self.canvas_width,
+            self.canvas_height,
+            self.current_descriptor,
+        )
+        .map_err(|_| {
+            zencodec::CodecError::of(at!(DecodeError::InvalidParameter(
+                "frame size mismatch".into()
+            )))
+        })?;
+        Ok(Some(OwnedAnimationFrame::new(
+            buf,
+            self.current_duration_ms,
+            idx,
+        )))
+    }
+
+    fn render_next_frame_to_sink(
+        &mut self,
+        stop: Option<&dyn enough::Stop>,
+        sink: &mut dyn zencodec::decode::DecodeRowSink,
+    ) -> Result<Option<OutputInfo>, Self::Error> {
+        zencodec::helpers::copy_frame_to_sink(self, stop, sink)
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Convert a native `crate::ImageInfo` to a `zencodec::ImageInfo`.
+///
+/// `loop_count` is optional because lightweight probing paths may not have
+/// parsed the ANIM chunk. When available (e.g. from the animation decoder),
+/// pass `Some(count)` where `0` means infinite looping.
+fn to_image_info(native: &crate::ImageInfo, loop_count: Option<Option<u32>>) -> ImageInfo {
+    let channel_count: u8 = if native.has_alpha { 4 } else { 3 };
+    let mut info = ImageInfo::new(native.width, native.height, ImageFormat::WebP)
+        .with_alpha(native.has_alpha)
+        .with_bit_depth(8)
+        .with_channel_count(channel_count)
+        .with_sequence(if native.has_animation {
+            ImageSequence::Animation {
+                frame_count: Some(native.frame_count),
+                loop_count: loop_count.unwrap_or(None),
+                random_access: false,
+            }
+        } else {
+            ImageSequence::Single
+        });
+    if let Some(ref icc) = native.icc_profile {
+        // WebP signals color only via the ICCP chunk (no CICP carrier), so an
+        // embedded profile is authoritative. Set it explicitly rather than
+        // relying on `ColorAuthority`'s default.
+        info = info
+            .with_icc_profile(icc.clone())
+            .with_color_authority(zencodec::ColorAuthority::Icc);
+    }
+    if let Some(ref exif) = native.exif {
+        // Extract orientation from EXIF before storing the raw blob.
+        // WebP EXIF is raw TIFF bytes (no Exif\0\0 prefix).
+        if let Some(orient_val) = crate::exif_orientation::parse_orientation(exif) {
+            info = info.with_orientation(Orientation::from_exif(orient_val).unwrap_or_default());
+        }
+        info = info.with_exif(exif.clone());
+    }
+    if let Some(ref xmp) = native.xmp {
+        info = info.with_xmp(xmp.clone());
+    }
+    info
+}
+
+// ── Orientation baking ──────────────────────────────────────────────────────
+//
+// WebP carries orientation only as the EXIF `Orientation` tag (TIFF tag 274);
+// the bitstream dimensions are always the stored (coded) dimensions. So unlike
+// HEIC's container `irot`/`imir` (which the probe folds into display dims),
+// `to_image_info` always reports the coded dims + the intrinsic EXIF tag — which
+// is exactly the `Preserve` contract. The bake path below transforms the decoded
+// pixels and rewrites the reported dims/tag for the non-`Preserve` hints.
+
+/// Whether `hint` puts the decoder on the bake path (transform the pixels) vs.
+/// the preserve path (leave them stored-orientation).
+///
+/// This is the local equivalent of `OrientationHint::bakes()` — inlined so the
+/// adapter does not require an unreleased zencodec. [`Preserve`] is the only hint
+/// that leaves pixels untouched; every other hint bakes.
+///
+/// `bakes()` is still in zencodec's unreleased changelog (post-0.1.21);
+/// delegate to it and delete this when zencodec ≥ 0.1.22 ships (zenwebp#58).
+///
+/// [`Preserve`]: OrientationHint::Preserve
+fn hint_bakes(hint: OrientationHint) -> bool {
+    !matches!(hint, OrientationHint::Preserve)
+}
+
+/// Resolve the net [`Orientation`] to bake into the *stored* pixels for a given
+/// hint, given the image's intrinsic EXIF `orientation`.
+///
+/// - [`Preserve`](OrientationHint::Preserve): nothing to bake — returns
+///   [`Identity`](Orientation::Identity) (callers gate on [`hint_bakes`] first,
+///   so this arm is only a defensive default).
+/// - [`Correct`](OrientationHint::Correct): the intrinsic orientation (applying
+///   it to stored pixels yields the upright image).
+/// - [`ExactTransform`](OrientationHint::ExactTransform): the literal transform,
+///   ignoring EXIF.
+/// - [`CorrectAndTransform`](OrientationHint::CorrectAndTransform): the intrinsic
+///   correction first, then the requested transform.
+fn resolve_orientation(hint: OrientationHint, intrinsic: Orientation) -> Orientation {
+    match hint {
+        OrientationHint::Preserve => Orientation::Identity,
+        OrientationHint::Correct => intrinsic,
+        OrientationHint::ExactTransform(t) => t,
+        OrientationHint::CorrectAndTransform(t) => intrinsic.then(t),
+        // `OrientationHint` is `#[non_exhaustive]`; treat any future variant as a
+        // no-op bake rather than guessing — the reported tag stays consistent.
+        _ => Orientation::Identity,
+    }
+}
+
+/// Bake `hint` into a decoded [`DecodeOutput`].
+///
+/// On the [`Preserve`](OrientationHint::Preserve) path ([`hint_bakes`] is
+/// `false`) the output is returned unchanged: pixels stay in stored orientation
+/// and `ImageInfo` keeps the stored dims + intrinsic EXIF tag that
+/// [`to_image_info`] already set.
+///
+/// Otherwise the resolved orientation (see [`resolve_orientation`]) is physically
+/// applied to the pixels via [`zenpixels_convert::orient::apply_orientation`],
+/// and the reported `ImageInfo` is rewritten to the baked buffer's dimensions
+/// with [`Orientation::Identity`] (the pixels are final — no orientation remains
+/// to apply). The intrinsic EXIF orientation is read from the `ImageInfo` the
+/// decode path already computed, so it matches what `probe()` reports.
+fn apply_orientation_to_output(output: DecodeOutput, hint: OrientationHint) -> DecodeOutput {
+    if !hint_bakes(hint) {
+        return output;
+    }
+    let mut info = output.info().clone();
+    let intrinsic = info.orientation;
+    let resolved = resolve_orientation(hint, intrinsic);
+
+    let buf = output.into_buffer();
+
+    // Even when the resolved transform is Identity (e.g. `Correct` on an
+    // upright image) we still rewrite the reported orientation to Identity so a
+    // consumer never double-applies the (now-stale) intrinsic tag. The pixel
+    // copy is skipped in that case.
+    let baked = if resolved.is_identity() {
+        buf
+    } else {
+        zenpixels_convert::orient::apply_orientation(buf.as_slice(), resolved)
+    };
+
+    // `ImageInfo` has no dimension setter; the fields are public. Report the
+    // baked buffer's geometry + Identity (pixels are now final).
+    info.width = baked.width();
+    info.height = baked.height();
+    info = info.with_orientation(Orientation::Identity);
+
+    DecodeOutput::new(baked, info)
+}
+
+/// Rewrite a probe [`ImageInfo`] (stored dims + intrinsic EXIF tag, as produced
+/// by [`to_image_info`]) to match what [`apply_orientation_to_output`] will
+/// report for `hint`.
+///
+/// On the [`Preserve`](OrientationHint::Preserve) path the info is returned
+/// unchanged. On a bake hint the dims are set to the resolved orientation's
+/// output geometry and the tag becomes [`Orientation::Identity`].
+fn report_probe_for_hint(mut info: ImageInfo, hint: OrientationHint) -> ImageInfo {
+    if !hint_bakes(hint) {
+        return info;
+    }
+    let resolved = resolve_orientation(hint, info.orientation);
+    let (ow, oh) = resolved.output_dimensions(info.width, info.height);
+    info.width = ow;
+    info.height = oh;
+    info.with_orientation(Orientation::Identity)
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// `push_rows` + `finish` must give the bytes `encode` gives: lossy and
+    /// lossless, RGB8 and RGBA8, odd and even sizes, every strip height, every
+    /// lossy method (method >= 1 selects libwebp-exact chroma, which the
+    /// removed row-pair YUV accumulator did not use).
+    #[test]
+    fn push_rows_matches_one_shot_bytes() {
+        use zencodec::encode::{EncodeJob, Encoder, EncoderConfig};
+        for (w, h) in [(1u32, 1u32), (2, 2), (3, 5), (17, 9), (67, 45)] {
+            for desc in [PixelDescriptor::RGB8_SRGB, PixelDescriptor::RGBA8_SRGB] {
+                let bpp = desc.bytes_per_pixel();
+                let px: Vec<u8> = (0..(w * h) as usize * bpp)
+                    .map(|i| (i * 37 % 251) as u8 ^ (i / 7) as u8)
+                    .collect();
+                let stride = w as usize * bpp;
+                let whole = || PixelSlice::new(&px, w, h, stride, desc).unwrap();
+                let mut configs: Vec<(alloc::string::String, WebpEncoderConfig)> = (0..=6u8)
+                    .map(|m| {
+                        (
+                            alloc::format!("lossy m{m}"),
+                            WebpEncoderConfig::lossy().with_quality(80.0).with_method(m),
+                        )
+                    })
+                    .collect();
+                configs.push(("lossless".into(), WebpEncoderConfig::lossless()));
+                for (name, cfg) in configs {
+                    let want = cfg
+                        .clone()
+                        .job()
+                        .encoder()
+                        .unwrap()
+                        .encode(whole())
+                        .unwrap()
+                        .into_vec();
+                    for strip in [1u32, 2, 3, 7, h] {
+                        let mut enc = cfg.clone().job().encoder().unwrap();
+                        let mut y = 0;
+                        while y < h {
+                            let n = strip.min(h - y);
+                            let s = PixelSlice::new(
+                                &px[y as usize * stride..(y + n) as usize * stride],
+                                w,
+                                n,
+                                stride,
+                                desc,
+                            )
+                            .unwrap();
+                            enc.push_rows(s).unwrap();
+                            y += n;
+                        }
+                        let got = enc.finish().unwrap().into_vec();
+                        assert_eq!(
+                            got, want,
+                            "{w}x{h} {desc:?} {name} strip {strip}: push_rows differs from encode"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    use alloc::vec;
+
+    use super::*;
+    use zencodec::decode::{Decode, DecodeJob, DecoderConfig};
+    use zencodec::encode::{EncodeJob, Encoder, EncoderConfig};
+
+    fn make_rgb8_pixels(w: u32, h: u32) -> PixelBuffer {
+        let mut buf = PixelBuffer::new(w, h, PixelDescriptor::RGB8_SRGB);
+        let mut s = buf.as_slice_mut();
+        for y in 0..h {
+            let row = s.row_mut(y);
+            for (i, b) in row.iter_mut().enumerate() {
+                *b = ((y * w * 3 + i as u32) % 256) as u8;
+            }
+        }
+        buf
+    }
+
+    fn make_rgba8_pixels(w: u32, h: u32) -> PixelBuffer {
+        let mut buf = PixelBuffer::new(w, h, PixelDescriptor::RGBA8_SRGB);
+        let mut s = buf.as_slice_mut();
+        for y in 0..h {
+            let row = s.row_mut(y);
+            for chunk in row.as_chunks_mut::<4>().0 {
+                *chunk = [100, 150, 200, 255];
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn roundtrip_rgb8_lossy() {
+        let buf = make_rgb8_pixels(64, 64);
+        let enc = WebpEncoderConfig::lossy().with_quality(90.0);
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+        assert!(!output.is_empty());
+        assert_eq!(output.format(), ImageFormat::WebP);
+
+        let dec = WebpDecoderConfig::new();
+        let decoded = dec.decode(output.data()).unwrap();
+        assert_eq!(decoded.width(), 64);
+        assert_eq!(decoded.height(), 64);
+    }
+
+    #[test]
+    fn roundtrip_rgba8_lossless() {
+        let buf = make_rgba8_pixels(32, 32);
+        let enc = WebpEncoderConfig::lossless();
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+        assert!(!output.is_empty());
+
+        let dec = WebpDecoderConfig::new();
+        let decoded = dec.decode(output.data()).unwrap();
+        assert_eq!(decoded.width(), 32);
+        assert_eq!(decoded.height(), 32);
+    }
+
+    #[test]
+    fn probe_header() {
+        let buf = make_rgb8_pixels(16, 16);
+        let enc = WebpEncoderConfig::lossy();
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+
+        let dec = WebpDecoderConfig::new();
+        let info = dec.probe_header(output.data()).unwrap();
+        assert_eq!(info.width, 16);
+        assert_eq!(info.height, 16);
+        assert_eq!(info.format, ImageFormat::WebP);
+    }
+
+    #[test]
+    fn job_with_stop() {
+        let buf = make_rgb8_pixels(8, 8);
+        let enc = WebpEncoderConfig::lossy();
+        let output = enc
+            .job()
+            .with_stop(zencodec::StopToken::new(enough::Unstoppable))
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn four_layer_encode_flow() {
+        let buf = make_rgb8_pixels(8, 8);
+        let config = WebpEncoderConfig::lossy().with_quality(80.0);
+        let output = config
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+        assert!(!output.is_empty());
+        assert_eq!(output.format(), ImageFormat::WebP);
+    }
+
+    #[test]
+    fn four_layer_decode_flow() {
+        let buf = make_rgb8_pixels(8, 8);
+        let encoded = WebpEncoderConfig::lossy()
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+
+        let config = WebpDecoderConfig::new();
+        let job = config.clone().job();
+        let info = job.output_info(encoded.data()).unwrap();
+        assert_eq!(info.width, 8);
+        assert_eq!(info.height, 8);
+
+        let decoded = config
+            .job()
+            .decoder(Cow::Borrowed(encoded.data()), &[])
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.width(), 8);
+        assert_eq!(decoded.height(), 8);
+    }
+
+    #[test]
+    fn effort_and_quality_getters() {
+        let config = WebpEncoderConfig::lossy()
+            .with_calibrated_quality(75.0)
+            .with_effort(5);
+
+        assert_eq!(config.calibrated_quality(), Some(75.0));
+        assert_eq!(config.effort(), Some(5));
+        assert_eq!(
+            <WebpEncoderConfig as EncoderConfig>::is_lossless(&config),
+            Some(false)
+        );
+
+        let lossless = WebpEncoderConfig::lossless();
+        assert_eq!(
+            <WebpEncoderConfig as EncoderConfig>::is_lossless(&lossless),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn fidelity_targets_roundtrip() {
+        use zencodec::encode::{EncoderConfig as ZEncoderConfig, Fidelity};
+
+        // Lossless wins, even from a lossy-configured start.
+        let ll = WebpEncoderConfig::lossy().with_fidelity(Fidelity::Lossless);
+        assert_eq!(ll.resolved_target_fidelity(), Some(Fidelity::Lossless));
+        assert_eq!(ZEncoderConfig::is_lossless(&ll), Some(true));
+
+        // Lossy quality even from a lossless start (the with_lossless(false) switch).
+        let cq = WebpEncoderConfig::lossless().with_fidelity(Fidelity::codec_quality(70.0));
+        assert_eq!(
+            cq.resolved_target_fidelity(),
+            Some(Fidelity::codec_quality(70.0))
+        );
+        assert_eq!(ZEncoderConfig::is_lossless(&cq), Some(false));
+
+        // SSIM2 + butteraugli map through the measured inverse tables (omni
+        // fleet sweep 2026-06-23), reported as codec_quality. Check the clamped
+        // extremes (robust, no interpolation) and the mapping direction.
+        use zencodec::encode::LossyTarget;
+        let q_of = |c: &WebpEncoderConfig| match c.resolved_target_fidelity() {
+            Some(Fidelity::Lossy(LossyTarget::CodecSpecificQuality(q))) => q,
+            other => panic!("expected codec_quality, got {other:?}"),
+        };
+        // Excellent target → top of the dial; poor target → bottom.
+        assert_eq!(
+            q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::ssim2(95.0))),
+            95.0
+        );
+        assert_eq!(
+            q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::ssim2(50.0))),
+            5.0
+        );
+        assert_eq!(
+            q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::butteraugli(1.0))),
+            95.0
+        );
+        assert_eq!(
+            q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::butteraugli(10.0))),
+            5.0
+        );
+        // Monotone interior: higher SSIM2 → higher quality; larger butteraugli
+        // distance (worse) → lower quality.
+        assert!(
+            q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::ssim2(70.0)))
+                < q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::ssim2(85.0)))
+        );
+        assert!(
+            q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::butteraugli(5.0)))
+                < q_of(&WebpEncoderConfig::lossy().with_fidelity(Fidelity::butteraugli(3.0)))
+        );
+    }
+
+    #[test]
+    fn output_info_minimal() {
+        let buf = make_rgb8_pixels(4, 4);
+        let encoded = WebpEncoderConfig::lossy()
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+
+        let dec = WebpDecoderConfig::new();
+        let info = dec.job().output_info(encoded.data()).unwrap();
+        assert_eq!(info.width, 4);
+        assert_eq!(info.height, 4);
+    }
+
+    #[test]
+    fn encoder_trait_roundtrip() {
+        let buf = make_rgb8_pixels(16, 16);
+        let config = WebpEncoderConfig::lossy().with_quality(80.0);
+        let encoder = config.job().encoder().unwrap();
+        let output = encoder.encode(buf.as_slice()).unwrap();
+        assert!(!output.is_empty());
+        assert_eq!(output.format(), ImageFormat::WebP);
+
+        let dec = WebpDecoderConfig::new();
+        let decoded = dec.decode(output.data()).unwrap();
+        assert!(decoded.width() > 0);
+        assert!(decoded.height() > 0);
+    }
+
+    /// The encode memory pre-flight gates on the CALIBRATED peak estimate
+    /// (`heuristics::estimate_encode` working set + the held input buffer),
+    /// not just the raw `w*h*bpp` input buffer. 1024×1024 RGB8 lossy: the
+    /// input buffer is 3 MiB — the old input-buffer check ADMITTED it under
+    /// an 8 MiB cap — but the calibrated peak (8.5 MB fixed + 3.4 B/px
+    /// working + the held input) is ~15 MB, well past the budget. The honest
+    /// check must reject up front with `LimitKind::Memory`.
+    #[test]
+    fn encode_memory_preflight_rejects_calibrated_peak_over_budget() {
+        use zencodec::{ErrorCategory, LimitKind, ResourceError};
+
+        let cap: u64 = 8 * 1024 * 1024;
+        let (w, h) = (1024u32, 1024u32);
+        let input_bytes = w as u64 * h as u64 * 3;
+        assert!(
+            input_bytes < cap,
+            "input buffer must fit the cap (the old check admitted this size)"
+        );
+        // Pin the test's premise to the model the gate reads: the calibrated
+        // peak for this exact config must exceed the cap.
+        let config = WebpEncoderConfig::lossy();
+        let est = crate::heuristics::estimate_encode(w, h, 3, &config.inner)
+            .peak_memory_bytes
+            .saturating_add(input_bytes);
+        assert!(est > cap, "calibrated peak {est} must exceed cap {cap}");
+
+        let buf = make_rgb8_pixels(w, h);
+        let err = config
+            .job()
+            .with_limits(ResourceLimits::none().with_max_memory(cap))
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .expect_err("honest pre-flight must reject");
+        assert_eq!(
+            err.error().category(),
+            ErrorCategory::Resource(ResourceError::Limits(LimitKind::Memory)),
+            "rejection must be the memory-limit path, got: {err}"
+        );
+    }
+
+    /// A budget that covers the calibrated peak admits the encode and it
+    /// completes (moderate 64 MiB cap for a 1024×1024 RGB8 lossy encode whose
+    /// modeled peak is ~15 MiB).
+    #[test]
+    fn encode_memory_preflight_admits_within_budget() {
+        let (w, h) = (1024u32, 1024u32);
+        let config = WebpEncoderConfig::lossy();
+        let cap: u64 = 64 * 1024 * 1024;
+        let est = crate::heuristics::estimate_encode(w, h, 3, &config.inner)
+            .peak_memory_bytes
+            .saturating_add(w as u64 * h as u64 * 3);
+        assert!(
+            est <= cap,
+            "modeled peak {est} must fit the moderate cap {cap}"
+        );
+
+        let buf = make_rgb8_pixels(w, h);
+        let output = config
+            .job()
+            .with_limits(ResourceLimits::none().with_max_memory(cap))
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .expect("64 MiB budget must admit a 1 MP lossy encode");
+        assert!(!output.is_empty());
+        assert_eq!(output.format(), ImageFormat::WebP);
+    }
+
+    #[test]
+    fn encoder_trait_gray8() {
+        let mut buf = PixelBuffer::new(16, 16, PixelDescriptor::GRAY8_SRGB);
+        {
+            let mut s = buf.as_slice_mut();
+            for y in 0..16u32 {
+                let row = s.row_mut(y);
+                for (i, b) in row.iter_mut().enumerate() {
+                    *b = ((y as usize * 16 + i) % 256) as u8;
+                }
+            }
+        }
+        let config = WebpEncoderConfig::lossy().with_quality(80.0);
+        let output = config
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn dyn_encoder_path() {
+        let buf = make_rgb8_pixels(32, 32);
+        let config = WebpEncoderConfig::lossy().with_quality(75.0);
+        let dyn_enc = config.job().dyn_encoder().unwrap();
+        let output = dyn_enc.encode(buf.as_slice()).unwrap();
+        assert!(!output.is_empty());
+        assert_eq!(output.format(), ImageFormat::WebP);
+    }
+
+    // ── Error envelope (Pattern B): category + codec name survive Dyn erasure ──
+
+    /// The forcing test for Pattern B. Drive the decoder through **`Dyn`**
+    /// dispatch, where the error is erased to a `BoxedError`
+    /// (`Box<dyn Error + Send + Sync>`). Under Pattern A (a native `type Error`)
+    /// the concrete error is no longer downcastable, so both lookups return
+    /// `None`; under Pattern B the single concrete `At<CodecError>` envelope
+    /// survives the erasure and a generic consumer recovers the category and the
+    /// originating codec name. Models the testkit's
+    /// `minimal_envelope_category_survives_dyn_erasure`.
+    #[test]
+    fn envelope_category_survives_dyn_erasure() {
+        use zencodec::decode::DynDecoderConfig;
+        use zencodec::{CodecError, CodecErrorExt, ErrorCategory, ImageError};
+
+        let cfg = WebpDecoderConfig::new();
+        let dyn_cfg: &dyn DynDecoderConfig = &cfg;
+        // A non-RIFF buffer past the 20-byte length guard fails the RIFF
+        // signature check → `DecodeError::RiffSignatureInvalid` → `Image(Malformed)`.
+        let erased = dyn_cfg
+            .dyn_job()
+            .probe(b"not a valid webp file")
+            .expect_err("malformed input must fail to probe");
+
+        assert_eq!(
+            erased.error_category(),
+            Some(ErrorCategory::Image(ImageError::Malformed))
+        );
+        assert_eq!(
+            erased.codec_error().and_then(CodecError::codec),
+            Some("zenwebp")
+        );
+    }
+
+    /// On the typed (non-erased) path the `At<CodecError>` answers the category
+    /// and codec name directly, and the native `DecodeError` is still reachable
+    /// as the envelope's detail via the source chain.
+    #[test]
+    fn envelope_on_typed_decode_path() {
+        use zencodec::decode::{DecodeJob, DecoderConfig};
+        use zencodec::{CodecError, CodecErrorExt, ErrorCategory, ImageError};
+
+        let err = <WebpDecoderConfig as DecoderConfig>::job(WebpDecoderConfig::new())
+            .probe(b"not a valid webp file")
+            .expect_err("malformed input must fail to probe");
+
+        // The concrete envelope answers both axes without any downcast.
+        assert_eq!(
+            err.error().category(),
+            ErrorCategory::Image(ImageError::Malformed)
+        );
+        assert_eq!(err.error().codec(), Some("zenwebp"));
+        // ...and the extension trait recovers them by walking the chain too.
+        assert_eq!(
+            err.error_category(),
+            Some(ErrorCategory::Image(ImageError::Malformed))
+        );
+        assert_eq!(
+            err.codec_error().and_then(CodecError::codec),
+            Some("zenwebp")
+        );
+        // The native DecodeError detail is still reachable for its message.
+        assert!(err.find_cause::<DecodeError>().is_some());
+    }
+
+    #[test]
+    fn encode_srgba8() {
+        let mut data = vec![0u8; 16 * 16 * 4];
+        for chunk in data.as_chunks_mut::<4>().0 {
+            *chunk = [100, 150, 200, 255];
+        }
+        let config = WebpEncoderConfig::lossy().with_quality(75.0);
+        let output = config
+            .job()
+            .encoder()
+            .unwrap()
+            .encode_srgba8(&mut data, false, 16, 16, 16)
+            .unwrap();
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn capabilities_encode() {
+        let caps = WebpEncoderConfig::capabilities();
+        assert!(caps.icc());
+        assert!(caps.exif());
+        assert!(caps.xmp());
+        assert!(caps.stop());
+        assert!(caps.lossy());
+        assert!(caps.lossless());
+        assert!(caps.animation());
+        assert!(caps.push_rows());
+        assert!(caps.native_alpha());
+        assert!(caps.enforces_max_pixels());
+        assert!(caps.enforces_max_memory());
+        assert_eq!(caps.effort_range(), Some([0, 10]));
+        assert_eq!(caps.quality_range(), Some([0.0, 100.0]));
+        // WebP doesn't natively support these
+        assert!(!caps.cicp());
+        assert!(!caps.hdr());
+        assert!(!caps.native_16bit());
+        assert!(!caps.encode_from());
+    }
+
+    #[test]
+    fn capabilities_decode() {
+        let caps = WebpDecoderConfig::capabilities();
+        assert!(caps.icc());
+        assert!(caps.exif());
+        assert!(caps.xmp());
+        assert!(caps.stop());
+        assert!(caps.animation());
+        assert!(caps.cheap_probe());
+        assert!(caps.native_alpha());
+        assert!(caps.enforces_max_pixels());
+        assert!(caps.enforces_max_memory());
+        // WebP doesn't natively support these
+        assert!(!caps.cicp());
+        assert!(!caps.hdr());
+        assert!(!caps.native_16bit());
+        assert!(!caps.decode_into());
+        assert!(caps.streaming());
+    }
+
+    #[test]
+    fn animation_roundtrip_lazy_decode() {
+        use zencodec::decode::AnimationFrameDecoder;
+        use zencodec::encode::AnimationFrameEncoder;
+
+        // Encode a 3-frame animation.
+        let frame1 = make_rgba8_pixels(16, 16);
+        let frame2 = make_rgba8_pixels(16, 16);
+        let frame3 = make_rgba8_pixels(16, 16);
+        let enc_config = WebpEncoderConfig::lossy().with_quality(90.0);
+        let mut enc = enc_config.job().animation_frame_encoder().unwrap();
+        enc.push_frame(frame1.as_slice(), 100, None).unwrap();
+        enc.push_frame(frame2.as_slice(), 100, None).unwrap();
+        enc.push_frame(frame3.as_slice(), 100, None).unwrap();
+        let output = enc.finish(None).unwrap();
+        assert!(!output.is_empty());
+
+        // Decode lazily through AnimationFrameDecoder.
+        let dec_config = WebpDecoderConfig::new();
+        let mut dec = dec_config
+            .job()
+            .animation_frame_decoder(Cow::Owned(output.data().to_vec()), &[])
+            .unwrap();
+
+        assert_eq!(dec.frame_count(), Some(3));
+
+        // Each render_next_frame decodes one frame lazily.
+        let f1 = dec.render_next_frame(None).unwrap().expect("frame 1");
+        assert_eq!(f1.frame_index(), 0);
+        assert_eq!(
+            f1.duration(),
+            zencodec::animation::FrameDuration::from_millis(100)
+        );
+
+        let f2 = dec.render_next_frame_owned(None).unwrap().expect("frame 2");
+        assert_eq!(f2.frame_index(), 1);
+
+        let f3 = dec.render_next_frame(None).unwrap().expect("frame 3");
+        assert_eq!(f3.frame_index(), 2);
+
+        // No more frames.
+        assert!(dec.render_next_frame(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn animation_lazy_decode_with_start_frame() {
+        use zencodec::decode::AnimationFrameDecoder;
+        use zencodec::encode::AnimationFrameEncoder;
+
+        // Encode 4 frames.
+        let enc_config = WebpEncoderConfig::lossy().with_quality(90.0);
+        let mut enc = enc_config.job().animation_frame_encoder().unwrap();
+        for _ in 0..4 {
+            let frame = make_rgba8_pixels(8, 8);
+            enc.push_frame(frame.as_slice(), 50, None).unwrap();
+        }
+        let output = enc.finish(None).unwrap();
+
+        // Decode starting from frame 2.
+        let dec_config = WebpDecoderConfig::new();
+        let mut dec = dec_config
+            .job()
+            .with_start_frame_index(2)
+            .animation_frame_decoder(Cow::Owned(output.data().to_vec()), &[])
+            .unwrap();
+
+        // First yielded frame should be index 2.
+        let f = dec.render_next_frame(None).unwrap().expect("frame 2");
+        assert_eq!(f.frame_index(), 2);
+
+        let f = dec.render_next_frame(None).unwrap().expect("frame 3");
+        assert_eq!(f.frame_index(), 3);
+
+        assert!(dec.render_next_frame(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn streaming_encode_lossy_rgb8() {
+        // Push rows in strips of 2, verify output decodes correctly.
+        let buf = make_rgb8_pixels(64, 64);
+        let config = WebpEncoderConfig::lossy().with_quality(90.0);
+        let mut encoder = config.job().with_canvas_size(64, 64).encoder().unwrap();
+        assert_eq!(encoder.preferred_strip_height(), 2);
+
+        // Push 32 strips of 2 rows each
+        let raw = buf.as_slice().contiguous_bytes();
+        let raw = raw.as_ref();
+        let row_bytes = 64 * 3;
+        for y in (0..64).step_by(2) {
+            let strip = PixelSlice::new(
+                &raw[y * row_bytes..(y + 2) * row_bytes],
+                64,
+                2,
+                row_bytes,
+                PixelDescriptor::RGB8_SRGB,
+            )
+            .unwrap();
+            encoder.push_rows(strip).unwrap();
+        }
+
+        let output = encoder.finish().unwrap();
+        assert!(!output.is_empty());
+        assert_eq!(output.format(), ImageFormat::WebP);
+
+        // Verify decodable
+        let dec = WebpDecoderConfig::new();
+        let decoded = dec.decode(output.data()).unwrap();
+        assert_eq!(decoded.width(), 64);
+        assert_eq!(decoded.height(), 64);
+    }
+
+    #[test]
+    fn streaming_encode_lossy_rgb8_odd_height() {
+        // Image with odd height: tests the pending row chroma handling.
+        let buf = make_rgb8_pixels(32, 33);
+        let config = WebpEncoderConfig::lossy().with_quality(80.0);
+        let mut encoder = config.job().with_canvas_size(32, 33).encoder().unwrap();
+
+        // Push one row at a time: 16 pairs + 1 leftover
+        let raw = buf.as_slice().contiguous_bytes();
+        let raw = raw.as_ref();
+        let row_bytes = 32 * 3;
+        for y in 0..33usize {
+            let strip = PixelSlice::new(
+                &raw[y * row_bytes..(y + 1) * row_bytes],
+                32,
+                1,
+                row_bytes,
+                PixelDescriptor::RGB8_SRGB,
+            )
+            .unwrap();
+            encoder.push_rows(strip).unwrap();
+        }
+
+        let output = encoder.finish().unwrap();
+        let dec = WebpDecoderConfig::new();
+        let decoded = dec.decode(output.data()).unwrap();
+        assert_eq!(decoded.width(), 32);
+        assert_eq!(decoded.height(), 33);
+    }
+
+    #[test]
+    fn streaming_encode_lossless_rgba8() {
+        // Lossless RGBA: uses the Raw accumulation path.
+        let buf = make_rgba8_pixels(16, 16);
+        let config = WebpEncoderConfig::lossless();
+        let mut encoder = config.job().with_canvas_size(16, 16).encoder().unwrap();
+        assert_eq!(encoder.preferred_strip_height(), 1);
+
+        let raw = buf.as_slice().contiguous_bytes();
+        let raw = raw.as_ref();
+        let row_bytes = 16 * 4;
+        for y in 0..16usize {
+            let strip = PixelSlice::new(
+                &raw[y * row_bytes..(y + 1) * row_bytes],
+                16,
+                1,
+                row_bytes,
+                PixelDescriptor::RGBA8_SRGB,
+            )
+            .unwrap();
+            encoder.push_rows(strip).unwrap();
+        }
+
+        let output = encoder.finish().unwrap();
+        assert!(!output.is_empty());
+
+        let dec = WebpDecoderConfig::new();
+        let decoded = dec.decode(output.data()).unwrap();
+        assert_eq!(decoded.width(), 16);
+        assert_eq!(decoded.height(), 16);
+    }
+
+    #[test]
+    fn streaming_encode_matches_oneshot() {
+        // Verify streaming produces output of similar size to one-shot.
+        let buf = make_rgb8_pixels(64, 64);
+        let config = WebpEncoderConfig::lossy().with_quality(75.0);
+
+        // One-shot
+        let oneshot_output = config
+            .clone()
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+
+        // Streaming (full image in one push)
+        let mut encoder = config.job().with_canvas_size(64, 64).encoder().unwrap();
+        encoder.push_rows(buf.as_slice()).unwrap();
+        let stream_output = encoder.finish().unwrap();
+
+        // Streaming via YUV path may differ slightly from one-shot RGB path
+        // due to different conversion rounding, but sizes should be similar.
+        let oneshot_len = oneshot_output.data().len();
+        let stream_len = stream_output.data().len();
+        let ratio = stream_len as f64 / oneshot_len as f64;
+        assert!(
+            (0.8..1.25).contains(&ratio),
+            "streaming output size {stream_len} too different from one-shot {oneshot_len} (ratio {ratio:.3})"
+        );
+    }
+
+    #[test]
+    fn streaming_encode_capabilities() {
+        let caps = WebpEncoderConfig::capabilities();
+        assert!(caps.push_rows());
+    }
+
+    #[test]
+    fn last_frame_duration_preserved() {
+        use zencodec::decode::AnimationFrameDecoder;
+        use zencodec::encode::AnimationFrameEncoder;
+
+        // Encode 3 frames with distinct durations: 200, 50, 300.
+        let enc_config = WebpEncoderConfig::lossy().with_quality(90.0);
+        let mut enc = enc_config.job().animation_frame_encoder().unwrap();
+        let frame = make_rgba8_pixels(16, 16);
+        enc.push_frame(frame.as_slice(), 200, None).unwrap();
+        enc.push_frame(frame.as_slice(), 50, None).unwrap();
+        enc.push_frame(frame.as_slice(), 300, None).unwrap();
+        let output = enc.finish(None).unwrap();
+
+        // Decode and verify each frame's duration.
+        let dec_config = WebpDecoderConfig::new();
+        let mut dec = dec_config
+            .job()
+            .animation_frame_decoder(Cow::Owned(output.data().to_vec()), &[])
+            .unwrap();
+
+        let f1 = dec.render_next_frame(None).unwrap().expect("frame 1");
+        assert_eq!(
+            f1.duration(),
+            zencodec::animation::FrameDuration::from_millis(200),
+            "first frame duration should be 200ms"
+        );
+
+        let f2 = dec.render_next_frame(None).unwrap().expect("frame 2");
+        assert_eq!(
+            f2.duration(),
+            zencodec::animation::FrameDuration::from_millis(50),
+            "second frame duration should be 50ms"
+        );
+
+        let f3 = dec.render_next_frame(None).unwrap().expect("frame 3");
+        assert_eq!(
+            f3.duration(),
+            zencodec::animation::FrameDuration::from_millis(300),
+            "last frame duration should be 300ms, not hardcoded 100ms"
+        );
+
+        assert!(dec.render_next_frame(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn decode_capabilities_enforces_max_input_bytes() {
+        let caps = WebpDecoderConfig::capabilities();
+        assert!(
+            caps.enforces_max_input_bytes(),
+            "decode capabilities should report enforces_max_input_bytes since effective_input_size_limit is checked"
+        );
+    }
+
+    #[test]
+    fn streaming_decode_basic() {
+        use zencodec::decode::StreamingDecode;
+
+        // Encode a small test image
+        let buf = make_rgb8_pixels(64, 64);
+        let enc = WebpEncoderConfig::lossy().with_quality(90.0);
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+
+        // Stream decode
+        let dec = WebpDecoderConfig::new();
+        let mut stream = dec
+            .job()
+            .streaming_decoder(Cow::Borrowed(output.data()), &[])
+            .unwrap();
+
+        let info = stream.info();
+        assert_eq!(info.width, 64);
+        assert_eq!(info.height, 64);
+
+        let mut total_rows = 0u32;
+        let mut last_y = 0u32;
+        while let Some((y, strip)) = stream.next_batch().unwrap() {
+            assert!(strip.rows() > 0, "strip should have rows");
+            assert_eq!(strip.width(), 64);
+            if total_rows > 0 {
+                assert!(
+                    y > last_y,
+                    "y offsets should increase: got {y} after {last_y}"
+                );
+            }
+            last_y = y;
+            total_rows += strip.rows();
+        }
+        assert_eq!(total_rows, 64, "should have decoded all 64 rows");
+
+        // Should return None when done
+        assert!(stream.next_batch().unwrap().is_none());
+    }
+
+    #[test]
+    fn streaming_decode_matches_oneshot() {
+        use zencodec::decode::{Decode, StreamingDecode};
+
+        // Encode a test image
+        let buf = make_rgb8_pixels(48, 48);
+        let enc = WebpEncoderConfig::lossy().with_quality(75.0);
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+        let data = output.data();
+
+        // One-shot decode (reference)
+        let dec = WebpDecoderConfig::new();
+        let oneshot = dec
+            .clone()
+            .job()
+            .decoder(Cow::Borrowed(data), &[])
+            .unwrap()
+            .decode()
+            .unwrap();
+        let oneshot_buf = oneshot.into_buffer();
+        let oneshot_rows = oneshot_buf.height();
+        let oneshot_width = oneshot_buf.width();
+        let bpp = oneshot_buf.descriptor().bytes_per_pixel();
+
+        // Streaming decode — request the same format as oneshot
+        let mut stream = dec
+            .job()
+            .streaming_decoder(Cow::Borrowed(data), &[])
+            .unwrap();
+
+        let mut assembled = alloc::vec![0u8; oneshot_width as usize * oneshot_rows as usize * bpp];
+        while let Some((y, strip)) = stream.next_batch().unwrap() {
+            let y = y as usize;
+            let row_bytes = oneshot_width as usize * bpp;
+            for row in 0..strip.rows() as usize {
+                let src = strip.row(row as u32);
+                let dst_start = (y + row) * row_bytes;
+                assembled[dst_start..dst_start + row_bytes].copy_from_slice(src);
+            }
+        }
+
+        // Compare pixel-by-pixel
+        let reference = oneshot_buf.into_vec();
+        assert_eq!(
+            assembled.len(),
+            reference.len(),
+            "buffer sizes should match"
+        );
+        assert_eq!(
+            assembled, reference,
+            "streaming and oneshot should produce identical pixels"
+        );
+    }
+
+    #[test]
+    fn streaming_decode_large_image() {
+        use zencodec::decode::StreamingDecode;
+
+        // Encode a larger image to exercise multiple MB rows
+        let buf = make_rgb8_pixels(128, 96);
+        let enc = WebpEncoderConfig::lossy().with_quality(80.0);
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+
+        let dec = WebpDecoderConfig::new();
+        let mut stream = dec
+            .job()
+            .streaming_decoder(Cow::Borrowed(output.data()), &[])
+            .unwrap();
+
+        let mut total_rows = 0u32;
+        let mut batch_count = 0u32;
+        while let Some((_y, strip)) = stream.next_batch().unwrap() {
+            total_rows += strip.rows();
+            batch_count += 1;
+        }
+        assert_eq!(total_rows, 96);
+        // 96 / 16 = 6 MB rows, but delayed output means different batch count
+        assert!(batch_count >= 1, "should have at least one batch");
+    }
+
+    #[test]
+    fn streaming_decode_lossless_matches_pixels() {
+        // Encode a lossless image
+        let buf = make_rgba8_pixels(8, 8);
+        let enc = WebpEncoderConfig::lossless();
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+
+        let dec = WebpDecoderConfig::new();
+        use zencodec::decode::StreamingDecode;
+
+        let mut stream = dec
+            .job()
+            .streaming_decoder(Cow::Borrowed(output.data()), &[PixelDescriptor::RGBA8_SRGB])
+            .unwrap();
+        let (y, pixels) = stream.next_batch().unwrap().unwrap();
+        assert_eq!(y, 0);
+        assert_eq!(pixels.rows(), 8);
+        assert_eq!(pixels.descriptor(), PixelDescriptor::RGBA8_SRGB);
+        for row in 0..8 {
+            assert_eq!(pixels.row(row), buf.as_slice().row(row));
+        }
+        assert!(stream.next_batch().unwrap().is_none());
+    }
+
+    #[test]
+    fn streaming_decode_with_alpha() {
+        use zencodec::decode::StreamingDecode;
+
+        // Encode RGBA image
+        let buf = make_rgba8_pixels(32, 32);
+        let enc = WebpEncoderConfig::lossy().with_quality(90.0);
+        let output = enc.job().encoder().unwrap().encode(buf.as_slice()).unwrap();
+
+        // Check if it has alpha
+        let native_info = crate::ImageInfo::from_webp(output.data()).unwrap();
+
+        if native_info.has_alpha {
+            let dec = WebpDecoderConfig::new();
+            let mut stream = dec
+                .job()
+                .streaming_decoder(Cow::Borrowed(output.data()), &[PixelDescriptor::RGBA8_SRGB])
+                .unwrap();
+
+            let info = stream.info();
+            assert_eq!(info.width, 32);
+
+            let mut total_rows = 0u32;
+            while let Some((_y, strip)) = stream.next_batch().unwrap() {
+                // RGBA: 4 bytes per pixel
+                let expected_row_bytes = 32 * 4;
+                assert_eq!(
+                    strip.row(0).len(),
+                    expected_row_bytes,
+                    "should be 4bpp RGBA"
+                );
+                total_rows += strip.rows();
+            }
+            assert_eq!(total_rows, 32);
+        }
+    }
+
+    // ── push_decoder tests ─────────────────────────────────────────────
+
+    /// A minimal sink that collects every strip into a single flat buffer,
+    /// then lets tests compare it byte-for-byte against a reference.
+    struct CollectSink {
+        buf: alloc::vec::Vec<u8>,
+        width: u32,
+        height: u32,
+        descriptor: Option<PixelDescriptor>,
+        began: bool,
+        finished: bool,
+        strips_received: u32,
+    }
+
+    impl CollectSink {
+        fn new() -> Self {
+            Self {
+                buf: alloc::vec::Vec::new(),
+                width: 0,
+                height: 0,
+                descriptor: None,
+                began: false,
+                finished: false,
+                strips_received: 0,
+            }
+        }
+    }
+
+    impl zencodec::decode::DecodeRowSink for CollectSink {
+        fn begin(
+            &mut self,
+            width: u32,
+            height: u32,
+            descriptor: PixelDescriptor,
+        ) -> Result<(), SinkError> {
+            self.width = width;
+            self.height = height;
+            self.descriptor = Some(descriptor);
+            let bpp = descriptor.bytes_per_pixel();
+            let total = (width as usize) * (height as usize) * bpp;
+            self.buf.clear();
+            self.buf.resize(total, 0);
+            self.began = true;
+            Ok(())
+        }
+
+        fn provide_next_buffer(
+            &mut self,
+            y: u32,
+            height: u32,
+            width: u32,
+            descriptor: PixelDescriptor,
+        ) -> Result<zenpixels::PixelSliceMut<'_>, SinkError> {
+            assert!(self.began, "provide_next_buffer before begin");
+            assert!(!self.finished, "provide_next_buffer after finish");
+            assert_eq!(width, self.width);
+            assert_eq!(Some(descriptor), self.descriptor);
+            let bpp = descriptor.bytes_per_pixel();
+            let row_bytes = (width as usize) * bpp;
+            let start = (y as usize) * row_bytes;
+            let end = start + (height as usize) * row_bytes;
+            assert!(end <= self.buf.len(), "strip exceeds buffer");
+            self.strips_received += 1;
+            let slice = zenpixels::PixelSliceMut::new(
+                &mut self.buf[start..end],
+                width,
+                height,
+                row_bytes,
+                descriptor,
+            )
+            .expect("valid slice");
+            Ok(slice)
+        }
+
+        fn finish(&mut self) -> Result<(), SinkError> {
+            self.finished = true;
+            Ok(())
+        }
+    }
+
+    fn push_decode(data: &[u8], preferred: &[PixelDescriptor]) -> (CollectSink, OutputInfo) {
+        use zencodec::decode::DecodeJob;
+        let mut sink = CollectSink::new();
+        let dec = WebpDecoderConfig::new();
+        let info = dec
+            .job()
+            .push_decoder(Cow::Borrowed(data), &mut sink, preferred)
+            .expect("push_decoder");
+        (sink, info)
+    }
+
+    fn full_decode(
+        data: &[u8],
+        preferred: &[PixelDescriptor],
+    ) -> (alloc::vec::Vec<u8>, u32, u32, PixelDescriptor) {
+        use zencodec::decode::DecodeJob;
+        let dec = WebpDecoderConfig::new();
+        let out = dec
+            .job()
+            .decoder(Cow::Borrowed(data), preferred)
+            .unwrap()
+            .decode()
+            .unwrap();
+        let buf = out.into_buffer();
+        let width = buf.width();
+        let height = buf.height();
+        let desc = buf.descriptor();
+        (buf.into_vec(), width, height, desc)
+    }
+
+    /// Decode `data` under the given [`AllocPreference`] (via the zencodec
+    /// `ResourceLimits` boundary) and return the raw decoded bytes.
+    fn decode_with_alloc_pref(
+        data: &[u8],
+        pref: Option<zencodec::AllocPreference>,
+    ) -> alloc::vec::Vec<u8> {
+        use zencodec::ResourceLimits;
+        use zencodec::decode::DecodeJob;
+        let job = WebpDecoderConfig::new().job();
+        let job = match pref {
+            Some(p) => job.with_limits(ResourceLimits::none().with_prefer_fallible_allocations(p)),
+            None => job,
+        };
+        job.decoder(Cow::Borrowed(data), &[])
+            .unwrap()
+            .decode()
+            .unwrap()
+            .into_buffer()
+            .into_vec()
+    }
+
+    /// Decoding with `AllocPreference::Fallible` (the `try_reserve` path) and
+    /// `Infallible` (the `vec!` path) must each produce byte-identical pixels
+    /// to the default (`CodecDefault`) decode, for every decode path that has
+    /// an untrusted-sized allocation (lossy VP8, lossy+alpha VP8X, lossless
+    /// VP8L). The allocation policy must change *how* memory is obtained, never
+    /// *what* is decoded.
+    #[test]
+    fn fallible_alloc_decode_matches_default() {
+        let assert_all_modes_agree = |data: &[u8], label: &str| {
+            let default = decode_with_alloc_pref(data, None);
+            let fallible = decode_with_alloc_pref(data, Some(zencodec::AllocPreference::Fallible));
+            let infallible =
+                decode_with_alloc_pref(data, Some(zencodec::AllocPreference::Infallible));
+            assert!(!default.is_empty(), "{label}: decode produced no bytes");
+            assert_eq!(
+                default, fallible,
+                "{label}: Fallible decode must be byte-identical to the default"
+            );
+            assert_eq!(
+                default, infallible,
+                "{label}: Infallible decode must be byte-identical to the default"
+            );
+        };
+
+        // (1) Lossy VP8, no alpha → streaming cache + RGB output buffer.
+        let rgb = make_rgb8_pixels(96, 64);
+        let lossy = WebpEncoderConfig::lossy()
+            .with_quality(85.0)
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(rgb.as_slice())
+            .unwrap();
+        assert_all_modes_agree(lossy.data(), "lossy-rgb");
+
+        // (2) Lossy VP8 + ALPH → adds the alpha plane to the streaming path.
+        let rgba = make_rgba8_pixels(48, 48);
+        let lossy_alpha = WebpEncoderConfig::lossy()
+            .with_quality(90.0)
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(rgba.as_slice())
+            .unwrap();
+        assert_all_modes_agree(lossy_alpha.data(), "lossy-rgba");
+
+        // (3) Lossless VP8L → the ARGB plane + RGBA expansion buffers.
+        let lossless = WebpEncoderConfig::lossless()
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(rgba.as_slice())
+            .unwrap();
+        assert_all_modes_agree(lossless.data(), "lossless-rgba");
+    }
+
+    /// `estimate_decode_resources` must report a non-trivial peak (output
+    /// buffer + VP8 working set), a SERIAL thread plan, and scale its peak with
+    /// image area.
+    #[test]
+    fn estimate_decode_resources_reports_peak_and_serial() {
+        use zencodec::decode::DecoderConfig;
+        use zencodec::estimate::{ComputeEnvironment, ImageCharacteristics};
+
+        let cfg = WebpDecoderConfig::new();
+        let compute = ComputeEnvironment::default();
+
+        let small = ImageCharacteristics::new(256, 256, PixelDescriptor::RGBA8_SRGB);
+        let large = ImageCharacteristics::new(2048, 2048, PixelDescriptor::RGBA8_SRGB);
+
+        let es = cfg.estimate_decode_resources(&small, &compute);
+        let el = cfg.estimate_decode_resources(&large, &compute);
+
+        // Peak must at least cover the output buffer (256*256*4 = 262_144).
+        assert!(
+            es.peak_memory_bytes_est().unwrap() >= 256 * 256 * 4,
+            "peak must cover the output buffer"
+        );
+        // Peak scales with area (64x the pixels → strictly larger peak).
+        assert!(
+            el.peak_memory_bytes_est().unwrap() > es.peak_memory_bytes_est().unwrap(),
+            "peak must grow with image area"
+        );
+        // zenwebp decode is single-threaded.
+        let threading = es.threading().expect("decode estimate declares threading");
+        assert!(!threading.is_parallel());
+        assert_eq!(threading.max_efficient_threads(), Some(1));
+    }
+
+    /// Exact byte-for-byte parity between `push_decoder` and the full-decode
+    /// path on a lossy-no-alpha VP8 stream (hits the native streaming path).
+    #[test]
+    fn push_decoder_parity_lossy_rgb() {
+        let rgb = make_rgb8_pixels(128, 96);
+        let enc = WebpEncoderConfig::lossy().with_quality(85.0);
+        let output = enc.job().encoder().unwrap().encode(rgb.as_slice()).unwrap();
+        let data = output.data();
+
+        let (sink, info) = push_decode(data, &[]);
+        let (reference, rw, rh, rdesc) = full_decode(data, &[]);
+
+        assert_eq!(sink.width, rw);
+        assert_eq!(sink.height, rh);
+        assert_eq!(sink.descriptor, Some(rdesc));
+        assert_eq!(info.native_format, rdesc);
+        assert!(sink.began && sink.finished);
+        assert!(sink.strips_received >= 1);
+        assert_eq!(sink.buf, reference, "streaming bytes must match oneshot");
+    }
+
+    /// Parity on a lossy VP8 + VP8X container with ALPH chunk. This uses
+    /// the same streaming path but `alpha_plane` is applied per-strip.
+    #[test]
+    fn push_decoder_parity_lossy_with_alpha() {
+        let rgba = make_rgba8_pixels(48, 48);
+        let enc = WebpEncoderConfig::lossy().with_quality(90.0);
+        let output = enc
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(rgba.as_slice())
+            .unwrap();
+        let data = output.data();
+
+        // Only run the parity assertion if the encoder actually produced alpha.
+        let native_info = crate::ImageInfo::from_webp(data).unwrap();
+        if !native_info.has_alpha {
+            return;
+        }
+
+        let (sink, _info) = push_decode(data, &[PixelDescriptor::RGBA8_SRGB]);
+        let (reference, _, _, rdesc) = full_decode(data, &[PixelDescriptor::RGBA8_SRGB]);
+        assert_eq!(rdesc, PixelDescriptor::RGBA8_SRGB);
+        assert_eq!(sink.descriptor, Some(PixelDescriptor::RGBA8_SRGB));
+        assert_eq!(sink.buf, reference, "alpha strip must match full decode");
+    }
+
+    /// Lossless VP8L is **not** eligible for the native streaming path —
+    /// push_decoder must fall back to the helper and still produce a
+    /// correct image that matches the full-decode output byte-for-byte.
+    #[test]
+    fn push_decoder_fallback_lossless() {
+        let rgba = make_rgba8_pixels(32, 32);
+        let enc = WebpEncoderConfig::lossless();
+        let output = enc
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(rgba.as_slice())
+            .unwrap();
+        let data = output.data();
+
+        // Sanity: the container must actually be VP8L or VP8X+VP8L for the
+        // fallback path to be exercised. If the encoder produced plain VP8
+        // (unlikely for lossless), this test degenerates into a lossy parity
+        // check, which is still valid.
+        let (sink, _info) = push_decode(data, &[]);
+        let (reference, _, _, _) = full_decode(data, &[]);
+        assert_eq!(sink.buf, reference, "lossless fallback must be exact");
+    }
+
+    /// `Cow::Owned` must work as well as `Cow::Borrowed` (the function
+    /// body owns `data` throughout, so both lifetimes are equivalent).
+    #[test]
+    fn push_decoder_cow_owned_works() {
+        use zencodec::decode::DecodeJob;
+        let rgb = make_rgb8_pixels(32, 32);
+        let enc = WebpEncoderConfig::lossy().with_quality(80.0);
+        let output = enc.job().encoder().unwrap().encode(rgb.as_slice()).unwrap();
+
+        let borrowed = {
+            let mut sink = CollectSink::new();
+            WebpDecoderConfig::new()
+                .job()
+                .push_decoder(Cow::Borrowed(output.data()), &mut sink, &[])
+                .unwrap();
+            sink.buf
+        };
+        let owned_bytes = output.data().to_vec();
+        let owned = {
+            let mut sink = CollectSink::new();
+            WebpDecoderConfig::new()
+                .job()
+                .push_decoder(Cow::Owned(owned_bytes), &mut sink, &[])
+                .unwrap();
+            sink.buf
+        };
+
+        assert_eq!(owned, borrowed, "Cow::Owned must match Cow::Borrowed");
+    }
+
+    /// BGRA negotiation: when the sink asks for BGRA, the streaming path
+    /// must swizzle and deliver BGRA, and the result must still match the
+    /// full-decode BGRA output.
+    #[test]
+    fn push_decoder_bgra_negotiation() {
+        let rgba = make_rgba8_pixels(16, 16);
+        let enc = WebpEncoderConfig::lossy().with_quality(90.0);
+        let output = enc
+            .job()
+            .encoder()
+            .unwrap()
+            .encode(rgba.as_slice())
+            .unwrap();
+        let data = output.data();
+
+        let native_info = crate::ImageInfo::from_webp(data).unwrap();
+        if !native_info.has_alpha {
+            return;
+        }
+
+        let (sink, _info) = push_decode(data, &[PixelDescriptor::BGRA8_SRGB]);
+        assert_eq!(sink.descriptor, Some(PixelDescriptor::BGRA8_SRGB));
+        let (reference, _, _, rdesc) = full_decode(data, &[PixelDescriptor::BGRA8_SRGB]);
+        assert_eq!(rdesc, PixelDescriptor::BGRA8_SRGB);
+        assert_eq!(sink.buf, reference);
+    }
+
+    /// Real corpus image: gallery1/1.webp is a plain lossy VP8 at 550x368.
+    /// This exercises a larger input than the synthetic gradients and
+    /// verifies parity on a real-world encoder's output.
+    #[test]
+    fn push_decoder_parity_corpus_gallery1() {
+        let data = include_bytes!("../tests/images/gallery1/1.webp");
+        let (sink, info) = push_decode(data, &[]);
+        let (reference, rw, rh, _) = full_decode(data, &[]);
+        assert_eq!(sink.width, rw);
+        assert_eq!(sink.height, rh);
+        assert_eq!(info.native_format, sink.descriptor.unwrap());
+        assert_eq!(sink.buf, reference, "gallery1/1.webp parity");
+    }
+
+    /// Real corpus image with alpha (VP8X + VP8 + ALPH).
+    #[test]
+    fn push_decoder_parity_corpus_alpha() {
+        let data = include_bytes!("../tests/images/gallery2/1_webp_a.webp");
+        let native = crate::ImageInfo::from_webp(data).unwrap();
+        if !native.has_alpha {
+            // Corpus layout guarantees _a files have alpha; assert for safety.
+            panic!("expected 1_webp_a.webp to have alpha");
+        }
+        let (sink, _info) = push_decode(data, &[PixelDescriptor::RGBA8_SRGB]);
+        let (reference, _, _, rdesc) = full_decode(data, &[PixelDescriptor::RGBA8_SRGB]);
+        assert_eq!(rdesc, PixelDescriptor::RGBA8_SRGB);
+        assert_eq!(sink.descriptor, Some(PixelDescriptor::RGBA8_SRGB));
+        assert_eq!(sink.buf, reference, "gallery2/1_webp_a.webp parity");
+    }
+
+    /// Real corpus lossless image — must go through the fallback path.
+    #[test]
+    fn push_decoder_parity_corpus_lossless() {
+        let data = include_bytes!("../tests/images/gallery2/1_webp_ll.webp");
+        let (sink, _info) = push_decode(data, &[]);
+        let (reference, _, _, _) = full_decode(data, &[]);
+        assert_eq!(sink.buf, reference, "lossless fallback parity");
+    }
+
+    // ── Color-emit: CICP-only source synthesizes an ICC (the key 0.1.21 fix) ──
+
+    use zencodec::Metadata;
+    use zenpixels::Cicp;
+
+    /// Encode an RGB8 image whose `Metadata` carries ONLY a CICP (Display P3)
+    /// and no ICC. WebP has no CICP carrier, so before the fix this produced an
+    /// untagged (sRGB-assumed) WebP — silently dropping the wide gamut. The
+    /// resolver must now synthesize the bundled Display P3 ICC and embed it in
+    /// the ICCP chunk.
+    #[test]
+    fn cicp_only_source_synthesizes_icc() {
+        let buf = make_rgb8_pixels(32, 32);
+        let meta = Metadata::none().with_cicp(Cicp::DISPLAY_P3);
+        let out = WebpEncoderConfig::lossless()
+            .job()
+            .with_metadata_policy(meta, zencodec::MetadataPolicy::PreserveExact)
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+
+        let info = crate::ImageInfo::from_webp(out.data()).unwrap();
+        let embedded = info
+            .icc_profile
+            .as_deref()
+            .expect("CICP-only Display P3 source must produce an embedded (synthesized) ICC");
+        // What the profile describes, not its bytes: zenpixels 0.2.17 serves
+        // the exact, cicp-tagged profile instead of the curated
+        // `DISPLAY_P3_V4` (zenpixels#86/#87); both describe P3 + sRGB curve.
+        let id = zenpixels::icc::identify_common(embedded).expect("a recognised profile");
+        let cicp = id.to_cicp().expect("CICP for the profile");
+        assert_eq!(
+            (cicp.color_primaries, cicp.transfer_characteristics),
+            (12, 13),
+            "embedded ICC must describe Display P3 with the sRGB curve"
+        );
+    }
+
+    /// A PQ (BT.2100) CICP-only source needs an ICC the bundled tables can't
+    /// produce. zenpixels-convert ships the Rec.2100-PQ profile among the
+    /// always-bundled consts, so even without the `cms` (icc-db) feature the
+    /// encode synthesizes a real ICC — the color is carried, nothing is
+    /// mislabeled. (Off-grid CICPs the bundle lacks still refuse loudly via
+    /// `IccSynthesisUnavailable`.)
+    #[cfg(not(feature = "cms"))]
+    #[test]
+    fn cicp_pq_without_cms_embeds_bundled_icc() {
+        let buf = make_rgb8_pixels(32, 32);
+        let meta = Metadata::none().with_cicp(Cicp::BT2100_PQ);
+        let out = WebpEncoderConfig::lossless()
+            .job()
+            .with_metadata_policy(meta, zencodec::MetadataPolicy::PreserveExact)
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .expect("PQ CICP without cms must synthesize the bundled ICC and succeed");
+        let embedded = crate::ImageInfo::from_webp(out.data())
+            .unwrap()
+            .icc_profile
+            .expect("no-cms build must embed the bundled PQ ICC, not emit untagged");
+        assert!(!embedded.is_empty());
+    }
+
+    /// With the `cms` feature, the same PQ CICP-only source synthesizes a real
+    /// (moxcms-generated) ICC and the encode succeeds.
+    #[cfg(feature = "cms")]
+    #[test]
+    fn cicp_pq_with_cms_synthesizes_icc() {
+        let buf = make_rgb8_pixels(32, 32);
+        let meta = Metadata::none().with_cicp(Cicp::BT2100_PQ);
+        let out = WebpEncoderConfig::lossless()
+            .job()
+            .with_metadata_policy(meta, zencodec::MetadataPolicy::PreserveExact)
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .expect("PQ CICP with cms must synthesize an ICC and succeed");
+        let info = crate::ImageInfo::from_webp(out.data()).unwrap();
+        let embedded = info
+            .icc_profile
+            .as_deref()
+            .expect("cms build must embed a synthesized PQ ICC");
+        assert!(!embedded.is_empty());
+    }
+
+    /// A CICP-only sRGB source must NOT embed an ICC: sRGB is the universally
+    /// assumed default and the bundled table has no sRGB profile, so synthesizing
+    /// one would be redundant bytes. (Guards against over-eager synthesis.)
+    #[test]
+    fn cicp_only_srgb_source_embeds_no_icc() {
+        let buf = make_rgb8_pixels(32, 32);
+        let meta = Metadata::none().with_cicp(Cicp::SRGB);
+        let out = WebpEncoderConfig::lossless()
+            .job()
+            .with_metadata_policy(meta, zencodec::MetadataPolicy::PreserveExact)
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+
+        let info = crate::ImageInfo::from_webp(out.data()).unwrap();
+        assert!(
+            info.icc_profile.is_none(),
+            "sRGB is the assumed default — no ICC should be synthesized or embedded"
+        );
+    }
+
+    /// An explicit source ICC is embedded verbatim (KeepSource disposition),
+    /// confirming the resolver doesn't disturb the existing ICC path.
+    #[test]
+    fn source_icc_is_kept_verbatim() {
+        let buf = make_rgb8_pixels(32, 32);
+        // Use the bundled Display P3 profile as a stand-in for a real source ICC.
+        let src_icc: Arc<[u8]> = Arc::from(
+            zenpixels_convert::icc_profiles::DISPLAY_P3_V4
+                .to_vec()
+                .into_boxed_slice(),
+        );
+        let meta = Metadata::none().with_icc(src_icc.clone());
+        let out = WebpEncoderConfig::lossless()
+            .job()
+            .with_metadata_policy(meta, zencodec::MetadataPolicy::PreserveExact)
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+
+        let info = crate::ImageInfo::from_webp(out.data()).unwrap();
+        assert_eq!(
+            info.icc_profile.as_deref(),
+            Some(src_icc.as_ref()),
+            "an explicit source ICC must be embedded unchanged"
+        );
+    }
+
+    /// Decode-side authority: a WebP carrying an ICCP chunk must report
+    /// `ColorAuthority::Icc` on its `source_color` (WebP's only color carrier).
+    #[test]
+    fn decode_sets_icc_color_authority() {
+        let buf = make_rgb8_pixels(32, 32);
+        let src_icc: Arc<[u8]> = Arc::from(
+            zenpixels_convert::icc_profiles::DISPLAY_P3_V4
+                .to_vec()
+                .into_boxed_slice(),
+        );
+        let meta = Metadata::none().with_icc(src_icc);
+        let out = WebpEncoderConfig::lossless()
+            .job()
+            .with_metadata_policy(meta, zencodec::MetadataPolicy::PreserveExact)
+            .encoder()
+            .unwrap()
+            .encode(buf.as_slice())
+            .unwrap();
+
+        let native = crate::ImageInfo::from_webp(out.data()).unwrap();
+        let info = to_image_info(&native, None);
+        assert_eq!(
+            info.source_color.color_authority,
+            zencodec::ColorAuthority::Icc,
+            "an ICCP profile must mark ICC as the authoritative color carrier"
+        );
+    }
+
+    /// Animation path under every allocation policy (#63): the composited
+    /// frame buffer (canvas-sized, allocated in the constructor and re-created
+    /// by `try_resize_zeroed` after `render_next_frame_owned` takes it) must
+    /// yield byte-identical frames for `CodecDefault`, `Fallible` and
+    /// `Infallible`.
+    #[test]
+    fn fallible_alloc_animation_decode_matches_default() {
+        use zencodec::ResourceLimits;
+        use zencodec::decode::AnimationFrameDecoder;
+        use zencodec::encode::AnimationFrameEncoder;
+
+        let enc_config = WebpEncoderConfig::lossy().with_quality(90.0);
+        let mut enc = enc_config.job().animation_frame_encoder().unwrap();
+        for _ in 0..3 {
+            enc.push_frame(make_rgba8_pixels(24, 20).as_slice(), 100, None)
+                .unwrap();
+        }
+        let data = enc.finish(None).unwrap().data().to_vec();
+
+        let frames = |pref: Option<zencodec::AllocPreference>| -> Vec<alloc::vec::Vec<u8>> {
+            let job = WebpDecoderConfig::new().job();
+            let job = match pref {
+                Some(p) => {
+                    job.with_limits(ResourceLimits::none().with_prefer_fallible_allocations(p))
+                }
+                None => job,
+            };
+            let mut dec = job
+                .animation_frame_decoder(Cow::Owned(data.clone()), &[])
+                .unwrap();
+            let mut out = Vec::new();
+            // The owned path takes `frame_buf`, so every frame after the
+            // first goes through the fallible re-allocation branch.
+            while let Some(f) = dec.render_next_frame_owned(None).unwrap() {
+                out.push(f.into_buffer().into_vec());
+            }
+            out
+        };
+        let default = frames(None);
+        assert_eq!(default.len(), 3);
+        assert!(default.iter().all(|f| !f.is_empty()));
+        assert_eq!(default, frames(Some(zencodec::AllocPreference::Fallible)));
+        assert_eq!(default, frames(Some(zencodec::AllocPreference::Infallible)));
+    }
+
+    /// `ResourceLimits::prefer_fallible_allocations` must reach the ENCODER's
+    /// `EncoderParams::alloc_pref` through `WebpEncodeJob::build_inner_config`
+    /// (#63). Liveness: this fails (every arm reads `CodecDefault`) if the
+    /// lowering line in `build_inner_config` is removed.
+    #[test]
+    fn encode_job_lowers_alloc_preference_into_encoder_params() {
+        use crate::decoder::alloc_util::AllocPreference as Internal;
+        use zencodec::encode::{EncodeJob, EncoderConfig as _};
+        for (pref, expect) in [
+            (zencodec::AllocPreference::Fallible, Internal::Fallible),
+            (zencodec::AllocPreference::Infallible, Internal::Infallible),
+            (
+                zencodec::AllocPreference::CodecDefault,
+                Internal::CodecDefault,
+            ),
+        ] {
+            for cfg in [WebpEncoderConfig::lossy(), WebpEncoderConfig::lossless()] {
+                let job = cfg
+                    .job()
+                    .with_limits(ResourceLimits::none().with_prefer_fallible_allocations(pref));
+                let inner = job.build_inner_config();
+                assert_eq!(inner.to_params().alloc_pref, expect, "{pref:?}");
+            }
+        }
+        // Unset limits: the encoder's own default.
+        let job = WebpEncoderConfig::lossless().job();
+        assert_eq!(
+            job.build_inner_config().to_params().alloc_pref,
+            Internal::CodecDefault
+        );
+    }
+}

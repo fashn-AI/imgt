@@ -1,0 +1,2231 @@
+//! Image transforms for VP8L encoding.
+//!
+//! Transforms are applied to decorrelate image data before entropy coding.
+
+#![allow(clippy::too_many_arguments)]
+
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use archmage::prelude::*;
+
+use super::encode::{MAX_TRANSFORM_BITS, optimize_sampling};
+
+#[cfg(target_arch = "x86")]
+use archmage::intrinsics::x86 as simd_mem;
+#[cfg(target_arch = "x86_64")]
+use archmage::intrinsics::x86_64 as simd_mem;
+
+use super::types::{argb_alpha, argb_blue, argb_green, argb_red, make_argb, subsample_size};
+use enough::Stop;
+
+/// Rows between `stop` polls in row-wise O(pixels) transform passes.
+const TRANSFORM_STOP_CHECK_ROWS: usize = 64;
+/// Pixels between `stop` polls in flat per-pixel transform loops.
+const TRANSFORM_STOP_CHECK_PIXELS: usize = 1 << 15;
+
+/// Transform type identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TransformType {
+    Predictor = 0,
+    CrossColor = 1,
+    SubtractGreen = 2,
+    ColorIndexing = 3,
+}
+
+/// Predictor modes (14 total, per VP8L spec).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PredictorMode {
+    Black = 0,                 // 0xff000000
+    Left = 1,                  // L
+    Top = 2,                   // T
+    TopRight = 3,              // TR
+    TopLeft = 4,               // TL
+    AvgAvgLtrT = 5,            // Avg(Avg(L,TR), T)
+    AvgLTl = 6,                // Avg(L, TL)
+    AvgLT = 7,                 // Avg(L, T)
+    AvgTlT = 8,                // Avg(TL, T)
+    AvgTTr = 9,                // Avg(T, TR)
+    AvgAvgLTlAvgTTr = 10,      // Avg(Avg(L,TL), Avg(T,TR))
+    Select = 11,               // Select(L, T, TL)
+    ClampAddSubtractFull = 12, // Clamp(L + T - TL)
+    ClampAddSubtractHalf = 13, // Clamp(Avg(L,T) + (Avg(L,T)-TL)/2)
+}
+
+impl PredictorMode {
+    /// Get all predictor modes.
+    pub const fn all() -> [PredictorMode; 14] {
+        [
+            PredictorMode::Black,
+            PredictorMode::Left,
+            PredictorMode::Top,
+            PredictorMode::TopRight,
+            PredictorMode::TopLeft,
+            PredictorMode::AvgAvgLtrT,
+            PredictorMode::AvgLTl,
+            PredictorMode::AvgLT,
+            PredictorMode::AvgTlT,
+            PredictorMode::AvgTTr,
+            PredictorMode::AvgAvgLTlAvgTTr,
+            PredictorMode::Select,
+            PredictorMode::ClampAddSubtractFull,
+            PredictorMode::ClampAddSubtractHalf,
+        ]
+    }
+
+    /// Convert from u8 mode value.
+    pub const fn from_u8(val: u8) -> Self {
+        match val {
+            0 => PredictorMode::Black,
+            1 => PredictorMode::Left,
+            2 => PredictorMode::Top,
+            3 => PredictorMode::TopRight,
+            4 => PredictorMode::TopLeft,
+            5 => PredictorMode::AvgAvgLtrT,
+            6 => PredictorMode::AvgLTl,
+            7 => PredictorMode::AvgLT,
+            8 => PredictorMode::AvgTlT,
+            9 => PredictorMode::AvgTTr,
+            10 => PredictorMode::AvgAvgLTlAvgTTr,
+            11 => PredictorMode::Select,
+            12 => PredictorMode::ClampAddSubtractFull,
+            _ => PredictorMode::ClampAddSubtractHalf,
+        }
+    }
+}
+
+/// Apply subtract green transform in place.
+/// R -= G, B -= G
+///
+/// On x86/x86_64 with SIMD, processes 4 pixels at a time with SSE2,
+/// matching libwebp's SubtractGreenFromBlueAndRed_SSE2.
+pub fn apply_subtract_green(pixels: &mut [u32]) {
+    incant!(
+        apply_subtract_green_impl(pixels),
+        [v1, neon, wasm128, scalar]
+    );
+}
+
+/// Scalar fallback for subtract green.
+fn apply_subtract_green_impl_scalar(_token: ScalarToken, pixels: &mut [u32]) {
+    for pixel in pixels.iter_mut() {
+        let a = argb_alpha(*pixel);
+        let r = argb_red(*pixel);
+        let g = argb_green(*pixel);
+        let b = argb_blue(*pixel);
+
+        let new_r = r.wrapping_sub(g);
+        let new_b = b.wrapping_sub(g);
+
+        *pixel = make_argb(a, new_r, g, new_b);
+    }
+}
+
+/// Entry point for SSE2 subtract green.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn apply_subtract_green_impl_v1(_token: X64V1Token, pixels: &mut [u32]) {
+    apply_subtract_green_sse2(_token, pixels);
+}
+
+/// Generic subtract green using u8x16.
+///
+/// Processes 4 pixels (16 bytes) at a time. Builds a green mask via to_array/from_array,
+/// then performs a single u8x16 wrapping subtraction. The mask has green in the R and B
+/// byte positions and zero elsewhere, so: R -= G, B -= G, A -= 0, G -= 0.
+///
+/// Memory layout per pixel (little-endian u32): b(0) g(1) r(2) a(3).
+/// Green bytes are at indices 1, 5, 9, 13 within each 16-byte chunk.
+#[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+#[inline(always)]
+fn apply_subtract_green_generic<T: magetypes::simd::backends::U8x16Backend>(
+    token: T,
+    pixels: &mut [u32],
+) {
+    use magetypes::simd::generic::u8x16;
+
+    let pixel_bytes: &mut [u8] = bytemuck::cast_slice_mut(pixels);
+    let simd_len = pixel_bytes.len() & !15;
+    let mut i = 0;
+
+    while i < simd_len {
+        let chunk: &mut [u8; 16] = (&mut pixel_bytes[i..i + 16]).try_into().unwrap();
+        let inp = u8x16::load(token, chunk);
+        // Build green mask: [g0 0 g0 0 | g1 0 g1 0 | g2 0 g2 0 | g3 0 g3 0]
+        let arr = inp.to_array();
+        let g0 = arr[1];
+        let g1 = arr[5];
+        let g2 = arr[9];
+        let g3 = arr[13];
+        let mask = u8x16::from_array(
+            token,
+            [g0, 0, g0, 0, g1, 0, g1, 0, g2, 0, g2, 0, g3, 0, g3, 0],
+        );
+        let out = inp - mask;
+        out.store(chunk);
+        i += 16;
+    }
+
+    // Scalar remainder (0-3 pixels)
+    let remaining_pixels = &mut pixels[simd_len / 4..];
+    for pixel in remaining_pixels.iter_mut() {
+        let a = argb_alpha(*pixel);
+        let r = argb_red(*pixel);
+        let g = argb_green(*pixel);
+        let b = argb_blue(*pixel);
+        let new_r = r.wrapping_sub(g);
+        let new_b = b.wrapping_sub(g);
+        *pixel = make_argb(a, new_r, g, new_b);
+    }
+}
+
+/// NEON subtract green: real u8x16 SIMD via generic implementation.
+#[cfg(target_arch = "aarch64")]
+fn apply_subtract_green_impl_neon(token: NeonToken, pixels: &mut [u32]) {
+    apply_subtract_green_generic(token, pixels);
+}
+
+/// WASM128 subtract green: real u8x16 SIMD via generic implementation.
+#[cfg(target_arch = "wasm32")]
+fn apply_subtract_green_impl_wasm128(token: Wasm128Token, pixels: &mut [u32]) {
+    apply_subtract_green_generic(token, pixels);
+}
+
+/// SSE2 subtract green matching libwebp's SubtractGreenFromBlueAndRed_SSE2.
+///
+/// For each pixel (ARGB packed as u32):
+///   R -= G (wrapping), B -= G (wrapping), A and G unchanged.
+/// Processes 4 pixels per SSE2 iteration.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_subtract_green_sse2(_token: X64V1Token, pixels: &mut [u32]) {
+    let len = pixels.len();
+    let simd_len = len & !3; // Round down to multiple of 4
+
+    let mut i = 0;
+    while i < simd_len {
+        // Load 4 pixels: [a0 r0 g0 b0 | a1 r1 g1 b1 | a2 r2 g2 b2 | a3 r3 g3 b3]
+        let chunk = pixels[i..].first_chunk_mut::<4>().unwrap();
+        let inp = simd_mem::_mm_loadu_si128(&*chunk);
+
+        // Shift right 8 bits as 16-bit elements: each u16 pair becomes [0 a | 0 g]
+        let ag = _mm_srli_epi16(inp, 8);
+
+        // Shuffle to replicate green into both positions of each pixel:
+        // Low 64 bits: shufflelo with pattern (2,2,0,0) -> [0 g0 | 0 g0 | 0 g1 | 0 g1]
+        let b = _mm_shufflelo_epi16(ag, 0xA0); // _MM_SHUFFLE(2,2,0,0) = 0b10_10_00_00 = 0xA0
+        // High 64 bits: shufflehi with same pattern
+        let c = _mm_shufflehi_epi16(b, 0xA0); // [0 g0 | 0 g0 | 0 g1 | 0 g1 | 0 g2 | 0 g2 | 0 g3 | 0 g3]
+
+        // Subtract as bytes (wrapping): R -= G, B -= G. A -= 0, G -= G = 0 wait...
+        // Actually: the green bytes in the subtrahend are at the same positions as green
+        // in the original, so G -= G = 0. But we want G unchanged!
+        // In libwebp, the output has G in the green position. Let me re-check...
+        //
+        // libwebp: `out = _mm_sub_epi8(in, C)` where C has green spread to all channel positions.
+        // But C is [0 g 0 g] for each pixel, so:
+        //   A byte: a - 0 = a (unchanged)
+        //   R byte: r - g = new_r
+        //   G byte: g - 0 = g (unchanged) -- wait, position!
+        //
+        // Layout per pixel (big-endian in u32): a(31:24) r(23:16) g(15:8) b(7:0)
+        // In memory (little-endian): b(7:0) g(15:8) r(23:16) a(31:24)
+        //
+        // After srli_epi16 by 8: each pair of bytes shifts right by 8 as u16:
+        //   Memory layout per pixel: [b g r a] -> shifts each u16 right by 8
+        //   u16_lo = (g << 8 | b) >> 8 = g (as byte in low position)
+        //   u16_hi = (a << 8 | r) >> 8 = a (as byte in low position)
+        //   So result per pixel in memory: [g 0 a 0]
+        //
+        // After shuffle (replicate position 0 and 2 of each 64-bit half):
+        //   Position 0 = g, position 2 = g (from first pixel in low 64 bits)
+        //   So C per pixel in memory: [g 0 g 0]
+        //
+        // Subtract: [b g r a] - [g 0 g 0] = [b-g, g-0, r-g, a-0] = [b-g, g, r-g, a]
+        //
+        // That's exactly what we want! G stays as g (unchanged), R and B get green subtracted.
+
+        let out = _mm_sub_epi8(inp, c);
+        simd_mem::_mm_storeu_si128(chunk, out);
+        i += 4;
+    }
+
+    // Handle remaining pixels with scalar
+    while i < len {
+        let pixel = pixels[i];
+        let a = argb_alpha(pixel);
+        let r = argb_red(pixel);
+        let g = argb_green(pixel);
+        let b = argb_blue(pixel);
+        let new_r = r.wrapping_sub(g);
+        let new_b = b.wrapping_sub(g);
+        pixels[i] = make_argb(a, new_r, g, new_b);
+        i += 1;
+    }
+}
+
+/// Predict a pixel using the given mode and neighbors.
+/// Must match the decoder's predictor functions exactly for lossless round-tripping.
+#[inline(always)]
+fn predict(mode: PredictorMode, left: u32, top: u32, top_left: u32, top_right: u32) -> u32 {
+    match mode {
+        PredictorMode::Black => 0xff000000,
+        PredictorMode::Left => left,
+        PredictorMode::Top => top,
+        PredictorMode::TopRight => top_right,
+        PredictorMode::TopLeft => top_left,
+        PredictorMode::AvgAvgLtrT => average2(average2(left, top_right), top),
+        PredictorMode::AvgLTl => average2(left, top_left),
+        PredictorMode::AvgLT => average2(left, top),
+        PredictorMode::AvgTlT => average2(top_left, top),
+        PredictorMode::AvgTTr => average2(top, top_right),
+        PredictorMode::AvgAvgLTlAvgTTr => {
+            average2(average2(left, top_left), average2(top, top_right))
+        }
+        PredictorMode::Select => select(left, top, top_left),
+        PredictorMode::ClampAddSubtractFull => clamp_add_subtract_full(left, top, top_left),
+        PredictorMode::ClampAddSubtractHalf => clamp_add_subtract_half(left, top, top_left),
+    }
+}
+
+/// Average two pixels component-wise.
+#[inline]
+fn average2(a: u32, b: u32) -> u32 {
+    let aa = argb_alpha(a) as u16 + argb_alpha(b) as u16;
+    let ar = argb_red(a) as u16 + argb_red(b) as u16;
+    let ag = argb_green(a) as u16 + argb_green(b) as u16;
+    let ab = argb_blue(a) as u16 + argb_blue(b) as u16;
+    make_argb(
+        (aa / 2) as u8,
+        (ar / 2) as u8,
+        (ag / 2) as u8,
+        (ab / 2) as u8,
+    )
+}
+
+/// Select predictor: choose left or top based on gradient.
+/// Matches decoder's tie-breaking: when distances are equal, returns top.
+#[inline]
+fn select(left: u32, top: u32, top_left: u32) -> u32 {
+    // predict_left = |T - TL|: distance from prediction (L+T-TL) to L
+    let pa = (argb_alpha(top) as i16 - argb_alpha(top_left) as i16).unsigned_abs();
+    let pr = (argb_red(top) as i16 - argb_red(top_left) as i16).unsigned_abs();
+    let pg = (argb_green(top) as i16 - argb_green(top_left) as i16).unsigned_abs();
+    let pb = (argb_blue(top) as i16 - argb_blue(top_left) as i16).unsigned_abs();
+    let predict_left = pa + pr + pg + pb;
+
+    // predict_top = |L - TL|: distance from prediction (L+T-TL) to T
+    let pa = (argb_alpha(left) as i16 - argb_alpha(top_left) as i16).unsigned_abs();
+    let pr = (argb_red(left) as i16 - argb_red(top_left) as i16).unsigned_abs();
+    let pg = (argb_green(left) as i16 - argb_green(top_left) as i16).unsigned_abs();
+    let pb = (argb_blue(left) as i16 - argb_blue(top_left) as i16).unsigned_abs();
+    let predict_top = pa + pr + pg + pb;
+
+    // If prediction is closer to left, choose left; otherwise choose top.
+    // On ties (predict_left == predict_top), choose top (matching decoder).
+    if predict_left < predict_top {
+        left
+    } else {
+        top
+    }
+}
+
+/// Clamp a value to [0, 255].
+#[inline]
+fn clamp(val: i16) -> u8 {
+    val.clamp(0, 255) as u8
+}
+
+/// ClampAddSubtractFull: left + top - top_left, clamped.
+#[inline]
+fn clamp_add_subtract_full(left: u32, top: u32, top_left: u32) -> u32 {
+    let a = clamp(argb_alpha(left) as i16 + argb_alpha(top) as i16 - argb_alpha(top_left) as i16);
+    let r = clamp(argb_red(left) as i16 + argb_red(top) as i16 - argb_red(top_left) as i16);
+    let g = clamp(argb_green(left) as i16 + argb_green(top) as i16 - argb_green(top_left) as i16);
+    let b = clamp(argb_blue(left) as i16 + argb_blue(top) as i16 - argb_blue(top_left) as i16);
+    make_argb(a, r, g, b)
+}
+
+/// ClampAddSubtractHalf: clamp(avg + (avg - top_left) / 2) per component,
+/// where avg = (left + top) / 2.
+#[inline]
+fn clamp_add_subtract_half(left: u32, top: u32, top_left: u32) -> u32 {
+    let avg_a = (argb_alpha(left) as i16 + argb_alpha(top) as i16) / 2;
+    let avg_r = (argb_red(left) as i16 + argb_red(top) as i16) / 2;
+    let avg_g = (argb_green(left) as i16 + argb_green(top) as i16) / 2;
+    let avg_b = (argb_blue(left) as i16 + argb_blue(top) as i16) / 2;
+    let a = (avg_a + (avg_a - argb_alpha(top_left) as i16) / 2).clamp(0, 255) as u8;
+    let r = (avg_r + (avg_r - argb_red(top_left) as i16) / 2).clamp(0, 255) as u8;
+    let g = (avg_g + (avg_g - argb_green(top_left) as i16) / 2).clamp(0, 255) as u8;
+    let b = (avg_b + (avg_b - argb_blue(top_left) as i16) / 2).clamp(0, 255) as u8;
+    make_argb(a, r, g, b)
+}
+
+/// Compute residual (pixel - prediction) with wrapping.
+#[inline(always)]
+fn residual(pixel: u32, pred: u32) -> u32 {
+    let a = argb_alpha(pixel).wrapping_sub(argb_alpha(pred));
+    let r = argb_red(pixel).wrapping_sub(argb_red(pred));
+    let g = argb_green(pixel).wrapping_sub(argb_green(pred));
+    let b = argb_blue(pixel).wrapping_sub(argb_blue(pred));
+    make_argb(a, r, g, b)
+}
+
+/// Apply predictor transform.
+/// Returns the predictor mode data (subsampled image of modes) and the tile
+/// bits it is sampled at.
+///
+/// Border handling matches the VP8L decoder:
+/// - (0,0): Black predictor (0xff000000)
+/// - Row 0, x>0: Left predictor (fixed, regardless of mode)
+/// - Col 0, y>0: Top predictor (fixed, regardless of mode)
+/// - Interior (y>0, x>0): mode from predictor_data
+///
+/// Like libwebp's VP8LResidualImage, every sampling in `[min_bits, max_bits]`
+/// is tried (methods above 4 pass min_bits < max_bits) and the winner is the
+/// level with the lowest mode-usage entropy plus per-plane entropy of the
+/// accumulated best-mode residuals; the winning mode image is then coarsened
+/// via `optimize_sampling` when repetitive. libwebp shares the per-pixel
+/// residual work across levels through Z-order super-tile histogram
+/// aggregation; we rerun the per-tile selection per level instead — the
+/// per-tile scoring work, which dominates, is the same either way.
+///
+/// When `max_quantization <= 1` (exact lossless), pixels are processed in
+/// reverse order so neighbors remain as original values.
+///
+/// When `max_quantization > 1` (near-lossless), pixels are processed in
+/// forward order. Each pixel's residual is quantized, and the source pixel
+/// is updated with the reconstructed value (predict + quantized_residual)
+/// so subsequent predictions use the reconstructed data. This matches
+/// libwebp's CopyImageWithPrediction / GetResidual flow.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_predictor_transform(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    min_bits: u8,
+    max_bits: u8,
+    max_quantization: u32,
+    used_subtract_green: bool,
+    low_effort: bool,
+) -> (Vec<u32>, u8) {
+    apply_predictor_transform_with_stop(
+        pixels,
+        width,
+        height,
+        min_bits,
+        max_bits,
+        max_quantization,
+        used_subtract_green,
+        low_effort,
+        &enough::Unstoppable,
+    )
+    .expect("Unstoppable never stops")
+}
+
+pub(crate) fn apply_predictor_transform_with_stop(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    min_bits: u8,
+    max_bits: u8,
+    max_quantization: u32,
+    used_subtract_green: bool,
+    low_effort: bool,
+    stop: &dyn enough::Stop,
+) -> Result<(Vec<u32>, u8), enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    // Method 0: no per-tile search — every tile uses Select (libwebp's
+    // kPredLowEffort = 11 in VP8LResidualImage), at the coarsest sampling.
+    if low_effort {
+        let blocks_x = subsample_size(width as u32, max_bits) as usize;
+        let blocks_y = subsample_size(height as u32, max_bits) as usize;
+        let mut predictor_data = vec![0u32; blocks_x * blocks_y];
+        predictor_data.fill(0xff000000 | ((PredictorMode::Select as u32) << 8));
+        if max_quantization == 1 {
+            // Exact-lossless fast pass: fixed predictor, no per-pixel tile
+            // lookup or mode dispatch (the generic pass below is ~15x more
+            // instructions; libwebp has PredictorSub11_SSE2 for this).
+            apply_select_residuals(pixels, width, height, &stop)?;
+            return Ok((predictor_data, max_bits));
+        }
+        // Near-lossless + m0: fall through to the generic (quantizing) pass.
+        let data = finish_predictor_transform(
+            pixels,
+            width,
+            height,
+            max_bits,
+            max_quantization,
+            used_subtract_green,
+            predictor_data,
+            blocks_x,
+            &stop,
+        )?;
+        return Ok((data, max_bits));
+    }
+
+    let min_bits = min_bits.min(max_bits);
+    let mut best: Option<(Vec<u32>, u8, u64)> = None;
+    for bits in min_bits..=max_bits {
+        stop.check()?;
+        let (modes, accumulated, usage) =
+            select_predictor_modes(pixels, width, height, bits, &stop)?;
+        if min_bits == max_bits {
+            best = Some((modes, bits, 0));
+            break;
+        }
+        let mut cost = shannon_entropy(&usage);
+        for plane in accumulated.iter() {
+            cost += shannon_entropy(plane);
+        }
+        if best.as_ref().is_none_or(|b| cost < b.2) {
+            best = Some((modes, bits, cost));
+        }
+    }
+    let (mut predictor_data, bits, _) = best.expect("bits range is non-empty");
+
+    // Coarsen the mode image when it is repetitive (VP8LOptimizeSampling).
+    let final_bits =
+        optimize_sampling(&mut predictor_data, width, height, bits, MAX_TRANSFORM_BITS);
+    let blocks_x = subsample_size(width as u32, final_bits) as usize;
+    let blocks_y = subsample_size(height as u32, final_bits) as usize;
+    predictor_data.truncate(blocks_x * blocks_y);
+
+    let data = finish_predictor_transform(
+        pixels,
+        width,
+        height,
+        final_bits,
+        max_quantization,
+        used_subtract_green,
+        predictor_data,
+        blocks_x,
+        &stop,
+    )?;
+    Ok((data, final_bits))
+}
+
+/// One full greedy per-tile predictor-mode selection pass at a given tile
+/// size. Returns the mode image, the accumulated best-mode residual
+/// histograms, and the per-mode usage counts — the inputs libwebp's
+/// GetBestPredictorsAndSubSampling uses to cost a sampling level.
+/// Per-tile mode selection result: mode image, accumulated residual
+/// histograms, per-mode usage counts.
+type ModeSelection = (Vec<u32>, Box<[[u32; 256]; 4]>, [u32; 14]);
+
+fn select_predictor_modes(
+    pixels: &[u32],
+    width: usize,
+    height: usize,
+    size_bits: u8,
+    stop: &dyn enough::Stop,
+) -> Result<ModeSelection, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    let block_size = 1usize << size_bits;
+    let blocks_x = subsample_size(width as u32, size_bits) as usize;
+    let blocks_y = subsample_size(height as u32, size_bits) as usize;
+
+    let mut predictor_data = vec![0u32; blocks_x * blocks_y];
+    // Accumulated histogram tracks the global residual distribution of the
+    // winning modes across all tiles processed so far.
+    let mut accumulated: Box<[[u32; 256]; 4]> = Box::new([[0u32; 256]; 4]);
+    let mut usage = [0u32; 14];
+    let mut tile_histo: Box<[[u32; 256]; 4]> = Box::new([[0u32; 256]; 4]);
+    let mut scratch = Vec::with_capacity(block_size * block_size);
+    let mut best_scratch = Vec::with_capacity(block_size * block_size);
+
+    for by in 0..blocks_y {
+        // One tile row covers >= 2^size_bits image rows — a poll per row of
+        // tiles keeps the gap bounded by a fraction of a millisecond.
+        stop.check()?;
+        for bx in 0..blocks_x {
+            // Get left and above modes for spatial coherence bias.
+            // 0xff means no neighbor (edge tiles), ensuring no bias match.
+            let left_mode = if bx > 0 {
+                argb_green(predictor_data[by * blocks_x + bx - 1])
+            } else {
+                0xff
+            };
+            let above_mode = if by > 0 {
+                argb_green(predictor_data[(by - 1) * blocks_x + bx])
+            } else {
+                0xff
+            };
+
+            let best_mode = choose_best_predictor(
+                pixels,
+                width,
+                height,
+                bx,
+                by,
+                block_size,
+                &mut accumulated,
+                left_mode,
+                above_mode,
+                &mut tile_histo,
+                &mut scratch,
+                &mut best_scratch,
+            );
+            usage[best_mode as usize] += 1;
+            // Store mode in green channel (as per spec), alpha=0xff (matching libwebp's ARGB_BLACK | mode<<8)
+            predictor_data[by * blocks_x + bx] = 0xff000000 | ((best_mode as u32) << 8);
+        }
+    }
+
+    Ok((predictor_data, accumulated, usage))
+}
+
+/// Shannon entropy in fixed point, matching libwebp's VP8LShannonEntropy:
+/// SLog2(sum) - Σ SLog2(x_i).
+fn shannon_entropy(xs: &[u32]) -> u64 {
+    let mut sum = 0u32;
+    let mut ret = 0u64;
+    for &x in xs {
+        if x != 0 {
+            sum += x;
+            ret += fast_slog2(x);
+        }
+    }
+    fast_slog2(sum).saturating_sub(ret)
+}
+
+/// Exact-lossless residual pass with every interior pixel predicted by
+/// Select (mode 11): row 0 uses Left, column 0 uses Top, (0,0) uses opaque
+/// black — the spec's border rules, which the decoder applies regardless of
+/// the signaled tile mode. Select reads ORIGINAL neighbors only, so the pass
+/// streams forward with a one-row history buffer and no serial dependency.
+fn apply_select_residuals(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let mut prev_row = vec![0u32; width];
+    let mut cur_row = vec![0u32; width];
+
+    // Row 0: (0,0) = opaque black, the rest = Left predictor.
+    {
+        let row = &mut pixels[..width];
+        cur_row.copy_from_slice(row);
+        row[0] = residual(cur_row[0], 0xff000000);
+        for (dst, w) in row[1..].iter_mut().zip(cur_row.windows(2)) {
+            *dst = residual(w[1], w[0]);
+        }
+        core::mem::swap(&mut prev_row, &mut cur_row);
+    }
+
+    for y in 1..height {
+        if y & (TRANSFORM_STOP_CHECK_ROWS - 1) == 0 {
+            stop.check()?;
+        }
+        let row = &mut pixels[y * width..(y + 1) * width];
+        cur_row.copy_from_slice(row);
+        // Column 0: Top predictor.
+        row[0] = residual(cur_row[0], prev_row[0]);
+        // Interior: Select(original left, original top, original top-left).
+        for (dst, (cw, pw)) in row[1..]
+            .iter_mut()
+            .zip(cur_row.windows(2).zip(prev_row.windows(2)))
+        {
+            let pred = select(cw[0], pw[1], pw[0]);
+            *dst = residual(cw[1], pred);
+        }
+        core::mem::swap(&mut prev_row, &mut cur_row);
+    }
+
+    Ok(())
+}
+
+/// Compute and store predictor residuals for the chosen per-tile modes.
+/// Shared by the searched (m1+) and fixed-predictor (m0 low-effort) paths.
+#[allow(clippy::too_many_arguments)]
+fn finish_predictor_transform(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    size_bits: u8,
+    max_quantization: u32,
+    used_subtract_green: bool,
+    predictor_data: Vec<u32>,
+    blocks_x: usize,
+    stop: &dyn enough::Stop,
+) -> Result<Vec<u32>, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    if max_quantization > 1 {
+        // Forward-order processing with near-lossless residual quantization.
+        // Precompute max_diffs for all interior rows from ORIGINAL pixel data
+        // before any modifications.
+        let mut all_max_diffs = vec![0u8; width * height];
+        for y in 1..height.saturating_sub(1) {
+            if y & (TRANSFORM_STOP_CHECK_ROWS - 1) == 0 {
+                stop.check()?;
+            }
+            super::near_lossless::max_diffs_for_row(
+                pixels,
+                width,
+                y,
+                &mut all_max_diffs[y * width..],
+                used_subtract_green,
+            );
+        }
+
+        // Process forward, storing residuals separately since we update source
+        // pixels with reconstructed values for subsequent predictions.
+        let mut residuals = vec![0u32; width * height];
+
+        for y in 0..height {
+            if y & (TRANSFORM_STOP_CHECK_ROWS - 1) == 0 {
+                stop.check()?;
+            }
+            for x in 0..width {
+                let idx = y * width + x;
+                let pred = if y == 0 && x == 0 {
+                    0xff000000
+                } else if y == 0 {
+                    // First row: Left predictor (uses possibly-reconstructed left)
+                    pixels[x - 1]
+                } else if x == 0 {
+                    // First column: Top predictor (uses possibly-reconstructed top)
+                    pixels[(y - 1) * width]
+                } else {
+                    let bx = x >> size_bits;
+                    let by = y >> size_bits;
+                    let mode =
+                        PredictorMode::from_u8(argb_green(predictor_data[by * blocks_x + bx]));
+                    let left = pixels[y * width + x - 1];
+                    let top = pixels[(y - 1) * width + x];
+                    let top_left = pixels[(y - 1) * width + x - 1];
+                    let top_right = if x + 1 < width {
+                        pixels[(y - 1) * width + x + 1]
+                    } else {
+                        pixels[y * width]
+                    };
+                    predict(mode, left, top, top_left, top_right)
+                };
+
+                // Matching libwebp's GetResidual conditions for skipping quantization:
+                // border pixels, mode 0 (Black), first/last row, first/last column
+                let mode_val = if y > 0 && x > 0 {
+                    argb_green(predictor_data[(y >> size_bits) * blocks_x + (x >> size_bits)])
+                } else {
+                    0 // border uses fixed predictors, treat as mode 0
+                };
+
+                if mode_val == 0 || y == 0 || y == height - 1 || x == 0 || x == width - 1 {
+                    // Exact residual for borders and mode 0
+                    residuals[idx] = residual(pixels[idx], pred);
+                    // No source update needed (reconstructed == original for exact residual)
+                } else {
+                    let max_diff = all_max_diffs[idx];
+                    let (res, recon) = super::near_lossless::near_lossless_residual(
+                        pixels[idx],
+                        pred,
+                        max_quantization,
+                        max_diff,
+                        used_subtract_green,
+                    );
+                    residuals[idx] = res;
+                    // Update source pixel with reconstructed value for subsequent predictions
+                    pixels[idx] = recon;
+                }
+            }
+        }
+
+        // Copy residuals to output
+        pixels.copy_from_slice(&residuals);
+    } else {
+        // Exact lossless: reverse-order processing (neighbors stay original).
+        for y in (0..height).rev() {
+            if y & (TRANSFORM_STOP_CHECK_ROWS - 1) == 0 {
+                stop.check()?;
+            }
+            for x in (0..width).rev() {
+                let pred = if y == 0 && x == 0 {
+                    // Top-left corner: Black
+                    0xff000000
+                } else if y == 0 {
+                    // First row: Left predictor
+                    pixels[x - 1]
+                } else if x == 0 {
+                    // First column: Top predictor
+                    pixels[(y - 1) * width]
+                } else {
+                    // Interior: use block's predictor mode
+                    let bx = x >> size_bits;
+                    let by = y >> size_bits;
+                    let mode =
+                        PredictorMode::from_u8(argb_green(predictor_data[by * blocks_x + bx]));
+                    let left = pixels[y * width + x - 1];
+                    let top = pixels[(y - 1) * width + x];
+                    let top_left = pixels[(y - 1) * width + x - 1];
+                    // At right edge (x == width-1), top_right wraps to the first
+                    // pixel of the current row. This matches the decoder's memory
+                    // layout where image_data[i - width*4 + 4] wraps to row y's start.
+                    let top_right = if x + 1 < width {
+                        pixels[(y - 1) * width + x + 1]
+                    } else {
+                        pixels[y * width]
+                    };
+                    predict(mode, left, top, top_left, top_right)
+                };
+                pixels[y * width + x] = residual(pixels[y * width + x], pred);
+            }
+        }
+    }
+
+    Ok(predictor_data)
+}
+
+/// Choose the best predictor mode for a block using entropy-based scoring.
+/// Matches libwebp's GetBestPredictorForTile + PredictionCostSpatialHistogram.
+///
+/// Scores each mode by building per-channel residual histograms and evaluating:
+/// 1. Combined Shannon entropy (tile + accumulated global distribution)
+/// 2. Prediction cost bias (favoring residuals near 0)
+/// 3. Spatial coherence bonus (favoring same mode as left/above neighbors)
+///
+/// Updates `accumulated` with the best mode's histogram for subsequent tiles.
+///
+/// `tile_histo` is a persistent scoring buffer: after scoring each mode, only
+/// the entries actually touched (tracked via `scratch`, the mode's residual
+/// list) are re-zeroed. Fine samplings (methods above 4 search down to 4x4
+/// tiles) would otherwise spend more time clearing 4x256 histograms than
+/// computing residuals.
+#[allow(clippy::too_many_arguments)]
+fn choose_best_predictor(
+    pixels: &[u32],
+    width: usize,
+    height: usize,
+    bx: usize,
+    by: usize,
+    block_size: usize,
+    accumulated: &mut [[u32; 256]; 4],
+    left_mode: u8,
+    above_mode: u8,
+    tile_histo: &mut [[u32; 256]; 4],
+    scratch: &mut Vec<u32>,
+    best_scratch: &mut Vec<u32>,
+) -> PredictorMode {
+    let x_start = bx * block_size;
+    let y_start = by * block_size;
+    let x_end = (x_start + block_size).min(width);
+    let y_end = (y_start + block_size).min(height);
+
+    let mut best_mode = PredictorMode::Black;
+    let mut best_cost = i64::MAX;
+
+    for mode in PredictorMode::all() {
+        scratch.clear();
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                let pixel = pixels[y * width + x];
+                // Border pixels use the decoder's fixed predictors regardless
+                // of mode; libwebp's GetResidual still feeds their residuals
+                // into every mode's histogram (and thus the accumulated
+                // context), so we do the same.
+                let pred = if y == 0 && x == 0 {
+                    0xff000000
+                } else if y == 0 {
+                    pixels[x - 1]
+                } else if x == 0 {
+                    pixels[(y - 1) * width]
+                } else {
+                    let left = pixels[y * width + x - 1];
+                    let top = pixels[(y - 1) * width + x];
+                    let top_left = pixels[(y - 1) * width + x - 1];
+                    // At right edge, top_right wraps to first pixel of current
+                    // row (matching decoder's memory layout behavior).
+                    let top_right = if x + 1 < width {
+                        pixels[(y - 1) * width + x + 1]
+                    } else {
+                        pixels[y * width]
+                    };
+                    predict(mode, left, top, top_left, top_right)
+                };
+                let res = residual(pixel, pred);
+                update_histo(tile_histo, res);
+                scratch.push(res);
+            }
+        }
+
+        let cost = prediction_cost_spatial_histogram(
+            accumulated,
+            tile_histo,
+            mode as u8,
+            left_mode,
+            above_mode,
+        );
+
+        // Re-zero exactly the touched entries before the next mode.
+        for &res in scratch.iter() {
+            tile_histo[0][(res >> 24) as usize] = 0;
+            tile_histo[1][((res >> 16) & 0xff) as usize] = 0;
+            tile_histo[2][((res >> 8) & 0xff) as usize] = 0;
+            tile_histo[3][(res & 0xff) as usize] = 0;
+        }
+
+        if cost < best_cost {
+            best_cost = cost;
+            best_mode = mode;
+            core::mem::swap(scratch, best_scratch);
+        }
+    }
+
+    // Update accumulated histogram with the best mode's residuals.
+    for &res in best_scratch.iter() {
+        accumulated[0][(res >> 24) as usize] += 1;
+        accumulated[1][((res >> 16) & 0xff) as usize] += 1;
+        accumulated[2][((res >> 8) & 0xff) as usize] += 1;
+        accumulated[3][(res & 0xff) as usize] += 1;
+    }
+
+    best_mode
+}
+
+/// Cross-color transform multipliers for a tile.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CrossColorMultipliers {
+    pub green_to_red: u8,
+    pub green_to_blue: u8,
+    pub red_to_blue: u8,
+}
+
+/// Fixed-point precision for entropy calculations (matching libwebp).
+const LOG_2_PRECISION_BITS: u32 = 23;
+
+/// Spatial predictor bias: reward tiles that keep the same mode as neighbors.
+const SPATIAL_PREDICTOR_BIAS: i64 = 15i64 << LOG_2_PRECISION_BITS;
+
+/// ColorTransformDelta: 3.5-bit fixed point multiply (matching libwebp).
+#[inline]
+fn color_transform_delta(color_pred: i8, color: i8) -> i32 {
+    (color_pred as i32 * color as i32) >> 5
+}
+
+/// Compute v * log2(v) in fixed-point (matching libwebp's VP8LFastSLog2).
+/// Delegates to the entropy module's optimized lookup-table version.
+#[inline]
+fn fast_slog2(v: u32) -> u64 {
+    super::entropy::fast_slog2_public(v)
+}
+
+/// Combined Shannon entropy of distributions X and X+Y (matching libwebp).
+/// Returns SLog2(sumX) + SLog2(sumXY) - Σ(SLog2(x_i) + SLog2(x_i+y_i))
+///
+/// On x86/x86_64 with SIMD enabled, uses SSE2 bitmask scanning to skip zero
+/// entries in bulk (16 at a time via pack+movemask), matching libwebp's
+/// CombinedShannonEntropy_SSE2.
+fn combined_shannon_entropy(x: &[u32; 256], y: &[u32; 256]) -> u64 {
+    incant!(
+        combined_shannon_entropy_impl(x, y),
+        [v1, neon, wasm128, scalar]
+    )
+}
+
+/// Entry point for SSE2 combined Shannon entropy (adds #[target_feature]).
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn combined_shannon_entropy_impl_v1(_token: X64V1Token, x: &[u32; 256], y: &[u32; 256]) -> u64 {
+    combined_shannon_entropy_sse2(_token, x, y)
+}
+
+/// Generic SIMD combined Shannon entropy using magetypes u32x4 zero-detection.
+///
+/// Loads 16 u32 values at a time (4 × u32x4), creates a bitmask of nonzero
+/// positions via `simd_ne` + `bitmask()`, then iterates only nonzero entries.
+/// Same algorithm as the SSE2 path but using portable magetypes ops.
+/// On scalar, u32x4 degrades to 4 individual comparisons — still correct
+/// and better than the naive per-element loop for sparse histograms.
+#[magetypes(neon, wasm128, scalar)]
+#[inline(always)]
+fn combined_shannon_entropy_impl(token: Token, x: &[u32; 256], y: &[u32; 256]) -> u64 {
+    use magetypes::simd::generic::u32x4 as GenericU32x4;
+    #[allow(non_camel_case_types)]
+    type u32x4 = GenericU32x4<Token>;
+
+    let mut retval: u64 = 0;
+    let mut sum_x: u32 = 0;
+    let mut sum_xy: u32 = 0;
+    let zero = u32x4::zero(token);
+
+    let mut i = 0usize;
+    while i < 256 {
+        // Load 16 u32 values from X and Y (4 × u32x4 each)
+        let x0 = u32x4::from_array(token, *x[i..].first_chunk::<4>().unwrap());
+        let x1 = u32x4::from_array(token, *x[i + 4..].first_chunk::<4>().unwrap());
+        let x2 = u32x4::from_array(token, *x[i + 8..].first_chunk::<4>().unwrap());
+        let x3 = u32x4::from_array(token, *x[i + 12..].first_chunk::<4>().unwrap());
+
+        let y0 = u32x4::from_array(token, *y[i..].first_chunk::<4>().unwrap());
+        let y1 = u32x4::from_array(token, *y[i + 4..].first_chunk::<4>().unwrap());
+        let y2 = u32x4::from_array(token, *y[i + 8..].first_chunk::<4>().unwrap());
+        let y3 = u32x4::from_array(token, *y[i + 12..].first_chunk::<4>().unwrap());
+
+        // Build 16-bit bitmask: bit j set if x[i+j] != 0
+        let mx = (x0.simd_ne(zero).bitmask() & 0xF)
+            | ((x1.simd_ne(zero).bitmask() & 0xF) << 4)
+            | ((x2.simd_ne(zero).bitmask() & 0xF) << 8)
+            | ((x3.simd_ne(zero).bitmask() & 0xF) << 12);
+
+        // my = positions where EITHER x or y is nonzero
+        let mut my = mx
+            | (y0.simd_ne(zero).bitmask() & 0xF)
+            | ((y1.simd_ne(zero).bitmask() & 0xF) << 4)
+            | ((y2.simd_ne(zero).bitmask() & 0xF) << 8)
+            | ((y3.simd_ne(zero).bitmask() & 0xF) << 12);
+
+        // Iterate only nonzero positions using bit scanning
+        while my != 0 {
+            let j = my.trailing_zeros() as usize;
+
+            if (mx >> j) & 1 != 0 {
+                let xv = x[i + j];
+                sum_x += xv;
+                retval += fast_slog2(xv);
+            }
+
+            let xy = x[i + j] + y[i + j];
+            sum_xy += xy;
+            retval += fast_slog2(xy);
+
+            my &= my - 1; // Clear lowest set bit
+        }
+
+        i += 16;
+    }
+
+    fast_slog2(sum_x) + fast_slog2(sum_xy) - retval
+}
+
+/// SSE2 combined Shannon entropy matching libwebp's CombinedShannonEntropy_SSE2.
+///
+/// Loads 16 u32 values at a time, packs to bytes via signed saturation
+/// (i32->i16->i8), then uses cmpgt+movemask to create a bitmask of nonzero
+/// positions. Iterates only nonzero entries using trailing_zeros().
+/// For sparse histograms (90%+ zeros), this skips most entries entirely.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn combined_shannon_entropy_sse2(_token: X64V1Token, x: &[u32; 256], y: &[u32; 256]) -> u64 {
+    let mut retval: u64 = 0;
+    let mut sum_x: u32 = 0;
+    let mut sum_xy: u32 = 0;
+    let zero = _mm_setzero_si128();
+
+    let mut i = 0usize;
+    while i < 256 {
+        // Load 16 u32 values from X (4 SSE2 registers)
+        let x0 = simd_mem::_mm_loadu_si128(x[i..].first_chunk::<4>().unwrap());
+        let x1 = simd_mem::_mm_loadu_si128(x[i + 4..].first_chunk::<4>().unwrap());
+        let x2 = simd_mem::_mm_loadu_si128(x[i + 8..].first_chunk::<4>().unwrap());
+        let x3 = simd_mem::_mm_loadu_si128(x[i + 12..].first_chunk::<4>().unwrap());
+
+        // Load 16 u32 values from Y
+        let y0 = simd_mem::_mm_loadu_si128(y[i..].first_chunk::<4>().unwrap());
+        let y1 = simd_mem::_mm_loadu_si128(y[i + 4..].first_chunk::<4>().unwrap());
+        let y2 = simd_mem::_mm_loadu_si128(y[i + 8..].first_chunk::<4>().unwrap());
+        let y3 = simd_mem::_mm_loadu_si128(y[i + 12..].first_chunk::<4>().unwrap());
+
+        // Pack 16 x i32 -> 16 x i8 via signed saturation (i32->i16->i8).
+        // Any nonzero u32 histogram count packs to nonzero i8 (saturates to [1,127]).
+        // Zero stays zero.
+        let x4 = _mm_packs_epi16(_mm_packs_epi32(x0, x1), _mm_packs_epi32(x2, x3));
+        let y4 = _mm_packs_epi16(_mm_packs_epi32(y0, y1), _mm_packs_epi32(y2, y3));
+
+        // Create bitmask: bit j is set if X[i+j] > 0 (signed comparison)
+        let mx = _mm_movemask_epi8(_mm_cmpgt_epi8(x4, zero)) as u32;
+        // my = positions where EITHER X or Y is nonzero
+        let mut my = (_mm_movemask_epi8(_mm_cmpgt_epi8(y4, zero)) as u32) | mx;
+
+        // Iterate only nonzero positions using bit scanning
+        while my != 0 {
+            let j = my.trailing_zeros() as usize;
+
+            // If X[i+j] is nonzero, accumulate its contribution
+            if (mx >> j) & 1 != 0 {
+                let xv = x[i + j];
+                sum_x += xv;
+                retval += fast_slog2(xv);
+            }
+
+            // X[i+j] + Y[i+j] -- when mx bit is clear, X[i+j] == 0,
+            // so this reduces to Y[i+j]
+            let xy = x[i + j] + y[i + j];
+            sum_xy += xy;
+            retval += fast_slog2(xy);
+
+            my &= my - 1; // Clear lowest set bit
+        }
+
+        i += 16;
+    }
+
+    fast_slog2(sum_x) + fast_slog2(sum_xy) - retval
+}
+
+/// Rounding division matching libwebp's DivRound.
+#[inline]
+fn div_round(a: i64, b: i64) -> i64 {
+    if (a < 0) == (b < 0) {
+        (a + b / 2) / b
+    } else {
+        (a - b / 2) / b
+    }
+}
+
+/// Prediction cost bias favoring values near 0 (matching libwebp).
+fn prediction_cost_bias(counts: &[u32; 256], weight_0: u64, mut exp_val: u64) -> i64 {
+    let significant_symbols = 256 >> 4; // 16
+    let exp_decay_factor: u64 = 6; // scaling factor 1/10
+    let mut bits = (weight_0 * counts[0] as u64) << LOG_2_PRECISION_BITS;
+    exp_val <<= LOG_2_PRECISION_BITS;
+    for i in 1..significant_symbols {
+        bits += div_round(
+            (exp_val * (counts[i] as u64 + counts[256 - i] as u64)) as i64,
+            100,
+        ) as u64;
+        exp_val = div_round((exp_decay_factor * exp_val) as i64, 10) as u64;
+    }
+    -div_round(bits as i64, 10)
+}
+
+/// Update a 4-channel residual histogram with an ARGB residual value.
+/// Layout: [alpha_0..255, red_0..255, green_0..255, blue_0..255].
+#[inline(always)]
+fn update_histo(histo: &mut [[u32; 256]; 4], argb: u32) {
+    histo[0][(argb >> 24) as usize] += 1;
+    histo[1][((argb >> 16) & 0xff) as usize] += 1;
+    histo[2][((argb >> 8) & 0xff) as usize] += 1;
+    histo[3][(argb & 0xff) as usize] += 1;
+}
+
+/// Score a predictor mode using entropy + bias + spatial coherence.
+/// Matching libwebp's PredictionCostSpatialHistogram.
+fn prediction_cost_spatial_histogram(
+    accumulated: &[[u32; 256]; 4],
+    tile: &[[u32; 256]; 4],
+    mode: u8,
+    left_mode: u8,
+    above_mode: u8,
+) -> i64 {
+    let mut retval: i64 = 0;
+    for i in 0..4 {
+        const K_EXP_VALUE: u64 = 94;
+        retval += prediction_cost_bias(&tile[i], 1, K_EXP_VALUE);
+        retval += combined_shannon_entropy(&tile[i], &accumulated[i]) as i64;
+    }
+    if mode == left_mode {
+        retval -= SPATIAL_PREDICTOR_BIAS;
+    }
+    if mode == above_mode {
+        retval -= SPATIAL_PREDICTOR_BIAS;
+    }
+    retval
+}
+
+/// Cross-color prediction cost (matching libwebp's PredictionCostCrossColor).
+fn prediction_cost_cross_color(accumulated: &[u32; 256], counts: &[u32; 256]) -> i64 {
+    const K_EXP_VALUE: u64 = 240;
+    combined_shannon_entropy(counts, accumulated) as i64
+        + prediction_cost_bias(counts, 3, K_EXP_VALUE)
+}
+
+/// Collect histogram of transformed red values for a tile.
+fn collect_color_red_transforms(
+    argb: &[u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    green_to_red: u8,
+    histo: &mut [u32; 256],
+) {
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            let pixel = argb[y * width + x];
+            let green = (pixel >> 8) as u8 as i8;
+            let mut new_red = (pixel >> 16) as i32;
+            new_red -= color_transform_delta(green_to_red as i8, green);
+            histo[(new_red & 0xff) as usize] += 1;
+        }
+    }
+}
+
+/// Collect histogram of transformed blue values for a tile.
+fn collect_color_blue_transforms(
+    argb: &[u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    green_to_blue: u8,
+    red_to_blue: u8,
+    histo: &mut [u32; 256],
+) {
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            let pixel = argb[y * width + x];
+            let green = (pixel >> 8) as u8 as i8;
+            let red = (pixel >> 16) as u8 as i8;
+            let mut new_blue = pixel as i32 & 0xff;
+            new_blue -= color_transform_delta(green_to_blue as i8, green);
+            new_blue -= color_transform_delta(red_to_blue as i8, red);
+            histo[(new_blue & 0xff) as usize] += 1;
+        }
+    }
+}
+
+/// Cost of a green_to_red transform on a tile (matching libwebp).
+fn get_prediction_cost_red(
+    argb: &[u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    prev_x: &CrossColorMultipliers,
+    prev_y: &CrossColorMultipliers,
+    green_to_red: u8,
+    accumulated_red_histo: &[u32; 256],
+) -> i64 {
+    let mut histo = [0u32; 256];
+    collect_color_red_transforms(
+        argb,
+        width,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        green_to_red,
+        &mut histo,
+    );
+    let mut cur_diff = prediction_cost_cross_color(accumulated_red_histo, &histo);
+    if green_to_red == prev_x.green_to_red {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    if green_to_red == prev_y.green_to_red {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    if green_to_red == 0 {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    cur_diff
+}
+
+/// Cost of green_to_blue + red_to_blue transform on a tile (matching libwebp).
+fn get_prediction_cost_blue(
+    argb: &[u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    prev_x: &CrossColorMultipliers,
+    prev_y: &CrossColorMultipliers,
+    green_to_blue: u8,
+    red_to_blue: u8,
+    accumulated_blue_histo: &[u32; 256],
+) -> i64 {
+    let mut histo = [0u32; 256];
+    collect_color_blue_transforms(
+        argb,
+        width,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        green_to_blue,
+        red_to_blue,
+        &mut histo,
+    );
+    let mut cur_diff = prediction_cost_cross_color(accumulated_blue_histo, &histo);
+    if green_to_blue == prev_x.green_to_blue {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    if green_to_blue == prev_y.green_to_blue {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    if red_to_blue == prev_x.red_to_blue {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    if red_to_blue == prev_y.red_to_blue {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    if green_to_blue == 0 {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    if red_to_blue == 0 {
+        cur_diff -= 3i64 << LOG_2_PRECISION_BITS;
+    }
+    cur_diff
+}
+
+/// Coarse-to-fine 1D search for best green_to_red (matching libwebp).
+fn get_best_green_to_red(
+    argb: &[u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    prev_x: &CrossColorMultipliers,
+    prev_y: &CrossColorMultipliers,
+    quality: u8,
+    accumulated_red_histo: &[u32; 256],
+) -> u8 {
+    let max_iters = 4 + ((7 * quality as i32) >> 8); // range [4..6]
+    let mut green_to_red_best: i32 = 0;
+    let mut best_diff = get_prediction_cost_red(
+        argb,
+        width,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        prev_x,
+        prev_y,
+        0,
+        accumulated_red_histo,
+    );
+
+    for iter in 0..max_iters {
+        let delta: i32 = 32 >> iter;
+        for &offset in &[-delta, delta] {
+            let green_to_red_cur = offset + green_to_red_best;
+            let cur_diff = get_prediction_cost_red(
+                argb,
+                width,
+                start_x,
+                start_y,
+                end_x,
+                end_y,
+                prev_x,
+                prev_y,
+                green_to_red_cur as u8,
+                accumulated_red_histo,
+            );
+            if cur_diff < best_diff {
+                best_diff = cur_diff;
+                green_to_red_best = green_to_red_cur;
+            }
+        }
+    }
+    (green_to_red_best & 0xff) as u8
+}
+
+/// Coarse-to-fine 2D 8-axis search for best green_to_blue + red_to_blue (matching libwebp).
+fn get_best_green_red_to_blue(
+    argb: &[u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    prev_x: &CrossColorMultipliers,
+    prev_y: &CrossColorMultipliers,
+    quality: u8,
+    accumulated_blue_histo: &[u32; 256],
+) -> (u8, u8) {
+    const OFFSETS: [[i8; 2]; 8] = [
+        [0, -1],
+        [0, 1],
+        [-1, 0],
+        [1, 0],
+        [-1, -1],
+        [-1, 1],
+        [1, -1],
+        [1, 1],
+    ];
+    const DELTA_LUT: [i32; 7] = [16, 16, 8, 4, 2, 2, 2];
+    let iters = if quality < 25 {
+        1
+    } else if quality > 50 {
+        7
+    } else {
+        4
+    };
+
+    let mut green_to_blue_best: i32 = 0;
+    let mut red_to_blue_best: i32 = 0;
+    let mut best_diff = get_prediction_cost_blue(
+        argb,
+        width,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        prev_x,
+        prev_y,
+        0,
+        0,
+        accumulated_blue_histo,
+    );
+
+    for iter in 0..iters {
+        let delta = DELTA_LUT[iter as usize];
+        for (axis, offset) in OFFSETS.iter().enumerate() {
+            let green_to_blue_cur = offset[0] as i32 * delta + green_to_blue_best;
+            let red_to_blue_cur = offset[1] as i32 * delta + red_to_blue_best;
+            let cur_diff = get_prediction_cost_blue(
+                argb,
+                width,
+                start_x,
+                start_y,
+                end_x,
+                end_y,
+                prev_x,
+                prev_y,
+                green_to_blue_cur as u8,
+                red_to_blue_cur as u8,
+                accumulated_blue_histo,
+            );
+            if cur_diff < best_diff {
+                best_diff = cur_diff;
+                green_to_blue_best = green_to_blue_cur;
+                red_to_blue_best = red_to_blue_cur;
+            }
+            // For low quality, only axis-aligned (first 4 directions)
+            if quality < 25 && axis == 3 {
+                break;
+            }
+        }
+        if delta == 2 && green_to_blue_best == 0 && red_to_blue_best == 0 {
+            break;
+        }
+    }
+
+    (
+        (green_to_blue_best & 0xff) as u8,
+        (red_to_blue_best & 0xff) as u8,
+    )
+}
+
+/// Apply cross-color transform to decorrelate color channels.
+///
+/// Uses libwebp's entropy-based coarse-to-fine search with accumulated
+/// histograms and spatial consistency bonuses.
+///
+/// Forward transform (encoding):
+///   new_R = (R - green_to_red * G_signed / 32) & 0xFF
+///   new_B = (B - green_to_blue * G_signed / 32 - red_to_blue * R_orig_signed / 32) & 0xFF
+///
+/// The multiplier data is stored as a sub-image where:
+///   blue channel  = green_to_red
+///   green channel = green_to_blue
+///   red channel   = red_to_blue
+///   alpha         = 0xFF
+pub fn apply_cross_color_transform(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    transform_bits: u8,
+    quality: u8,
+) -> Vec<u32> {
+    apply_cross_color_transform_with_stop(
+        pixels,
+        width,
+        height,
+        transform_bits,
+        quality,
+        &enough::Unstoppable,
+    )
+    .expect("Unstoppable never stops")
+}
+
+pub(crate) fn apply_cross_color_transform_with_stop(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    transform_bits: u8,
+    quality: u8,
+    stop: &dyn enough::Stop,
+) -> Result<Vec<u32>, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    let block_size = 1usize << transform_bits;
+    let tiles_x = subsample_size(width as u32, transform_bits) as usize;
+    let tiles_y = subsample_size(height as u32, transform_bits) as usize;
+
+    let mut transform_data = vec![0u32; tiles_x * tiles_y];
+    let mut accumulated_red_histo = [0u32; 256];
+    let mut accumulated_blue_histo = [0u32; 256];
+
+    let mut prev_x = CrossColorMultipliers::default();
+    let mut prev_y = CrossColorMultipliers::default();
+
+    for ty in 0..tiles_y {
+        // One tile row covers >= 2^transform_bits image rows.
+        stop.check()?;
+        for tx in 0..tiles_x {
+            let start_x = tx * block_size;
+            let start_y = ty * block_size;
+            let end_x = (start_x + block_size).min(width);
+            let end_y = (start_y + block_size).min(height);
+
+            // Get prev_y from tile above
+            if ty != 0 {
+                let above_code = transform_data[(ty - 1) * tiles_x + tx];
+                prev_y.green_to_red = above_code as u8;
+                prev_y.green_to_blue = (above_code >> 8) as u8;
+                prev_y.red_to_blue = (above_code >> 16) as u8;
+            }
+
+            // Find best green_to_red
+            let best_g2r = get_best_green_to_red(
+                pixels,
+                width,
+                start_x,
+                start_y,
+                end_x,
+                end_y,
+                &prev_x,
+                &prev_y,
+                quality,
+                &accumulated_red_histo,
+            );
+
+            // Find best green_to_blue + red_to_blue
+            let (best_g2b, best_r2b) = get_best_green_red_to_blue(
+                pixels,
+                width,
+                start_x,
+                start_y,
+                end_x,
+                end_y,
+                &prev_x,
+                &prev_y,
+                quality,
+                &accumulated_blue_histo,
+            );
+
+            prev_x = CrossColorMultipliers {
+                green_to_red: best_g2r,
+                green_to_blue: best_g2b,
+                red_to_blue: best_r2b,
+            };
+
+            // Store as sub-image pixel (MultipliersToColorCode)
+            let color_code = 0xFF000000u32
+                | ((best_r2b as u32) << 16)
+                | ((best_g2b as u32) << 8)
+                | (best_g2r as u32);
+            transform_data[ty * tiles_x + tx] = color_code;
+
+            // Apply forward transform to this tile
+            apply_cross_color_tile(pixels, width, start_x, start_y, end_x, end_y, &prev_x);
+
+            // Gather accumulated histogram data (matching libwebp's skip logic)
+            for y in start_y..end_y {
+                for x in start_x..end_x {
+                    let ix = y * width + x;
+                    let pix = pixels[ix];
+                    // Skip repeated pixels (handled by backward references)
+                    if ix >= 2 && pix == pixels[ix - 2] && pix == pixels[ix - 1] {
+                        continue;
+                    }
+                    if ix >= width + 2
+                        && pixels[ix - 2] == pixels[ix - width - 2]
+                        && pixels[ix - 1] == pixels[ix - width - 1]
+                        && pix == pixels[ix - width]
+                    {
+                        continue;
+                    }
+                    accumulated_red_histo[((pix >> 16) & 0xff) as usize] += 1;
+                    accumulated_blue_histo[(pix & 0xff) as usize] += 1;
+                }
+            }
+        }
+    }
+
+    Ok(transform_data)
+}
+
+/// Apply cross-color forward transform to a single tile (matching libwebp's VP8LTransformColor_C).
+///
+/// On x86/x86_64 with SIMD, processes 4 pixels at a time with SSE2,
+/// matching libwebp's TransformColor_SSE2.
+#[inline]
+fn apply_cross_color_tile(
+    pixels: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    m: &CrossColorMultipliers,
+) {
+    incant!(
+        apply_cross_color_tile_impl(pixels, width, start_x, start_y, end_x, end_y, m),
+        [v1, neon, wasm128, scalar]
+    );
+}
+
+/// Scalar cross-color tile transform.
+fn apply_cross_color_tile_impl_scalar(
+    _token: ScalarToken,
+    pixels: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    m: &CrossColorMultipliers,
+) {
+    let g2r = m.green_to_red as i8;
+    let g2b = m.green_to_blue as i8;
+    let r2b = m.red_to_blue as i8;
+
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            let idx = y * width + x;
+            let argb = pixels[idx];
+            let green = (argb >> 8) as u8 as i8;
+            let red = (argb >> 16) as u8 as i8;
+            let mut new_red = (red as i32) & 0xff;
+            let mut new_blue = argb as i32 & 0xff;
+            new_red -= color_transform_delta(g2r, green);
+            new_red &= 0xff;
+            new_blue -= color_transform_delta(g2b, green);
+            new_blue -= color_transform_delta(r2b, red);
+            new_blue &= 0xff;
+            pixels[idx] = (argb & 0xff00ff00u32) | ((new_red as u32) << 16) | (new_blue as u32);
+        }
+    }
+}
+
+/// Pre-shift multiplier to 16-bit for mulhi_epi16 (matching libwebp's CST_5b macro).
+/// The multiplier is treated as a signed 3.5 fixed-point value, pre-shifted so that
+/// mulhi_epi16 produces (color * multiplier) >> 5.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn cst_5b(x: u8) -> i16 {
+    // Equivalent to C's: (((int16_t)((uint16_t)(X) << 8)) >> 5)
+    (((x as u16) << 8) as i16) >> 5
+}
+
+/// Generic cross-color tile transform with 4-pixel unrolling for autovectorization.
+///
+/// For each pixel: new_R = R - (g2r * G) >> 5, new_B = B - (g2b * G) >> 5 - (r2b * R_orig) >> 5.
+/// Note: encoder uses ORIGINAL red for blue correction (decoder uses corrected R').
+///
+/// Takes a `U8x16Backend` token for type consistency with the archmage dispatch
+/// pattern (matching `apply_subtract_green_generic`), though the implementation uses
+/// scalar 4-pixel unrolling since magetypes lacks widening i8→i16 multiply.
+#[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+#[inline(always)]
+fn apply_cross_color_tile_generic<T: magetypes::simd::backends::U8x16Backend>(
+    _token: T,
+    pixels: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    m: &CrossColorMultipliers,
+) {
+    let g2r = m.green_to_red as i8 as i32;
+    let g2b = m.green_to_blue as i8 as i32;
+    let r2b = m.red_to_blue as i8 as i32;
+    let tile_width = end_x - start_x;
+
+    for y in start_y..end_y {
+        let row_start = y * width + start_x;
+        let row = &mut pixels[row_start..row_start + tile_width];
+
+        // Process 4 pixels at a time for autovectorization
+        let (chunks, tail) = row.as_chunks_mut::<4>();
+        for chunk in chunks {
+            for px in chunk.iter_mut() {
+                let argb = *px;
+                let green = (argb >> 8) as u8 as i8 as i32;
+                let red = (argb >> 16) as u8 as i8 as i32;
+                let new_red = (((argb >> 16) as i32 & 0xff) - ((g2r * green) >> 5)) & 0xff;
+                let new_blue =
+                    ((argb as i32 & 0xff) - ((g2b * green) >> 5) - ((r2b * red) >> 5)) & 0xff;
+                *px = (argb & 0xff00ff00u32) | ((new_red as u32) << 16) | (new_blue as u32);
+            }
+        }
+
+        // Scalar tail
+        for px in tail {
+            let argb = *px;
+            let green = (argb >> 8) as u8 as i8 as i32;
+            let red = (argb >> 16) as u8 as i8 as i32;
+            let new_red = (((argb >> 16) as i32 & 0xff) - ((g2r * green) >> 5)) & 0xff;
+            let new_blue =
+                ((argb as i32 & 0xff) - ((g2b * green) >> 5) - ((r2b * red) >> 5)) & 0xff;
+            *px = (argb & 0xff00ff00u32) | ((new_red as u32) << 16) | (new_blue as u32);
+        }
+    }
+}
+
+/// NEON cross-color tile: calls generic implementation (matching apply_subtract_green pattern).
+#[cfg(target_arch = "aarch64")]
+fn apply_cross_color_tile_impl_neon(
+    token: NeonToken,
+    pixels: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    m: &CrossColorMultipliers,
+) {
+    apply_cross_color_tile_generic(token, pixels, width, start_x, start_y, end_x, end_y, m);
+}
+
+/// WASM128 cross-color tile: calls generic implementation.
+#[cfg(target_arch = "wasm32")]
+fn apply_cross_color_tile_impl_wasm128(
+    token: Wasm128Token,
+    pixels: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    m: &CrossColorMultipliers,
+) {
+    apply_cross_color_tile_generic(token, pixels, width, start_x, start_y, end_x, end_y, m);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn apply_cross_color_tile_impl_v1(
+    _token: X64V1Token,
+    pixels: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    m: &CrossColorMultipliers,
+) {
+    apply_cross_color_tile_sse2(_token, pixels, width, start_x, start_y, end_x, end_y, m);
+}
+
+/// SSE2 cross-color transform matching libwebp's TransformColor_SSE2.
+///
+/// Processes 4 pixels at a time. For each pixel:
+///   new_R = R - (green_to_red * G_signed) >> 5
+///   new_B = B - (green_to_blue * G_signed) >> 5 - (red_to_blue * R_orig_signed) >> 5
+/// A and G channels are preserved.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn apply_cross_color_tile_sse2(
+    _token: X64V1Token,
+    pixels: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
+    m: &CrossColorMultipliers,
+) {
+    // Pre-compute SIMD constants matching libwebp's MK_CST_16 pattern
+    // mults_rb: packed [green_to_red(hi16), green_to_blue(lo16)] for mulhi_epi16
+    let g2r_cst = cst_5b(m.green_to_red);
+    let g2b_cst = cst_5b(m.green_to_blue);
+    let r2b_cst = cst_5b(m.red_to_blue);
+
+    let mults_rb_val = ((g2r_cst as u16 as u32) << 16) | (g2b_cst as u16 as u32);
+    let mults_rb = _mm_set1_epi32(mults_rb_val as i32);
+    let mults_b2_val = (r2b_cst as u16 as u32) << 16;
+    let mults_b2 = _mm_set1_epi32(mults_b2_val as i32);
+    let mask_ag = _mm_set1_epi32(0xff00ff00u32 as i32);
+    let mask_rb = _mm_set1_epi32(0x00ff00ff_i32);
+
+    let tile_width = end_x - start_x;
+
+    for y in start_y..end_y {
+        let row_start = y * width + start_x;
+        let row = &mut pixels[row_start..row_start + tile_width];
+
+        let mut x = 0;
+        while x + 4 <= tile_width {
+            let chunk = row[x..].first_chunk_mut::<4>().unwrap();
+            let inp = simd_mem::_mm_loadu_si128(&*chunk);
+
+            // A = (inp & mask_ag): extract alpha and green bytes [a 0 g 0]
+            let a_val = _mm_and_si128(inp, mask_ag);
+
+            // Shuffle green to both 16-bit positions: [g 0 g 0] per pixel
+            let b_val = _mm_shufflelo_epi16(a_val, 0xA0); // _MM_SHUFFLE(2,2,0,0)
+            let c_val = _mm_shufflehi_epi16(b_val, 0xA0);
+
+            // D = mulhi(green_spread, mults_rb): [x dr x db1] per pixel
+            let d_val = _mm_mulhi_epi16(c_val, mults_rb);
+
+            // E = inp << 8 as epi16: [r 0 b 0] (original red/blue in high bytes)
+            let e_val = _mm_slli_epi16(inp, 8);
+
+            // F = mulhi(E, mults_b2): [x db2 0 0] per pixel
+            let f_val = _mm_mulhi_epi16(e_val, mults_b2);
+
+            // G = F >> 16 as epi32: shift red_to_blue contribution to blue position
+            let g_val = _mm_srli_epi32(f_val, 16);
+
+            // H = D + G: combine both blue contributions with red contribution
+            let h_val = _mm_add_epi8(g_val, d_val);
+
+            // I = H & mask_rb: keep only the delta bytes in R and B positions
+            let i_val = _mm_and_si128(h_val, mask_rb);
+
+            // out = inp - I: subtract deltas from R and B
+            let out = _mm_sub_epi8(inp, i_val);
+
+            simd_mem::_mm_storeu_si128(chunk, out);
+            x += 4;
+        }
+
+        // Scalar tail for remaining pixels
+        let g2r = m.green_to_red as i8;
+        let g2b = m.green_to_blue as i8;
+        let r2b = m.red_to_blue as i8;
+        while x < tile_width {
+            let argb = row[x];
+            let green = (argb >> 8) as u8 as i8;
+            let red = (argb >> 16) as u8 as i8;
+            let mut new_red = (red as i32) & 0xff;
+            let mut new_blue = argb as i32 & 0xff;
+            new_red -= color_transform_delta(g2r, green);
+            new_red &= 0xff;
+            new_blue -= color_transform_delta(g2b, green);
+            new_blue -= color_transform_delta(r2b, red);
+            new_blue &= 0xff;
+            row[x] = (argb & 0xff00ff00u32) | ((new_red as u32) << 16) | (new_blue as u32);
+            x += 1;
+        }
+    }
+}
+
+/// Simple predictor transform using only vertical prediction.
+/// Used for quick encoding at lower quality levels.
+pub fn apply_simple_predictor(pixels: &mut [u32], width: usize, height: usize) {
+    // Process from bottom-right to top-left
+    for y in (1..height).rev() {
+        for x in (0..width).rev() {
+            let idx = y * width + x;
+            let top = pixels[(y - 1) * width + x];
+            pixels[idx] = residual(pixels[idx], top);
+        }
+    }
+    // First row: subtract left neighbor
+    for x in (1..width).rev() {
+        let left = pixels[x - 1];
+        pixels[x] = residual(pixels[x], left);
+    }
+    // Top-left corner: subtract 0xff000000 (black with full alpha)
+    pixels[0] = residual(pixels[0], 0xff000000);
+}
+
+/// Color indexing (palette) transform data.
+pub struct ColorIndexTransform {
+    pub palette: Vec<u32>,
+}
+
+/// Compute the xbits value for pixel packing based on palette size.
+/// Returns: 3 (8 pixels/word) for <=2 colors, 2 (4/word) for <=4,
+/// 1 (2/word) for <=16, 0 (no packing) otherwise.
+pub fn palette_xbits(palette_size: usize) -> u8 {
+    if palette_size <= 2 {
+        3
+    } else if palette_size <= 4 {
+        2
+    } else if palette_size <= 16 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Compute distance between two palette colors for sorting.
+/// Component distances are weighted 9x for RGB, 1x for alpha.
+/// Matches libwebp's PaletteColorDistance.
+fn palette_color_distance(col1: u32, col2: u32) -> u32 {
+    let diff = sub_pixels_color(col1, col2);
+    let component_distance = |v: u8| -> u32 { if v <= 128 { v as u32 } else { 256 - v as u32 } };
+    let score = component_distance(diff as u8)
+        + component_distance((diff >> 8) as u8)
+        + component_distance((diff >> 16) as u8);
+    score * 9 + component_distance((diff >> 24) as u8)
+}
+
+/// Subtract two pixels component-wise (wrapping). Same as sub_pixels below
+/// but works on u32 directly.
+fn sub_pixels_color(a: u32, b: u32) -> u32 {
+    let aa = (a >> 24).wrapping_sub(b >> 24) & 0xff;
+    let ar = ((a >> 16) & 0xff).wrapping_sub((b >> 16) & 0xff) & 0xff;
+    let ag = ((a >> 8) & 0xff).wrapping_sub((b >> 8) & 0xff) & 0xff;
+    let ab = (a & 0xff).wrapping_sub(b & 0xff) & 0xff;
+    (aa << 24) | (ar << 16) | (ag << 8) | ab
+}
+
+/// Sort palette to minimize L1 deltas between consecutive entries.
+/// Matches libwebp's PaletteSortMinimizeDeltas. Greedy nearest-neighbor ordering
+/// weighted toward RGB channels over alpha.
+fn palette_sort_minimize_deltas(palette_sorted: &[u32]) -> Vec<u32> {
+    let num_colors = palette_sorted.len();
+    let mut palette: Vec<u32> = palette_sorted.to_vec();
+
+    // Check if palette already has monotonic deltas (no benefit to reorder)
+    if !palette_has_non_monotonous_deltas(&palette) {
+        return palette;
+    }
+
+    // For palettes > 17 colors, move 0 to the end (matching libwebp)
+    if num_colors > 17 && palette[0] == 0 {
+        let last = num_colors - 1;
+        palette.swap(0, last);
+    }
+
+    // Greedy nearest-neighbor reordering (selection sort by distance)
+    let mut predict = 0u32;
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..num_colors {
+        let mut best_ix = i;
+        let mut best_score = u32::MAX;
+        for k in i..num_colors {
+            let cur_score = palette_color_distance(palette[k], predict);
+            if best_score > cur_score {
+                best_score = cur_score;
+                best_ix = k;
+            }
+        }
+        palette.swap(best_ix, i);
+        predict = palette[i];
+    }
+
+    palette
+}
+
+/// Check if palette has non-monotonous deltas (both positive and negative
+/// changes in the same component). If monotonous, no benefit to reorder.
+/// Matches libwebp's PaletteHasNonMonotonousDeltas.
+fn palette_has_non_monotonous_deltas(palette: &[u32]) -> bool {
+    let mut predict = 0u32;
+    let mut sign_found = 0u8;
+    for &color in palette {
+        let diff = sub_pixels_color(color, predict);
+        let rd = ((diff >> 16) & 0xff) as u8;
+        let gd = ((diff >> 8) & 0xff) as u8;
+        let bd = (diff & 0xff) as u8;
+        if rd != 0 {
+            sign_found |= if rd < 0x80 { 1 } else { 2 };
+        }
+        if gd != 0 {
+            sign_found |= if gd < 0x80 { 8 } else { 16 };
+        }
+        if bd != 0 {
+            sign_found |= if bd < 0x80 { 64 } else { 128 };
+        }
+        predict = color;
+    }
+    (sign_found & (sign_found << 1)) != 0
+}
+
+/// Bundle multiple palette indices into packed pixels.
+/// For palette_size <=2: 8 indices per pixel (1 bit each)
+/// For palette_size <=4: 4 indices per pixel (2 bits each)
+/// For palette_size <=16: 2 indices per pixel (4 bits each)
+/// Matches libwebp's VP8LBundleColorMap_C.
+pub fn bundle_color_map(pixels: &[u32], width: usize, xbits: u8) -> Vec<u32> {
+    bundle_color_map_with_stop(pixels, width, xbits, &enough::Unstoppable)
+        .expect("Unstoppable never stops")
+}
+
+pub(crate) fn bundle_color_map_with_stop(
+    pixels: &[u32],
+    width: usize,
+    xbits: u8,
+    stop: &dyn enough::Stop,
+) -> Result<Vec<u32>, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    if xbits == 0 {
+        // No packing needed - just ensure format is 0xff000000 | (idx << 8)
+        let mut dst = Vec::with_capacity(pixels.len());
+        for (i, &p) in pixels.iter().enumerate() {
+            if i & (TRANSFORM_STOP_CHECK_PIXELS - 1) == 0 {
+                stop.check()?;
+            }
+            dst.push(0xff000000 | ((argb_green(p) as u32) << 8));
+        }
+        return Ok(dst);
+    }
+
+    let bit_depth = 1u32 << (3 - xbits);
+    let mask = (1usize << xbits) - 1;
+    let packed_width = subsample_size(width as u32, xbits) as usize;
+    let height = pixels.len() / width;
+    let mut dst = Vec::with_capacity(packed_width * height);
+
+    for y in 0..height {
+        if y & (TRANSFORM_STOP_CHECK_ROWS - 1) == 0 {
+            stop.check()?;
+        }
+        let row_start = y * width;
+        let mut code = 0xff000000u32;
+        for x in 0..width {
+            let xsub = x & mask;
+            if xsub == 0 {
+                code = 0xff000000;
+            }
+            let idx = argb_green(pixels[row_start + x]) as u32;
+            code |= idx << (8 + bit_depth * xsub as u32);
+            if xsub == mask || x == width - 1 {
+                dst.push(code);
+            }
+        }
+    }
+
+    Ok(dst)
+}
+
+impl ColorIndexTransform {
+    /// Try to build a color index transform.
+    /// Returns None if image has more than 256 colors.
+    /// Palette is sorted to minimize deltas (default strategy).
+    pub fn try_build(pixels: &[u32]) -> Option<Self> {
+        Self::try_build_with_stop(pixels, &enough::Unstoppable).expect("Unstoppable never stops")
+    }
+
+    pub(crate) fn try_build_with_stop(
+        pixels: &[u32],
+        stop: &dyn enough::Stop,
+    ) -> Result<Option<Self>, enough::StopReason> {
+        // may_stop collapses Unstoppable: checks below are a None-test.
+        let stop = stop.may_stop().then_some(stop);
+        Self::try_build_with_sorting_with_stop(pixels, true, &stop)
+    }
+
+    /// Try to build a color index transform with a specific sorting strategy.
+    /// `minimize_delta`: true = greedy nearest-neighbor, false = lexicographic.
+    /// Returns None if image has more than 256 colors.
+    pub fn try_build_with_sorting(pixels: &[u32], minimize_delta: bool) -> Option<Self> {
+        Self::try_build_with_sorting_with_stop(pixels, minimize_delta, &enough::Unstoppable)
+            .expect("Unstoppable never stops")
+    }
+
+    pub(crate) fn try_build_with_sorting_with_stop(
+        pixels: &[u32],
+        minimize_delta: bool,
+        stop: &dyn enough::Stop,
+    ) -> Result<Option<Self>, enough::StopReason> {
+        // may_stop collapses Unstoppable: checks below are a None-test.
+        let stop = stop.may_stop().then_some(stop);
+        let mut seen = alloc::collections::BTreeSet::new();
+
+        for (i, &pixel) in pixels.iter().enumerate() {
+            if i & (TRANSFORM_STOP_CHECK_PIXELS - 1) == 0 {
+                stop.check()?;
+            }
+            seen.insert(pixel);
+            if seen.len() > 256 {
+                return Ok(None);
+            }
+        }
+
+        // BTreeSet iterates in sorted order (lexicographic on u32 = ARGB)
+        let palette_sorted: Vec<u32> = seen.into_iter().collect();
+
+        let palette = if minimize_delta {
+            // Sort to minimize deltas for better delta encoding (matches libwebp kMinimizeDelta)
+            palette_sort_minimize_deltas(&palette_sorted)
+        } else {
+            // Use lexicographic order directly
+            palette_sorted
+        };
+
+        Ok(Some(Self { palette }))
+    }
+
+    /// Build from a pre-sorted palette (for multi-config testing).
+    pub fn from_palette(palette: Vec<u32>) -> Self {
+        Self { palette }
+    }
+
+    /// Get xbits value for pixel packing.
+    pub fn xbits(&self) -> u8 {
+        palette_xbits(self.palette.len())
+    }
+
+    /// Apply the transform: convert ARGB to palette indices in green channel.
+    pub fn apply(&self, pixels: &mut [u32]) {
+        self.apply_with_stop(pixels, &enough::Unstoppable)
+            .expect("Unstoppable never stops")
+    }
+
+    pub(crate) fn apply_with_stop(
+        &self,
+        pixels: &mut [u32],
+        stop: &dyn enough::Stop,
+    ) -> Result<(), enough::StopReason> {
+        // may_stop collapses Unstoppable: checks below are a None-test.
+        let stop = stop.may_stop().then_some(stop);
+        // Build reverse lookup using a hash map for fast lookups
+        let mut lookup = alloc::collections::BTreeMap::new();
+        for (i, &color) in self.palette.iter().enumerate() {
+            lookup.insert(color, i as u8);
+        }
+
+        for (i, pixel) in pixels.iter_mut().enumerate() {
+            if i & (TRANSFORM_STOP_CHECK_PIXELS - 1) == 0 {
+                stop.check()?;
+            }
+            let idx = lookup[pixel];
+            // Store index in green channel (A=0xff, R=0, G=idx, B=0)
+            *pixel = make_argb(255, 0, idx, 0);
+        }
+        Ok(())
+    }
+
+    /// Apply the transform and bundle pixels into packed format.
+    /// Returns the packed pixel buffer and the new (packed) width.
+    pub fn apply_and_bundle(&self, pixels: &mut [u32], width: usize) -> (Vec<u32>, usize) {
+        self.apply_and_bundle_with_stop(pixels, width, &enough::Unstoppable)
+            .expect("Unstoppable never stops")
+    }
+
+    pub(crate) fn apply_and_bundle_with_stop(
+        &self,
+        pixels: &mut [u32],
+        width: usize,
+        stop: &dyn enough::Stop,
+    ) -> Result<(Vec<u32>, usize), enough::StopReason> {
+        // may_stop collapses Unstoppable: checks below are a None-test.
+        let stop = stop.may_stop().then_some(stop);
+        // First apply: convert ARGB to palette indices
+        self.apply_with_stop(pixels, &stop)?;
+
+        let xbits = self.xbits();
+        if xbits == 0 {
+            // No packing needed
+            return Ok((pixels.to_vec(), width));
+        }
+
+        let packed_width = subsample_size(width as u32, xbits) as usize;
+        let packed = bundle_color_map_with_stop(pixels, width, xbits, &stop)?;
+        Ok((packed, packed_width))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_subtract_green() {
+        let mut pixels = vec![make_argb(255, 100, 50, 150)];
+        apply_subtract_green(&mut pixels);
+
+        let p = pixels[0];
+        assert_eq!(argb_alpha(p), 255);
+        assert_eq!(argb_red(p), 50); // 100 - 50
+        assert_eq!(argb_green(p), 50); // unchanged
+        assert_eq!(argb_blue(p), 100); // 150 - 50
+    }
+
+    #[test]
+    fn test_average2() {
+        let a = make_argb(100, 100, 100, 100);
+        let b = make_argb(200, 200, 200, 200);
+        let avg = average2(a, b);
+
+        assert_eq!(argb_alpha(avg), 150);
+        assert_eq!(argb_red(avg), 150);
+        assert_eq!(argb_green(avg), 150);
+        assert_eq!(argb_blue(avg), 150);
+    }
+
+    #[test]
+    fn test_residual() {
+        let pixel = make_argb(100, 50, 80, 200);
+        let pred = make_argb(90, 60, 70, 150);
+        let res = residual(pixel, pred);
+
+        assert_eq!(argb_alpha(res), 10); // 100 - 90
+        assert_eq!(argb_red(res), 246); // 50 - 60 = -10 = 246 (wrapping)
+        assert_eq!(argb_green(res), 10); // 80 - 70
+        assert_eq!(argb_blue(res), 50); // 200 - 150
+    }
+
+    #[test]
+    fn test_color_index_small_palette() {
+        let pixels = vec![
+            make_argb(255, 255, 0, 0), // Red
+            make_argb(255, 0, 255, 0), // Green
+            make_argb(255, 255, 0, 0), // Red again
+        ];
+
+        let transform = ColorIndexTransform::try_build_with_stop(&pixels, &enough::Unstoppable)
+            .unwrap()
+            .unwrap();
+        assert_eq!(transform.palette.len(), 2);
+        assert_eq!(transform.xbits(), 3); // Can pack 8 per pixel
+    }
+
+    #[test]
+    fn test_color_index_too_many_colors() {
+        // Create 257 unique colors - use different channels to ensure uniqueness
+        let pixels: Vec<u32> = (0..257)
+            .map(|i| make_argb(255, (i % 256) as u8, (i / 256) as u8, 0))
+            .collect();
+        assert!(
+            ColorIndexTransform::try_build_with_stop(&pixels, &enough::Unstoppable)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_palette_bundle_2_colors() {
+        // 2-color palette: xbits=3, 8 pixels per packed pixel
+        let indices: Vec<u32> = (0..16).map(|i| make_argb(255, 0, i & 1, 0)).collect();
+        let bundled = bundle_color_map_with_stop(&indices, 16, 3, &enough::Unstoppable).unwrap();
+        // 16 pixels / 8 per packed = 2 packed pixels
+        assert_eq!(bundled.len(), 2);
+        // First packed pixel: indices 0,1,0,1,0,1,0,1
+        // Each in 1-bit slots at positions 8,9,10,11,12,13,14,15
+        let first = bundled[0];
+        assert_eq!(first & 0xff000000, 0xff000000); // alpha=255
+    }
+
+    #[test]
+    fn test_palette_bundle_16_colors() {
+        // 16-color palette: xbits=1, 2 pixels per packed pixel
+        let indices: Vec<u32> = (0..8)
+            .map(|i| make_argb(255, 0, (i * 3) & 0xf, 0))
+            .collect();
+        let bundled = bundle_color_map_with_stop(&indices, 8, 1, &enough::Unstoppable).unwrap();
+        // 8 pixels / 2 per packed = 4 packed pixels
+        assert_eq!(bundled.len(), 4);
+    }
+
+    #[test]
+    fn test_palette_sort_minimize_deltas() {
+        // Create palette with colors that should be reordered
+        let sorted = vec![
+            make_argb(255, 0, 0, 0),       // black
+            make_argb(255, 128, 128, 128), // gray
+            make_argb(255, 255, 0, 0),     // red
+            make_argb(255, 255, 255, 255), // white
+        ];
+        let reordered = palette_sort_minimize_deltas(&sorted);
+        // Should start from 0 (closest to predict=0), then pick nearest neighbors
+        assert_eq!(reordered[0], make_argb(255, 0, 0, 0)); // black closest to 0
+        assert_eq!(reordered.len(), 4);
+    }
+}

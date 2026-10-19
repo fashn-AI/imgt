@@ -1202,3 +1202,16 @@ deadline, pixel-limit, format and output-comparison checks passed.
 These bounded local checks support the new default on the current allocation;
 they are not a guarantee for arbitrary images, smaller containers or live
 network latency. Large originals still cost more to download and decode.
+
+## Rust codec research
+
+The [Rust pipeline prototype](../research/rust-pipeline/README.md) preserves the
+selected local decoder, streaming resizer, optimized WebP encoder and ARM64 PGO
+profile for review. Its [benchmark summary](../research/rust-pipeline/BENCHMARK.md)
+reports 17.5% to 78.9% higher throughput than the locally built main-branch
+libvips container across four held-out PNG workloads at equal requested quality.
+Equal quality numbers do not establish equal perceptual quality; q98 screening
+metrics still favor libvips slightly. These ARM64 results do not establish
+Cloudflare speed, production memory requirements or cost savings. Codec
+licensing, format gaps and native x86 qualification remain release blockers.
+The production runtime and capacity settings are unchanged.

@@ -116,6 +116,7 @@ export function createHarness(
     imageCache,
     imageJob,
     gateway,
+    resize,
     get downloads() {
       return downloads;
     },

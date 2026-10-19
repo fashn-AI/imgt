@@ -1,0 +1,2754 @@
+//! Encoding of WebP images.
+//!
+//! # API
+//!
+//! ```rust
+//! use zenwebp::{EncodeRequest, EncoderConfig, PixelLayout, Preset};
+//!
+//! let config = EncoderConfig::with_preset(Preset::Photo, 85.0)
+//!     .with_method(4);
+//!
+//! let rgba_data = vec![255u8; 4 * 4 * 4]; // 4x4 RGBA image
+//! let webp = EncodeRequest::new(&config, &rgba_data, PixelLayout::Rgba8, 4, 4)
+//!     .encode()?;
+//! # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+//! ```
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
+use thiserror::Error;
+use whereat::at;
+
+use super::config;
+use super::vec_writer::VecWriter;
+use super::vp8::encode_frame_lossy;
+
+/// Error that can occur during encoding.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum EncodeError {
+    /// An IO error occurred.
+    #[cfg(feature = "std")]
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    /// The image dimensions are not allowed by the WebP format.
+    #[error("Invalid dimensions")]
+    InvalidDimensions,
+
+    /// The input buffer is too small.
+    #[error("Invalid buffer size: {0}")]
+    InvalidBufferSize(String),
+
+    /// Encoding was cancelled via a [`enough::Stop`] or [`EncodeProgress`] callback.
+    #[error("Encoding cancelled: {0}")]
+    Cancelled(enough::StopReason),
+
+    /// A resource limit was exceeded (dimensions, memory, output size, etc.).
+    ///
+    /// Carries the actual [`zencodec::LimitKind`] that was exceeded (dimensions
+    /// checks report `Width`/`Height`/`Pixels`, memory checks report `Memory`,
+    /// output-size checks report `OutputSize`) alongside the formatted detail
+    /// message from the underlying `zencodec::LimitExceeded` cause.
+    #[error("Limit exceeded ({0:?}): {1}")]
+    LimitExceeded(zencodec::LimitKind, String),
+
+    /// The color-emit plan needs an ICC profile synthesized from the source
+    /// CICP and this build can't produce one. WebP has no CICP carrier, so
+    /// encoding without the ICC would misrepresent the image as sRGB. Enable
+    /// the `cms` feature (moxcms-backed synthesis), supply an ICC profile in
+    /// the metadata, or drop the CICP.
+    #[error("cannot synthesize the needed ICC profile: {0}")]
+    IccSynthesisUnavailable(String),
+
+    /// The compressed header (partition 0) exceeds the VP8 19-bit size limit (524,287 bytes).
+    ///
+    /// This occurs with very large, high-entropy images where macroblock prediction
+    /// mode headers exceed the VP8 frame tag capacity. Try reducing image dimensions,
+    /// lowering quality, or splitting into tiles.
+    #[error("Partition 0 overflow: {size} bytes exceeds VP8 limit of {max} bytes")]
+    Partition0Overflow {
+        /// Actual partition 0 size in bytes.
+        size: u32,
+        /// Maximum allowed size (524,287).
+        max: u32,
+    },
+
+    /// Unsupported codec operation.
+    #[error("{0}")]
+    UnsupportedOperation(#[from] zencodec::UnsupportedOperation),
+
+    /// `target_zensim` was set on the lossy config, but the input
+    /// pixel layout is not supported by the iteration loop.
+    ///
+    /// The closed-loop `target-zensim` encoder supports
+    /// [`PixelLayout::Rgb8`] and [`PixelLayout::Rgba8`] inputs; for
+    /// RGBA, the iteration measures encoded vs. source via zensim's
+    /// deterministic-noise compositing (well-defined because the same
+    /// composite is applied to source and reconstruction). Other
+    /// layouts (BGR/BGRA/ARGB/L8/LA8/YUV420) are not yet wired through
+    /// — convert to RGB8 or RGBA8 first, or remove `target_zensim`
+    /// from the config and use the standard single-pass path.
+    #[error(
+        "target_zensim does not yet support pixel layout {0:?}; convert to PixelLayout::Rgb8 \
+         or PixelLayout::Rgba8 first, or remove target_zensim from the config"
+    )]
+    TargetZensimUnsupportedLayout(PixelLayout),
+}
+
+/// Result type alias using `At<EncodeError>` for automatic location tracking.
+///
+/// Errors wrapped in `At<>` automatically capture file and line information,
+/// making debugging easier in production environments.
+pub type EncodeResult<T> = core::result::Result<T, whereat::At<EncodeError>>;
+
+impl From<enough::StopReason> for EncodeError {
+    fn from(reason: enough::StopReason) -> Self {
+        Self::Cancelled(reason)
+    }
+}
+
+// Codec-agnostic error taxonomy (zencodec PR #103/#116, origin-first two-level
+// reshape). Maps every `EncodeError` variant to exactly one coarse
+// `ErrorCategory` so consumers can route on the category (HTTP status, retry
+// policy, logging) without naming this enum.
+impl zencodec::CategorizedError for EncodeError {
+    fn codec_name(&self) -> Option<&'static str> {
+        Some("zenwebp")
+    }
+
+    fn category(&self) -> zencodec::ErrorCategory {
+        use zencodec::ErrorCategory as C;
+        use zencodec::LimitKind as L;
+        use zencodec::{
+            InvalidKind as IK, RequestError as RE, ResourceError as ReE, UnsupportedOperation as UO,
+        };
+        match self {
+            // === I/O ===
+            #[cfg(feature = "std")]
+            EncodeError::IoError(_) => C::Io(zencodec::CodecIoKind::opaque()),
+
+            // === Caller-supplied configuration / parameters invalid ===
+            EncodeError::InvalidDimensions => C::Request(RE::Invalid(IK::Parameters)),
+            // The request is well-formed but asks for a pixel layout the
+            // closed-loop target-zensim iteration loop doesn't support yet
+            // (only Rgb8/Rgba8) — a caller-request "unsupported operation",
+            // not an out-of-range parameter value.
+            EncodeError::TargetZensimUnsupportedLayout(_) => {
+                C::Request(RE::Unsupported(UO::PixelFormat))
+            }
+
+            // === Caller-supplied pixel buffer has the wrong geometry ===
+            EncodeError::InvalidBufferSize(_) => C::Request(RE::Invalid(IK::Buffer)),
+
+            // === Colour-management transform the codec won't perform itself ===
+            // WebP has no CICP carrier, so a non-sRGB source needs a synthesized
+            // ICC; when that can't be produced, the caller must supply the CMS.
+            EncodeError::IccSynthesisUnavailable(_) => C::Request(RE::CmsRequired),
+
+            // === Resource limits ===
+            // The variant now carries the real `LimitKind` from the
+            // `zencodec::LimitExceeded` cause at each construction site
+            // (dimensions/memory/output-size checks), so this reports it
+            // directly instead of a hardcoded stand-in.
+            EncodeError::LimitExceeded(kind, _) => C::Resource(ReE::Limits(*kind)),
+            // Partition 0 (the compressed VP8 header) exceeds the format's
+            // 19-bit byte cap — an output-size limit of the bitstream.
+            EncodeError::Partition0Overflow { .. } => C::Resource(ReE::Limits(L::OutputSize)),
+
+            // === Cancellation — delegate to the StopReason cause type ===
+            EncodeError::Cancelled(reason) => reason.category(),
+
+            // === Unsupported codec operation — delegate to the zencodec cause type ===
+            EncodeError::UnsupportedOperation(op) => op.category(),
+        }
+    }
+}
+
+/// Content-aware encoding presets.
+///
+/// These presets configure the encoder for different types of content,
+/// optimizing the balance between file size and visual quality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Preset {
+    /// Default preset, balanced for general use.
+    #[default]
+    Default,
+    /// Digital picture (portrait, indoor shot).
+    /// Optimizes for smooth skin tones and indoor lighting.
+    Picture,
+    /// Outdoor photograph with natural lighting.
+    /// Best for landscapes, nature, and outdoor scenes.
+    Photo,
+    /// Hand or line drawing with high-contrast details.
+    /// Preserves sharp edges and fine lines.
+    Drawing,
+    /// Small-sized colorful images like icons or sprites.
+    /// Optimizes for small dimensions and sharp edges.
+    Icon,
+    /// Text-heavy images.
+    /// Preserves text readability and sharp character edges.
+    Text,
+    /// Auto-detect content type from image statistics.
+    /// Analyzes the image to choose the best preset automatically.
+    Auto,
+}
+
+/// Cost model used during mode selection and trellis quantization.
+///
+/// zenwebp's default cost model includes perceptual extensions (PSY_WEIGHT_Y
+/// CSF table at m3+, SATD masking-alpha blend at m4+, JND coefficient
+/// zeroing at m5+) tuned for butteraugli/SSIMULACRA2 rather than strict
+/// size parity with libwebp.
+///
+/// Use `StrictLibwebpParity` when bit-comparing against libwebp output, or
+/// when libwebp's size-quality tradeoff is desired.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CostModel {
+    /// zenwebp's default — perceptual extensions enabled per method level.
+    #[default]
+    ZenwebpDefault,
+    /// Strict libwebp parity — disables zenwebp's perceptual extensions
+    /// (PSY_WEIGHT_Y, SATD masking blend, JND zeroing) so the encoder
+    /// matches libwebp's algorithm at the same `(quality, method, sns,
+    /// filter, segments)` settings.
+    ///
+    /// Byte-exact with libwebp across the verified grid (#38, 2026-07-16):
+    /// 13 images (photos + tiny/odd-dimension synthetics) × quality 5-95 ×
+    /// 4 (sns, filter, segments) configs × methods 0-6 — 4004/4004 cells
+    /// byte-identical, gated in CI (`tests/libwebp_byte_parity.rs`).
+    /// Settings outside that grid (`filter_sharpness != 0`, multiple
+    /// partitions, alpha, `target_size`) are not yet swept for
+    /// byte-identity, though they use the same parity code paths.
+    StrictLibwebpParity,
+}
+
+impl fmt::Display for Preset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Preset::Default => f.write_str("default"),
+            Preset::Picture => f.write_str("picture"),
+            Preset::Photo => f.write_str("photo"),
+            Preset::Drawing => f.write_str("drawing"),
+            Preset::Icon => f.write_str("icon"),
+            Preset::Text => f.write_str("text"),
+            Preset::Auto => f.write_str("auto"),
+        }
+    }
+}
+
+/// Color type of the image.
+///
+/// Note that the WebP format doesn't have a concept of color type. All images are encoded as RGBA
+/// and some decoders may treat them as such. This enum is used to indicate the color type of the
+/// input data provided to the encoder, which can help improve compression ratio.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PixelLayout {
+    /// Opaque image with a single luminance byte per pixel.
+    L8,
+    /// Image with a luminance and alpha byte per pixel.
+    La8,
+    /// Opaque image with a red, green, and blue byte per pixel.
+    Rgb8,
+    /// Image with a red, green, blue, and alpha byte per pixel.
+    Rgba8,
+    /// Opaque image with a blue, green, and red byte per pixel.
+    Bgr8,
+    /// Image with a blue, green, red, and alpha byte per pixel.
+    Bgra8,
+    /// Image with an alpha, red, green, and blue byte per pixel.
+    Argb8,
+    /// YUV 4:2:0 planar data (3 separate planes packed as \[Y, U, V\]).
+    Yuv420,
+}
+
+impl PixelLayout {
+    pub(crate) fn has_alpha(self) -> bool {
+        matches!(
+            self,
+            PixelLayout::La8 | PixelLayout::Rgba8 | PixelLayout::Bgra8 | PixelLayout::Argb8
+        )
+    }
+
+    pub(crate) fn bytes_per_pixel(self) -> usize {
+        match self {
+            PixelLayout::L8 => 1,
+            PixelLayout::La8 => 2,
+            PixelLayout::Rgb8 | PixelLayout::Bgr8 => 3,
+            PixelLayout::Rgba8 | PixelLayout::Bgra8 | PixelLayout::Argb8 => 4,
+            PixelLayout::Yuv420 => 1, // not meaningful for planar; validated separately
+        }
+    }
+}
+
+impl fmt::Display for PixelLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PixelLayout::L8 => f.write_str("L8"),
+            PixelLayout::La8 => f.write_str("LA8"),
+            PixelLayout::Rgb8 => f.write_str("RGB8"),
+            PixelLayout::Rgba8 => f.write_str("RGBA8"),
+            PixelLayout::Bgr8 => f.write_str("BGR8"),
+            PixelLayout::Bgra8 => f.write_str("BGRA8"),
+            PixelLayout::Argb8 => f.write_str("ARGB8"),
+            PixelLayout::Yuv420 => f.write_str("YUV420"),
+        }
+    }
+}
+
+/// Allows fine-tuning some encoder parameters.
+///
+/// Pass to [`WebPEncoder::set_params()`].
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct EncoderParams {
+    /// Use the lossy encoding to encode the image using the VP8 compression format.
+    pub use_lossy: bool,
+    /// A quality value for the lossy encoding that must be between 0 and 100. Defaults to 95.
+    pub lossy_quality: u8,
+    /// Encoding method (0-6). Higher values = better quality/compression but slower.
+    /// - 0: Fastest encoding, minimal mode search
+    /// - 1-2: Fast encoding with limited mode search
+    /// - 3-4: Balanced speed/quality (default: 4)
+    /// - 5-6: Best quality, full mode search
+    pub method: u8,
+    /// Spatial noise shaping strength (0-100). Controls per-segment quantization spread.
+    /// Higher values give more differentiation between flat/textured regions.
+    pub(crate) sns_strength: u8,
+    /// Loop filter strength (0-100). Controls deblocking filter intensity.
+    pub(crate) filter_strength: u8,
+    /// Loop filter sharpness (0-7). Higher values reduce filter effect near edges.
+    pub(crate) filter_sharpness: u8,
+    /// Number of segments (1-4). More segments allow finer per-region quantization.
+    pub(crate) num_segments: u8,
+    /// The selected preset. When Auto, the encoder will detect content type.
+    pub(crate) preset: Preset,
+    /// Target file size in bytes. When > 0, enables quality search to hit target.
+    /// Multi-pass encoding will adjust quality to converge on this size.
+    pub(crate) target_size: u32,
+    /// Target PSNR in dB. When > 0.0, enables quality search to hit target PSNR.
+    pub(crate) target_psnr: f32,
+    /// Sharp YUV configuration. `None` = disabled (standard chroma downsampling).
+    /// `Some(config)` = iterative chroma refinement with given parameters.
+    pub(crate) sharp_yuv: Option<zenyuv::SharpYuvConfig>,
+    /// Alpha channel quality (0-100). 100 = lossless alpha, <100 = quantize alpha levels.
+    pub(crate) alpha_quality: u8,
+    /// Alpha plane effort (0-6). `None` = follow `method`.
+    pub(crate) alpha_effort: Option<u8>,
+    /// Partition limit (0-100). Penalizes I4 mode to prevent partition 0 overflow.
+    /// None = automatic retry on overflow.
+    pub(crate) partition_limit: Option<u8>,
+    /// Preserve RGB under fully-transparent pixels (alpha=0) in lossless mode.
+    /// `false` (default) matches libwebp: zero RGB for better compression.
+    pub(crate) exact: bool,
+    /// Near-lossless preprocessing for lossless mode (0-100, 100 = off).
+    pub(crate) near_lossless: u8,
+    /// Preprocessing options. Default: all off (matching libwebp's
+    /// `config->preprocessing = 0`).
+    pub(crate) smooth_segment_map: bool,
+    /// Cost model selection for mode selection and trellis. Default:
+    /// `ZenwebpDefault` (perceptual extensions enabled per method level).
+    /// `StrictLibwebpParity` disables PSY_WEIGHT_Y, SATD masking blend, and
+    /// JND zeroing for byte-comparable output to libwebp.
+    pub(crate) cost_model: CostModel,
+    /// Run a stat-collection encoder pass before the emit pass to refresh
+    /// `level_costs` from the observed token distribution. Roughly doubles
+    /// encode time at m4 in exchange for ~0.1% size win on photo content.
+    /// libwebp does this by default; zenwebp keeps it OFF to optimize the
+    /// speed/size tradeoff on the m4 default. Worth enabling for
+    /// `target_size` / `target_zensim` search loops, or under
+    /// `CostModel::StrictLibwebpParity`. Default `false`.
+    pub(crate) multi_pass_stats: bool,
+    /// Per-segment additive offsets to the post-modulation quant_index
+    /// (applied AFTER `compute_segment_quant`'s SNS modulation). Crate-
+    /// internal hook for the `target_zensim` per-segment correction
+    /// pass. `None` (default) leaves segments untouched. Each delta is
+    /// applied per-segment via `(seg_quant_index as i32 + delta).clamp(0,
+    /// 127)` before `init_matrices`.
+    pub(crate) segment_quant_overrides: Option<[i8; 4]>,
+    /// Allocation-fallibility policy for the encoder's top-level O(pixels)
+    /// buffers (#63). Lowered from `Limits::alloc_pref`; the native API leaves
+    /// it at `CodecDefault` (= infallible on every encoder site), the
+    /// `zencodec` adapter forwards `ResourceLimits::prefer_fallible_allocations`.
+    pub(crate) alloc_pref: crate::decoder::alloc_util::AllocPreference,
+}
+
+impl Default for EncoderParams {
+    fn default() -> Self {
+        Self {
+            use_lossy: false,
+            lossy_quality: 95,
+            method: 4, // Balanced speed/quality
+            sns_strength: 50,
+            filter_strength: 60,
+            filter_sharpness: 0,
+            num_segments: 4,
+            preset: Preset::Default,
+            target_size: 0,
+            target_psnr: 0.0,
+            sharp_yuv: None,
+            alpha_quality: 100,
+            alpha_effort: None,
+            partition_limit: None,
+            exact: false,
+            near_lossless: 100,
+            smooth_segment_map: false,
+            cost_model: CostModel::ZenwebpDefault,
+            multi_pass_stats: false,
+            segment_quant_overrides: None,
+            alloc_pref: crate::decoder::alloc_util::AllocPreference::CodecDefault,
+        }
+    }
+}
+
+/// Map an [`AllocFailed`](crate::decoder::alloc_util::AllocFailed) from one of
+/// the encoder's fallible O(pixels) allocations to the encode error the
+/// `zencodec` memory-limit path already uses (#63).
+#[cold]
+#[track_caller]
+pub(crate) fn alloc_failed_error(
+    _: crate::decoder::alloc_util::AllocFailed,
+) -> whereat::At<EncodeError> {
+    at!(EncodeError::LimitExceeded(
+        zencodec::LimitKind::Memory,
+        "allocation failed (prefer_fallible_allocations = Fallible)".into(),
+    ))
+}
+
+/// Progress callback for encoding. Return `Err(StopReason)` to cancel.
+pub trait EncodeProgress: Send + Sync {
+    /// Called with encoding progress percentage (0-100).
+    fn on_progress(&self, percent: u8) -> Result<(), enough::StopReason>;
+}
+
+/// Default progress callback that does nothing.
+pub struct NoProgress;
+
+impl EncodeProgress for NoProgress {
+    #[inline(always)]
+    fn on_progress(&self, _: u8) -> Result<(), enough::StopReason> {
+        Ok(())
+    }
+}
+
+/// Statistics from an encoding operation.
+///
+/// Provides information about the encoded output, including PSNR measurements,
+/// block counts, segment assignments, and size breakdowns.
+#[derive(Debug, Clone, Default)]
+pub struct EncodeStats {
+    // --- Common ---
+    /// Total coded output size in bytes.
+    pub coded_size: u32,
+
+    // --- Lossy VP8 ---
+    /// PSNR values: \[Y, U, V, All, Alpha\] in dB.
+    /// Computed from accumulated SSE during encoding (no decode needed).
+    pub psnr: [f32; 5],
+    /// Number of macroblocks using I4 prediction mode.
+    pub block_count_i4: u32,
+    /// Number of macroblocks using I16 prediction mode.
+    pub block_count_i16: u32,
+    /// Number of macroblocks with all-zero coefficients (skipped).
+    pub block_count_skip: u32,
+    /// Size of the compressed frame header in bytes.
+    pub header_bytes: u32,
+    /// Size of the mode partition (macroblock headers) in bytes.
+    pub mode_partition_bytes: u32,
+    /// Per-segment output sizes in bytes.
+    pub segment_size: [u32; 4],
+    /// Per-segment quantization index.
+    pub segment_quant: [u8; 4],
+    /// Per-segment loop filter level.
+    pub segment_level: [u8; 4],
+    /// Size of alpha plane data in bytes.
+    pub alpha_data_size: u32,
+
+    // --- Lossless VP8L ---
+    /// Bit flags for lossless features: predictor, cross-color, sub-green, palette.
+    pub lossless_features: u32,
+    /// Histogram bits used for meta-Huffman coding.
+    pub histogram_bits: u8,
+    /// Transform bits for predictor/cross-color block size.
+    pub transform_bits: u8,
+    /// Color cache bits (0 = disabled).
+    pub cache_bits: u8,
+    /// Palette size (0 if no palette).
+    pub palette_size: u16,
+    /// Total lossless data size in bytes.
+    pub lossless_size: u32,
+    /// Lossless header size in bytes.
+    pub lossless_hdr_size: u32,
+    /// Lossless image data size in bytes.
+    pub lossless_data_size: u32,
+}
+
+/// Internal-only encoder diagnostics, used by the closed-loop iteration in
+/// `zensim_target` to drive per-segment correction decisions from the real
+/// k-means `segment_map` rather than a spatial proxy.
+///
+/// **Not part of the public API.** Exposing the segment_map on
+/// [`EncodeStats`] would be a SemVer break (existing callers may have done
+/// `EncodeStats { ..fields }` literal construction); routing the data
+/// through this `pub(crate)` companion struct keeps the surface clean while
+/// giving the iteration loop the full per-MB segmentation it needs.
+///
+/// Populated only by [`encode_frame_lossy_with_diagnostics`](super::vp8::encode_frame_lossy_with_diagnostics).
+#[cfg(feature = "target-zensim")]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EncodeDiagnostics {
+    /// Per-macroblock segment id (0..num_segments). Length is
+    /// `mb_width * mb_height`, raster order. Empty when segmentation is
+    /// disabled (`num_segments == 1` or the encoder skipped the analysis
+    /// pass).
+    pub segment_map: alloc::vec::Vec<u8>,
+    /// Macroblock grid width (image_width rounded up by 16, divided by 16).
+    pub mb_width: u16,
+    /// Macroblock grid height.
+    pub mb_height: u16,
+    /// Effective number of segments after `simplify_segments` may have
+    /// merged duplicates. `1..=4`.
+    pub num_segments: u8,
+}
+
+// ============================================================================
+// Builder-style Encoder API (webpx-compatible)
+// ============================================================================
+
+/// WebP encoder configuration. Dimension-independent, reusable across images.
+///
+/// All fields are public for direct construction and inspection.
+/// Builder methods are provided for ergonomic chained construction.
+///
+/// # Example
+///
+/// ```rust
+/// use zenwebp::{EncoderConfig, EncodeRequest, PixelLayout, Preset};
+///
+/// let config = EncoderConfig::with_preset(Preset::Photo, 85.0)
+///     .with_method(4);
+///
+/// // Reuse config for multiple images
+/// let image1 = vec![0u8; 4 * 4 * 4]; // 4x4 RGBA
+/// let image2 = vec![0u8; 8 * 6 * 4]; // 8x6 RGBA
+/// let webp1 = EncodeRequest::new(&config, &image1, PixelLayout::Rgba8, 4, 4).encode()?;
+/// let webp2 = EncodeRequest::new(&config, &image2, PixelLayout::Rgba8, 8, 6).encode()?;
+/// # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+/// ```
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct EncoderConfig {
+    /// Encoding quality (0.0 = smallest, 100.0 = best). Default: 75.0.
+    pub quality: f32,
+    /// Content-aware preset. Default: `Preset::Default`.
+    pub preset: Preset,
+    /// Whether to use lossless compression. Default: `false`.
+    pub lossless: bool,
+    /// Quality/speed tradeoff (0 = fast, 6 = slower but better). Default: 4.
+    pub method: u8,
+    /// Near-lossless preprocessing (0 = max preprocessing, 100 = off). Default: 100.
+    pub near_lossless: u8,
+    /// Alpha channel quality (0-100, 100 = lossless alpha). Default: 100.
+    pub alpha_quality: u8,
+    /// Preserve exact RGB values under transparent areas. Default: `false`.
+    pub exact: bool,
+    /// Target file size in bytes (0 = disabled). Default: 0.
+    pub target_size: u32,
+    /// Target PSNR in dB (0.0 = disabled). Default: 0.0.
+    pub target_psnr: f32,
+    /// Sharp YUV configuration. `None` = disabled (standard chroma downsampling).
+    /// `Some(config)` = iterative chroma refinement with given parameters.
+    /// Use `.sharp_yuv(true)` for default config, `.sharp_yuv_config(cfg)` for custom.
+    pub sharp_yuv: Option<zenyuv::SharpYuvConfig>,
+    /// Spatial noise shaping strength override (0-100). `None` = use preset default.
+    pub sns_strength: Option<u8>,
+    /// Loop filter strength override (0-100). `None` = use preset default.
+    pub filter_strength: Option<u8>,
+    /// Loop filter sharpness override (0-7). `None` = use preset default.
+    pub filter_sharpness: Option<u8>,
+    /// Number of segments override (1-4). `None` = use preset default.
+    pub segments: Option<u8>,
+    /// Partition limit (0-100). Penalizes I4 mode to prevent partition 0 overflow.
+    /// `None` = automatic retry on overflow.
+    pub partition_limit: Option<u8>,
+    /// Enable segment-map smoothing (3×3 majority filter on the per-MB segment
+    /// map before per-segment quantizer setup). Equivalent to libwebp's
+    /// `config->preprocessing & 1`. Default `false`, matching libwebp.
+    pub smooth_segment_map: bool,
+    /// Cost model selection. Default: `ZenwebpDefault` (perceptual extensions
+    /// enabled per method level). Set to `StrictLibwebpParity` to disable
+    /// PSY_WEIGHT_Y, SATD masking blend, and JND zeroing for byte-comparable
+    /// output to libwebp at matching `(quality, method, sns, filter, segments)`.
+    pub cost_model: CostModel,
+    /// Run a stat-collection encoder pass before the emit pass. Roughly
+    /// doubles encode time at m4 in exchange for ~0.1% size win on photo
+    /// content. Default `false`. Currently only m4 honors this — m5/m6
+    /// already saturate per-pass and multi-pass at those tiers regresses size.
+    pub multi_pass_stats: bool,
+    /// Encode limits for dimensions and memory validation.
+    pub limits: crate::Limits,
+}
+
+impl Default for EncoderConfig {
+    fn default() -> Self {
+        Self {
+            quality: 75.0,
+            preset: Preset::Default,
+            lossless: false,
+            method: 4,
+            near_lossless: 100,
+            alpha_quality: 100,
+            exact: false,
+            target_size: 0,
+            target_psnr: 0.0,
+            sharp_yuv: None,
+            sns_strength: None,
+            filter_strength: None,
+            filter_sharpness: None,
+            segments: None,
+            partition_limit: None,
+            smooth_segment_map: false,
+            cost_model: CostModel::ZenwebpDefault,
+            multi_pass_stats: false,
+            limits: crate::Limits::none(), // No limits by default
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl EncoderConfig {
+    /// Create a new encoder configuration with default settings.
+    ///
+    /// Default: lossy encoding at quality 75, method 4, no preset.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a lossless encoder configuration.
+    #[must_use]
+    pub fn new_lossless() -> Self {
+        Self {
+            lossless: true,
+            quality: 75.0,
+            ..Self::default()
+        }
+    }
+
+    /// Create a configuration with preset and quality.
+    #[must_use]
+    pub fn with_preset(preset: Preset, quality: f32) -> Self {
+        Self {
+            preset,
+            quality,
+            ..Self::default()
+        }
+    }
+
+    /// Set encoding quality (0.0 = smallest, 100.0 = best).
+    #[must_use]
+    pub fn quality(mut self, quality: f32) -> Self {
+        self.quality = quality.clamp(0.0, 100.0);
+        self
+    }
+
+    /// Set content-aware preset.
+    #[must_use]
+    pub fn preset(mut self, preset: Preset) -> Self {
+        self.preset = preset;
+        self
+    }
+
+    /// Enable or disable lossless compression.
+    #[must_use]
+    pub fn lossless(mut self, lossless: bool) -> Self {
+        self.lossless = lossless;
+        self
+    }
+
+    /// Set quality/speed tradeoff (0 = fast, 6 = slower but better).
+    #[must_use]
+    pub fn method(mut self, method: u8) -> Self {
+        self.method = method.min(6);
+        self
+    }
+
+    /// Set near-lossless preprocessing (0 = max preprocessing, 100 = off).
+    #[must_use]
+    pub fn near_lossless(mut self, value: u8) -> Self {
+        self.near_lossless = value.min(100);
+        self
+    }
+
+    /// Set alpha plane quality (0-100, default 100).
+    #[must_use]
+    pub fn alpha_quality(mut self, quality: u8) -> Self {
+        self.alpha_quality = quality.min(100);
+        self
+    }
+
+    /// Preserve exact RGB values under transparent areas.
+    #[must_use]
+    pub fn exact(mut self, exact: bool) -> Self {
+        self.exact = exact;
+        self
+    }
+
+    /// Set target file size in bytes (0 = disabled).
+    #[must_use]
+    pub fn target_size(mut self, size: u32) -> Self {
+        self.target_size = size;
+        self
+    }
+
+    /// Set target PSNR in dB (0.0 = disabled).
+    /// When set, the encoder iterates quality to converge on the target PSNR.
+    #[must_use]
+    pub fn target_psnr(mut self, psnr: f32) -> Self {
+        self.target_psnr = if psnr > 0.0 { psnr } else { 0.0 };
+        self
+    }
+
+    /// Enable or disable sharp YUV conversion.
+    /// `true` enables with default config, `false` disables.
+    ///
+    /// The default runs libwebp's SharpYUV algorithm (exact port —
+    /// iterative luma/chroma optimization in linear light against the
+    /// decoder's fancy-upsampling filter): measured +1.0..+1.8 zensim over
+    /// standard conversion at +2-5% bytes. A custom
+    /// [`Self::sharp_yuv_config`] selects zenyuv's Newton-refinement
+    /// converter instead.
+    #[must_use]
+    pub fn sharp_yuv(mut self, enable: bool) -> Self {
+        self.sharp_yuv = if enable {
+            Some(zenyuv::SharpYuvConfig::default())
+        } else {
+            None
+        };
+        self
+    }
+
+    /// Enable sharp YUV with a custom zenyuv configuration.
+    /// Implicitly enables sharp YUV.
+    ///
+    /// Any non-default config routes through zenyuv's Newton-refinement
+    /// converter (which these knobs parameterize) rather than the libwebp
+    /// SharpYUV port that plain [`Self::sharp_yuv`]`(true)` uses.
+    #[must_use]
+    pub fn sharp_yuv_config(mut self, config: zenyuv::SharpYuvConfig) -> Self {
+        self.sharp_yuv = Some(config);
+        self
+    }
+
+    /// Set spatial noise shaping strength (0-100).
+    #[must_use]
+    pub fn sns_strength(mut self, strength: u8) -> Self {
+        self.sns_strength = Some(strength.min(100));
+        self
+    }
+
+    /// Set loop filter strength (0-100).
+    #[must_use]
+    pub fn filter_strength(mut self, strength: u8) -> Self {
+        self.filter_strength = Some(strength.min(100));
+        self
+    }
+
+    /// Set loop filter sharpness (0-7).
+    #[must_use]
+    pub fn filter_sharpness(mut self, sharpness: u8) -> Self {
+        self.filter_sharpness = Some(sharpness.min(7));
+        self
+    }
+
+    /// Set number of segments (1-4).
+    #[must_use]
+    pub fn segments(mut self, segments: u8) -> Self {
+        self.segments = Some(segments.clamp(1, 4));
+        self
+    }
+
+    /// Set preprocessing flags (bitfield, matches libwebp's `WebPConfig::preprocessing`).
+    ///
+    /// Enable segment-map smoothing (3×3 majority filter on the per-MB
+    /// segment map before per-segment quantizer setup). Equivalent to
+    /// libwebp's `cwebp -pre 1`. Default off.
+    #[must_use]
+    pub fn smooth_segment_map(mut self, on: bool) -> Self {
+        self.smooth_segment_map = on;
+        self
+    }
+
+    /// Enable a stat-collection encoder pass before the emit pass to refresh
+    /// `level_costs` from the observed token distribution. Roughly **doubles**
+    /// encode time at m4 in exchange for ~0.1% size win on photo content.
+    /// Default off; opt-in for `target_size` / `target_zensim` searches.
+    #[must_use]
+    pub fn multi_pass_stats(mut self, on: bool) -> Self {
+        self.multi_pass_stats = on;
+        self
+    }
+
+    /// Set the cost model used during mode selection and trellis quantization.
+    ///
+    /// - `CostModel::ZenwebpDefault` (default): perceptual extensions enabled
+    ///   per method level — PSY_WEIGHT_Y CSF table at m3+, SATD masking-alpha
+    ///   blend at m4+, JND coefficient zeroing at m5+. Tuned for perceptual
+    ///   metrics (butteraugli/SSIMULACRA2).
+    /// - `CostModel::StrictLibwebpParity`: disables those extensions so the
+    ///   encoder matches libwebp's algorithm at the same `(quality, method,
+    ///   sns, filter, segments)`. Use this when bit-comparing against libwebp.
+    #[must_use]
+    pub fn cost_model(mut self, model: CostModel) -> Self {
+        self.cost_model = model;
+        self
+    }
+
+    /// Set encode limits for validation.
+    #[must_use]
+    pub fn limits(mut self, limits: crate::Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Set maximum input dimensions.
+    #[must_use]
+    pub fn max_dimensions(mut self, width: u32, height: u32) -> Self {
+        self.limits = self.limits.max_dimensions(width, height);
+        self
+    }
+
+    /// Set maximum memory usage during encoding.
+    #[must_use]
+    pub fn max_memory(mut self, bytes: u64) -> Self {
+        self.limits = self.limits.max_memory(bytes);
+        self
+    }
+
+    /// Convert to internal EncoderParams.
+    pub(crate) fn to_params(&self) -> EncoderParams {
+        // Base tuning values from preset (matches libwebp config_enc.c)
+        // Auto uses Default values initially; the encoder overrides after analysis.
+        let (sns, filter, sharp, segs) = match self.preset {
+            Preset::Default | Preset::Auto => (50, 60, 0, 4),
+            Preset::Picture => (80, 35, 4, 4),
+            Preset::Photo => (80, 30, 3, 4),
+            Preset::Drawing => (25, 10, 6, 4),
+            Preset::Icon => (0, 0, 0, 4),
+            Preset::Text => (0, 0, 0, 2),
+        };
+
+        EncoderParams {
+            use_lossy: !self.lossless,
+            lossy_quality: super::fast_math::roundf(self.quality.clamp(0.0, 100.0)) as u8,
+            method: self.method,
+            sns_strength: self.sns_strength.unwrap_or(sns),
+            filter_strength: self.filter_strength.unwrap_or(filter),
+            filter_sharpness: self.filter_sharpness.unwrap_or(sharp),
+            num_segments: self.segments.unwrap_or(segs),
+            preset: self.preset,
+            target_size: self.target_size,
+            target_psnr: self.target_psnr,
+            sharp_yuv: self.sharp_yuv,
+            alpha_quality: self.alpha_quality,
+            alpha_effort: None, // legacy config predates the knob
+            partition_limit: self.partition_limit,
+            exact: self.exact,
+            near_lossless: self.near_lossless,
+            smooth_segment_map: self.smooth_segment_map,
+            cost_model: self.cost_model,
+            multi_pass_stats: self.multi_pass_stats,
+            segment_quant_overrides: None,
+            alloc_pref: self.limits.alloc_pref,
+        }
+    }
+
+    /// Estimate resource consumption for encoding an image with this config.
+    ///
+    /// Returns memory, time, and output size estimates. See
+    /// [`heuristics::estimate_encode`](crate::heuristics::estimate_encode) for details.
+    #[must_use]
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use LossyConfig or LosslessConfig with heuristics module"
+    )]
+    #[doc(hidden)]
+    pub fn estimate(
+        &self,
+        _width: u32,
+        _height: u32,
+        _bpp: u8,
+    ) -> crate::heuristics::EncodeEstimate {
+        // Deprecated - no longer functional with new config types
+        crate::heuristics::EncodeEstimate {
+            peak_memory_bytes_min: 0,
+            peak_memory_bytes: 0,
+            peak_memory_bytes_max: 0,
+            time_ms: 0.0,
+            output_bytes: 0,
+        }
+    }
+}
+
+/// Static default progress callback (does nothing).
+static NO_PROGRESS: NoProgress = NoProgress;
+
+/// Image metadata (ICC profile, EXIF, XMP).
+///
+/// Use this to attach metadata to encoded images. All fields are optional.
+/// This struct borrows data with lifetime `'a` to match EncodeRequest's pattern.
+///
+/// # Example
+///
+/// ```rust
+/// use zenwebp::{EncodeRequest, LossyConfig, PixelLayout, ImageMetadata};
+///
+/// let config = LossyConfig::new();
+/// let pixels = vec![255u8; 4 * 4 * 4];
+/// let icc_data = vec![/* ICC data */];
+/// let metadata = ImageMetadata::new()
+///     .with_icc_profile(&icc_data);
+///
+/// let webp = EncodeRequest::lossy(&config, &pixels, PixelLayout::Rgba8, 4, 4)
+///     .with_metadata(metadata)
+///     .encode()?;
+/// # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+/// ```
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ImageMetadata<'a> {
+    /// ICC color profile data.
+    pub icc_profile: Option<&'a [u8]>,
+    /// EXIF metadata.
+    pub exif: Option<&'a [u8]>,
+    /// XMP metadata.
+    pub xmp: Option<&'a [u8]>,
+}
+
+impl<'a> ImageMetadata<'a> {
+    /// Create empty metadata.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set ICC color profile.
+    #[must_use]
+    pub fn with_icc_profile(mut self, data: &'a [u8]) -> Self {
+        self.icc_profile = Some(data);
+        self
+    }
+
+    /// Set EXIF metadata.
+    #[must_use]
+    pub fn with_exif(mut self, data: &'a [u8]) -> Self {
+        self.exif = Some(data);
+        self
+    }
+
+    /// Set XMP metadata.
+    #[must_use]
+    pub fn with_xmp(mut self, data: &'a [u8]) -> Self {
+        self.xmp = Some(data);
+        self
+    }
+}
+
+/// Internal enum to hold different configuration types.
+enum ConfigKind<'a> {
+    Lossy(&'a config::LossyConfig),
+    Lossless(&'a config::LosslessConfig),
+    Enum(&'a config::EncoderConfig),
+}
+
+impl<'a> ConfigKind<'a> {
+    /// Convert to EncoderParams for internal use.
+    fn to_params(&self) -> EncoderParams {
+        match self {
+            Self::Lossy(cfg) => cfg.to_params(),
+            Self::Lossless(cfg) => cfg.to_params(),
+            Self::Enum(cfg) => cfg.to_params(),
+        }
+    }
+
+    /// Get the limits from the configuration.
+    fn get_limits(&self) -> &crate::Limits {
+        match self {
+            Self::Lossy(cfg) => &cfg.limits,
+            Self::Lossless(cfg) => &cfg.limits,
+            Self::Enum(cfg) => cfg.get_limits(),
+        }
+    }
+}
+
+/// Encoding request that borrows configuration, pixel data, and optional
+/// callbacks. Short-lived — created, configured, and consumed in one call chain.
+///
+/// # Example
+///
+/// ```rust
+/// use zenwebp::{EncodeRequest, LossyConfig, PixelLayout};
+///
+/// let config = LossyConfig::new().with_quality(85.0);
+/// let rgba = vec![0u8; 640 * 480 * 4];
+/// let webp = EncodeRequest::lossy(&config, &rgba, PixelLayout::Rgba8, 640, 480)
+///     .encode()?;
+/// # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+/// ```
+pub struct EncodeRequest<'a> {
+    config: ConfigKind<'a>,
+    pixels: &'a [u8],
+    color_type: PixelLayout,
+    width: u32,
+    height: u32,
+    stride_pixels: Option<usize>,
+    icc_profile: Option<&'a [u8]>,
+    exif_metadata: Option<&'a [u8]>,
+    xmp_metadata: Option<&'a [u8]>,
+    stop: &'a dyn enough::Stop,
+    progress: &'a dyn EncodeProgress,
+}
+
+impl<'a> EncodeRequest<'a> {
+    /// Create an encoding request with a lossy configuration.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use zenwebp::{EncodeRequest, LossyConfig, PixelLayout};
+    ///
+    /// let config = LossyConfig::new().with_quality(85.0).with_method(4);
+    /// let rgba = vec![0u8; 640 * 480 * 4];
+    /// let webp = EncodeRequest::lossy(&config, &rgba, PixelLayout::Rgba8, 640, 480)
+    ///     .encode()?;
+    /// # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+    /// ```
+    #[must_use]
+    pub fn lossy(
+        config: &'a config::LossyConfig,
+        pixels: &'a [u8],
+        color_type: PixelLayout,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            config: ConfigKind::Lossy(config),
+            pixels,
+            color_type,
+            width,
+            height,
+            stride_pixels: None,
+            icc_profile: None,
+            exif_metadata: None,
+            xmp_metadata: None,
+            stop: &enough::Unstoppable,
+            progress: &NO_PROGRESS,
+        }
+    }
+
+    /// Create an encoding request with a lossless configuration.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use zenwebp::{EncodeRequest, LosslessConfig, PixelLayout};
+    ///
+    /// let config = LosslessConfig::new().with_quality(90.0);
+    /// let rgba = vec![0u8; 640 * 480 * 4];
+    /// let webp = EncodeRequest::lossless(&config, &rgba, PixelLayout::Rgba8, 640, 480)
+    ///     .encode()?;
+    /// # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+    /// ```
+    #[must_use]
+    pub fn lossless(
+        config: &'a config::LosslessConfig,
+        pixels: &'a [u8],
+        color_type: PixelLayout,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            config: ConfigKind::Lossless(config),
+            pixels,
+            color_type,
+            width,
+            height,
+            stride_pixels: None,
+            icc_profile: None,
+            exif_metadata: None,
+            xmp_metadata: None,
+            stop: &enough::Unstoppable,
+            progress: &NO_PROGRESS,
+        }
+    }
+
+    /// Create an encoding request with an enum configuration (runtime selection).
+    ///
+    /// Use this when you need to choose between lossy and lossless at runtime.
+    /// For compile-time mode selection, use [`lossy()`](Self::lossy) or
+    /// [`lossless()`](Self::lossless) instead.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use zenwebp::{EncodeRequest, EncoderConfig, PixelLayout};
+    ///
+    /// let config = EncoderConfig::new_lossy().with_quality(85.0);
+    /// let rgba = vec![0u8; 640 * 480 * 4];
+    /// let webp = EncodeRequest::new(&config, &rgba, PixelLayout::Rgba8, 640, 480)
+    ///     .encode()?;
+    /// # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+    /// ```
+    #[must_use]
+    pub fn new(
+        config: &'a config::EncoderConfig,
+        pixels: &'a [u8],
+        color_type: PixelLayout,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            config: ConfigKind::Enum(config),
+            pixels,
+            color_type,
+            width,
+            height,
+            stride_pixels: None,
+            icc_profile: None,
+            exif_metadata: None,
+            xmp_metadata: None,
+            stop: &enough::Unstoppable,
+            progress: &NO_PROGRESS,
+        }
+    }
+
+    /// Set a cooperative cancellation token.
+    #[must_use]
+    pub fn with_stop(mut self, stop: &'a dyn enough::Stop) -> Self {
+        self.stop = stop;
+        self
+    }
+
+    /// Set a progress callback.
+    #[must_use]
+    pub fn with_progress(mut self, progress: &'a dyn EncodeProgress) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    /// Set row stride in pixels. Must be >= `width`.
+    #[must_use]
+    pub fn with_stride(mut self, stride_pixels: usize) -> Self {
+        self.stride_pixels = Some(stride_pixels);
+        self
+    }
+
+    /// Set ICC profile to embed.
+    #[must_use]
+    pub fn with_icc_profile(mut self, data: &'a [u8]) -> Self {
+        self.icc_profile = Some(data);
+        self
+    }
+
+    /// Set EXIF metadata to embed.
+    #[must_use]
+    pub fn with_exif(mut self, data: &'a [u8]) -> Self {
+        self.exif_metadata = Some(data);
+        self
+    }
+
+    /// Set XMP metadata to embed.
+    #[must_use]
+    pub fn with_xmp(mut self, data: &'a [u8]) -> Self {
+        self.xmp_metadata = Some(data);
+        self
+    }
+
+    /// Set all metadata at once from an [`ImageMetadata`] struct.
+    ///
+    /// This is a convenience method that sets ICC profile, EXIF, and XMP metadata
+    /// in a single call. For setting individual fields, use [`with_icc_profile()`](Self::with_icc_profile),
+    /// [`with_exif()`](Self::with_exif), or [`with_xmp()`](Self::with_xmp).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use zenwebp::{EncodeRequest, LossyConfig, PixelLayout, ImageMetadata};
+    ///
+    /// let config = LossyConfig::new();
+    /// let pixels = vec![255u8; 4 * 4 * 4];
+    /// let icc_data = vec![/* ICC data */];
+    /// let metadata = ImageMetadata::new()
+    ///     .with_icc_profile(&icc_data);
+    ///
+    /// let webp = EncodeRequest::lossy(&config, &pixels, PixelLayout::Rgba8, 4, 4)
+    ///     .with_metadata(metadata)
+    ///     .encode()?;
+    /// # Ok::<(), whereat::At<zenwebp::EncodeError>>(())
+    /// ```
+    #[must_use]
+    pub fn with_metadata(mut self, meta: ImageMetadata<'a>) -> Self {
+        if let Some(icc) = meta.icc_profile {
+            self.icc_profile = Some(icc);
+        }
+        if let Some(exif) = meta.exif {
+            self.exif_metadata = Some(exif);
+        }
+        if let Some(xmp) = meta.xmp {
+            self.xmp_metadata = Some(xmp);
+        }
+        self
+    }
+
+    /// Encode to WebP bytes.
+    ///
+    /// When the lossy config has `target_zensim` set and the
+    /// `target-zensim` crate feature is enabled, the encoder runs a
+    /// closed-loop iteration (encode → decode → measure → adjust)
+    /// transparently and returns the converged bytes. Use
+    /// [`Self::encode_with_metrics`] if you also need the
+    /// [`ZensimEncodeMetrics`] (achieved score, passes used,
+    /// targets-met flag).
+    #[track_caller]
+    pub fn encode(self) -> EncodeResult<Vec<u8>> {
+        if let Some(bytes) = self.try_encode_target_zensim_bytes()? {
+            return Ok(bytes);
+        }
+        let (output, _stats) = self.encode_inner()?;
+        Ok(output)
+    }
+
+    /// Encode to WebP bytes, appending to an existing Vec.
+    #[track_caller]
+    pub fn encode_into(self, output: &mut Vec<u8>) -> EncodeResult<()> {
+        let encoded = self.encode()?;
+        output.extend_from_slice(&encoded);
+        Ok(())
+    }
+
+    /// Encode to WebP bytes and return encoding statistics.
+    ///
+    /// Honors `target_zensim` exactly like [`Self::encode`]: when the lossy
+    /// config sets a target (and the `target-zensim` feature is on), the
+    /// closed-loop iteration runs and the statistics returned are those of
+    /// the winning pass. (#78: this entry point used to bypass the
+    /// iteration and single-pass silently.)
+    #[track_caller]
+    pub fn encode_with_stats(self) -> EncodeResult<(Vec<u8>, EncodeStats)> {
+        if let Some((bytes, stats, _metrics)) = self.try_encode_target_zensim_with_metrics()? {
+            return Ok((bytes, stats));
+        }
+        self.encode_inner()
+    }
+
+    /// Encode to WebP bytes alongside [`ZensimEncodeMetrics`].
+    ///
+    /// When the lossy config has `target_zensim` set and the
+    /// `target-zensim` crate feature is enabled (with [`PixelLayout::Rgb8`]
+    /// or [`PixelLayout::Rgba8`] input), the encoder runs a closed-loop
+    /// iteration and reports the achieved zensim score, passes used, and
+    /// `targets_met` flag in the returned metrics. In every other case
+    /// where iteration does not run (no target, feature disabled,
+    /// lossless), the metrics are filled via
+    /// [`ZensimEncodeMetrics::no_target`] — score `NaN`,
+    /// `passes_used=1`, `targets_met=true`.
+    ///
+    /// Pixel layout: `target_zensim` supports [`PixelLayout::Rgb8`] and
+    /// [`PixelLayout::Rgba8`]. RGBA inputs are encoded as alpha-bearing
+    /// WebP and measured against the source via zensim's
+    /// deterministic-noise compositing (the same composite is applied
+    /// to source and reconstruction, so alpha quality is well-defined).
+    /// Other layouts (BGR, BGRA, ARGB, L8, LA8, YUV420) with
+    /// `target_zensim` set return
+    /// [`EncodeError::TargetZensimUnsupportedLayout`].
+    ///
+    /// Mirrors the shape of zenjpeg's
+    /// `BytesEncoder::finish_with_metrics()`.
+    #[track_caller]
+    pub fn encode_with_metrics(
+        self,
+    ) -> EncodeResult<(Vec<u8>, super::zensim_target::ZensimEncodeMetrics)> {
+        if let Some((bytes, _stats, metrics)) = self.try_encode_target_zensim_with_metrics()? {
+            return Ok((bytes, metrics));
+        }
+        let (output, _stats) = self.encode_inner()?;
+        let len = output.len();
+        Ok((
+            output,
+            super::zensim_target::ZensimEncodeMetrics::no_target(len),
+        ))
+    }
+
+    /// If this request targets a lossy config with `target_zensim`
+    /// set, RGB8 or RGBA8 input, no stride override, and the
+    /// `target-zensim` feature is on, run the iteration loop and
+    /// return the converged bytes. Returns
+    /// [`EncodeError::TargetZensimUnsupportedLayout`] when
+    /// `target_zensim` is set but the input layout is not `Rgb8` or
+    /// `Rgba8`. Otherwise returns `Ok(None)` so the caller can fall
+    /// back to the normal single-pass path.
+    fn try_encode_target_zensim_bytes(&self) -> EncodeResult<Option<Vec<u8>>> {
+        match self.try_encode_target_zensim_with_metrics()? {
+            Some((bytes, _stats, _m)) => Ok(Some(bytes)),
+            None => Ok(None),
+        }
+    }
+
+    /// Same as [`Self::try_encode_target_zensim_bytes`] but also
+    /// returns the metrics.
+    ///
+    /// `target_zensim` supports [`PixelLayout::Rgb8`] and
+    /// [`PixelLayout::Rgba8`] inputs. RGBA inputs are encoded as
+    /// alpha-bearing WebP and measured against the source via zensim's
+    /// deterministic-noise compositing — the same composite is applied
+    /// to source and reconstruction, so alpha quality is well-defined.
+    /// Other layouts (BGR/BGRA/ARGB/L8/LA8/YUV420) with `target_zensim`
+    /// set return [`EncodeError::TargetZensimUnsupportedLayout`]; no
+    /// silent fallback to single-pass — that would hide the unhonored
+    /// target.
+    ///
+    /// No stride override; the metadata fields (icc/exif/xmp) are not
+    /// currently honored on the iteration path — if any are set we
+    /// fall back to a single-pass encode and return `None` so the
+    /// caller can take the normal path. (TODO: thread metadata
+    /// through iteration once a user needs it.)
+    fn try_encode_target_zensim_with_metrics(
+        &self,
+    ) -> EncodeResult<
+        Option<(
+            Vec<u8>,
+            EncodeStats,
+            super::zensim_target::ZensimEncodeMetrics,
+        )>,
+    > {
+        // Only Rgb8/Rgba8 lossy configs with target_zensim set and no
+        // metadata/stride trigger the iteration path. Other layouts
+        // with target_zensim set return a typed error (no silent
+        // fallback to single-pass — that would hide the unhonored
+        // target). Everything else returns Ok(None) so the caller
+        // falls back to encode_inner.
+        let lossy = match &self.config {
+            ConfigKind::Lossy(cfg) => *cfg,
+            ConfigKind::Lossless(_) => return Ok(None),
+            ConfigKind::Enum(config::EncoderConfig::Lossy(cfg)) => cfg,
+            ConfigKind::Enum(config::EncoderConfig::Lossless(_)) => return Ok(None),
+        };
+        if lossy.target_zensim.is_none() {
+            return Ok(None);
+        }
+        match self.color_type {
+            PixelLayout::Rgb8 | PixelLayout::Rgba8 => {}
+            other => {
+                return Err(at!(EncodeError::TargetZensimUnsupportedLayout(other)));
+            }
+        }
+        if self.stride_pixels.is_some() {
+            return Ok(None);
+        }
+        if self.icc_profile.is_some() || self.exif_metadata.is_some() || self.xmp_metadata.is_some()
+        {
+            // Iteration loop currently doesn't thread metadata
+            // through. Take the safe path.
+            return Ok(None);
+        }
+        let triple = lossy.encode_pixels_with_metrics(
+            self.pixels,
+            self.color_type,
+            self.width,
+            self.height,
+            self.stop,
+            self.progress,
+        )?;
+        Ok(Some(triple))
+    }
+
+    /// Encode to WebP, writing to an [`io::Write`](std::io::Write) implementor.
+    #[cfg(feature = "std")]
+    #[track_caller]
+    pub fn encode_to<W: std::io::Write>(self, mut writer: W) -> EncodeResult<()> {
+        let encoded = self.encode()?;
+        writer
+            .write_all(&encoded)
+            .map_err(|e| at!(EncodeError::IoError(e)))?;
+        Ok(())
+    }
+
+    /// Internal-only: encode and also return the encoder's `segment_map`
+    /// + grid dimensions for the closed-loop `target-zensim` iteration.
+    ///
+    /// On-wire bytes are identical to [`Self::encode`].
+    #[cfg(feature = "target-zensim")]
+    pub(crate) fn encode_inner_with_diagnostics(
+        self,
+    ) -> EncodeResult<(Vec<u8>, EncodeStats, EncodeDiagnostics)> {
+        self.config
+            .get_limits()
+            .check_dimensions(self.width, self.height)
+            .map_err(|e| at!(EncodeError::InvalidBufferSize(format!("{}", e))))?;
+
+        let bpp = self.color_type.bytes_per_pixel();
+        let stride = self.stride_pixels.unwrap_or(self.width as usize);
+
+        if stride < self.width as usize {
+            return Err(at!(EncodeError::InvalidBufferSize(format!(
+                "stride_pixels {} < width {}",
+                stride, self.width
+            ))));
+        }
+
+        if self.color_type != PixelLayout::Yuv420 {
+            validate_buffer_size(
+                self.pixels.len(),
+                self.width,
+                self.height,
+                stride,
+                bpp as u32,
+            )?;
+        }
+
+        let mut output = Vec::new();
+        let stats;
+        let diag;
+        {
+            let mut encoder = WebPEncoder::new(&mut output);
+            encoder.set_params(self.config.to_params());
+            encoder.set_stop(self.stop);
+            encoder.set_progress(self.progress);
+            if let Some(icc) = self.icc_profile {
+                encoder.set_icc_profile(icc.to_vec());
+            }
+            if let Some(exif) = self.exif_metadata {
+                encoder.set_exif_metadata(exif.to_vec());
+            }
+            if let Some(xmp) = self.xmp_metadata {
+                encoder.set_xmp_metadata(xmp.to_vec());
+            }
+            let (s, d) = encoder.encode_with_diagnostics(
+                self.pixels,
+                self.width,
+                self.height,
+                stride,
+                self.color_type,
+            )?;
+            stats = s;
+            diag = d;
+        }
+        Ok((output, stats, diag))
+    }
+
+    pub(crate) fn encode_inner(self) -> EncodeResult<(Vec<u8>, EncodeStats)> {
+        // Validate dimensions against limits
+        self.config
+            .get_limits()
+            .check_dimensions(self.width, self.height)
+            .map_err(|e| at!(EncodeError::InvalidBufferSize(format!("{}", e))))?;
+
+        let bpp = self.color_type.bytes_per_pixel();
+        let stride = self.stride_pixels.unwrap_or(self.width as usize);
+
+        if stride < self.width as usize {
+            return Err(at!(EncodeError::InvalidBufferSize(format!(
+                "stride_pixels {} < width {}",
+                stride, self.width
+            ))));
+        }
+
+        if self.color_type != PixelLayout::Yuv420 {
+            validate_buffer_size(
+                self.pixels.len(),
+                self.width,
+                self.height,
+                stride,
+                bpp as u32,
+            )?;
+        }
+
+        let mut output = Vec::new();
+        let stats;
+        {
+            let mut encoder = WebPEncoder::new(&mut output);
+            encoder.set_params(self.config.to_params());
+            encoder.set_stop(self.stop);
+            encoder.set_progress(self.progress);
+            if let Some(icc) = self.icc_profile {
+                encoder.set_icc_profile(icc.to_vec());
+            }
+            if let Some(exif) = self.exif_metadata {
+                encoder.set_exif_metadata(exif.to_vec());
+            }
+            if let Some(xmp) = self.xmp_metadata {
+                encoder.set_xmp_metadata(xmp.to_vec());
+            }
+            stats = encoder.encode(
+                self.pixels,
+                self.width,
+                self.height,
+                stride,
+                self.color_type,
+            )?;
+        }
+        Ok((output, stats))
+    }
+}
+
+/// Validate buffer size for encoding.
+fn validate_buffer_size(
+    size: usize,
+    width: u32,
+    height: u32,
+    stride: usize,
+    bpp: u32,
+) -> EncodeResult<()> {
+    let w = width as usize;
+    let h = height as usize;
+    let bpp = bpp as usize;
+    let expected = if h > 0 {
+        stride.saturating_mul(bpp).saturating_mul(h - 1) + w.saturating_mul(bpp)
+    } else {
+        0
+    };
+
+    if size < expected {
+        return Err(at!(EncodeError::InvalidBufferSize(format!(
+            "buffer too small: got {}, expected at least {} ({}x{}, stride={}, bpp={})",
+            size, expected, w, h, stride, bpp
+        ))));
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Lossless encoding implementation
+// ============================================================================
+
+/// Encode image data losslessly with the indicated color type.
+///
+/// Uses the full VP8L pipeline (LZ77, histogram clustering, transforms)
+/// for every layout; L8/La8 are widened to RGB/RGBA first so grayscale
+/// gets the same treatment as color (#57). The literal-only writer that
+/// used to sit behind an `implicit_dimensions` flag was unreachable (both
+/// callers passed `false`; the ALPH plane goes through
+/// `encode_alpha_lossless`) and was removed (#78).
+///
+/// # Panics
+///
+/// Panics if the image data is not of the indicated dimensions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_frame_lossless(
+    writer: &mut Vec<u8>,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    color: PixelLayout,
+    params: EncoderParams,
+    stop: &dyn enough::Stop,
+) -> EncodeResult<()> {
+    let bytes_per_pixel = match color {
+        PixelLayout::L8 => 1,
+        PixelLayout::La8 => 2,
+        PixelLayout::Rgb8 | PixelLayout::Bgr8 => 3,
+        PixelLayout::Rgba8 | PixelLayout::Bgra8 | PixelLayout::Argb8 => 4,
+        PixelLayout::Yuv420 => {
+            return Err(at!(EncodeError::InvalidBufferSize(
+                "YUV 4:2:0 input only supports lossy encoding".into(),
+            )));
+        }
+    };
+
+    let bpp = bytes_per_pixel as usize;
+    let ww = width as usize;
+    let hh = height as usize;
+    let min_size = if hh > 0 {
+        stride * bpp * (hh - 1) + ww * bpp
+    } else {
+        0
+    };
+    assert!(
+        data.len() >= min_size,
+        "buffer too small: got {}, need at least {} for {}x{} stride={} {:?}",
+        data.len(),
+        min_size,
+        ww,
+        hh,
+        stride,
+        color
+    );
+
+    if width == 0 || width > 16384 || height == 0 || height > 16384 {
+        return Err(at!(EncodeError::InvalidDimensions));
+    }
+
+    // For main image encoding (not alpha plane), use the full VP8L pipeline.
+    // L8/La8 are widened to RGB/RGBA by convert_to_contiguous, so grayscale
+    // input gets the same LZ77 / palette / meta-huffman / transform treatment
+    // as color instead of falling to the literal-only encoder. Honestly-
+    // declared grayscale otherwise paid a large compression penalty vs the
+    // identical content fed as RGB (#57).
+    // Convert to contiguous RGBA or RGB for encode_vp8l
+    let (pixels, has_alpha) =
+        convert_to_contiguous(data, width, height, stride, color, params.alloc_pref)?;
+
+    // Build VP8L config from params
+    let quality = params.lossy_quality; // quality field controls lossless effort
+    let method = params.method;
+    let vp8l_config = super::vp8l::Vp8lConfig {
+        quality: super::vp8l::Vp8lQuality { quality, method },
+        exact: params.exact,
+        // Was dropped here — `..default()` silently reset it to 100, so
+        // `with_near_lossless(q)` was a no-op at every method and quality
+        // (found by the decode-bounded roundtrip test, zenwebp#89).
+        near_lossless: params.near_lossless,
+        ..super::vp8l::Vp8lConfig::default()
+    };
+
+    let vp8l_data = super::vp8l::encode_vp8l_with_alloc(
+        &pixels,
+        width,
+        height,
+        has_alpha,
+        &vp8l_config,
+        params.alloc_pref,
+        stop,
+    )?;
+    writer.extend_from_slice(&vp8l_data);
+    Ok(())
+}
+
+/// Convert pixel data to contiguous RGBA or RGB for encode_vp8l.
+///
+/// Returns (pixel_data, has_alpha). The output buffer is a top-level
+/// O(pixels) allocation: infallible by default, `try_reserve` under
+/// `AllocPreference::Fallible` (#63).
+fn convert_to_contiguous(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    color: PixelLayout,
+    alloc_pref: crate::decoder::alloc_util::AllocPreference,
+) -> EncodeResult<(Vec<u8>, bool)> {
+    let ww = width as usize;
+    let hh = height as usize;
+    let npixels = ww * hh;
+    let bpp = color.bytes_per_pixel();
+    let stride_bytes = stride * bpp;
+    let row_bytes = ww * bpp;
+    let alloc_px = |n: usize| {
+        crate::decoder::alloc_util::alloc_zeroed(alloc_pref, false, n).map_err(alloc_failed_error)
+    };
+
+    Ok(match color {
+        PixelLayout::Rgb8 => {
+            let mut out = alloc_px(npixels * 3)?;
+            for y in 0..hh {
+                out[y * ww * 3..(y + 1) * ww * 3]
+                    .copy_from_slice(&data[y * stride_bytes..y * stride_bytes + row_bytes]);
+            }
+            (out, false)
+        }
+        PixelLayout::Rgba8 => {
+            let mut out = alloc_px(npixels * 4)?;
+            for y in 0..hh {
+                out[y * ww * 4..(y + 1) * ww * 4]
+                    .copy_from_slice(&data[y * stride_bytes..y * stride_bytes + row_bytes]);
+            }
+            (out, true)
+        }
+        PixelLayout::Bgr8 => {
+            // Convert BGR to RGB
+            let mut out = alloc_px(npixels * 3)?;
+            for y in 0..hh {
+                let src = &data[y * stride_bytes..y * stride_bytes + row_bytes];
+                let dst = &mut out[y * ww * 3..(y + 1) * ww * 3];
+                for (d, s) in dst
+                    .as_chunks_mut::<3>()
+                    .0
+                    .iter_mut()
+                    .zip(src.as_chunks::<3>().0)
+                {
+                    d[0] = s[2]; // R
+                    d[1] = s[1]; // G
+                    d[2] = s[0]; // B
+                }
+            }
+            (out, false)
+        }
+        PixelLayout::Bgra8 => {
+            // Convert BGRA to RGBA
+            let mut out = alloc_px(npixels * 4)?;
+            for y in 0..hh {
+                garb::bytes::bgra_to_rgba(
+                    &data[y * stride_bytes..y * stride_bytes + row_bytes],
+                    &mut out[y * ww * 4..(y + 1) * ww * 4],
+                )
+                .expect("validated buffer sizes");
+            }
+            (out, true)
+        }
+        PixelLayout::Argb8 => {
+            // Convert ARGB to RGBA
+            let mut out = alloc_px(npixels * 4)?;
+            for y in 0..hh {
+                garb::bytes::argb_to_rgba(
+                    &data[y * stride_bytes..y * stride_bytes + row_bytes],
+                    &mut out[y * ww * 4..(y + 1) * ww * 4],
+                )
+                .expect("validated buffer sizes");
+            }
+            (out, true)
+        }
+        PixelLayout::L8 => {
+            // Grayscale → RGB
+            let mut out = alloc_px(npixels * 3)?;
+            for y in 0..hh {
+                let src = &data[y * stride_bytes..y * stride_bytes + ww];
+                let dst = &mut out[y * ww * 3..(y + 1) * ww * 3];
+                for (d, &s) in dst.as_chunks_mut::<3>().0.iter_mut().zip(src.iter()) {
+                    *d = [s; 3];
+                }
+            }
+            (out, false)
+        }
+        PixelLayout::La8 => {
+            // Grayscale+Alpha → RGBA
+            let mut out = alloc_px(npixels * 4)?;
+            for y in 0..hh {
+                garb::bytes::gray_alpha_to_rgba(
+                    &data[y * stride_bytes..y * stride_bytes + row_bytes],
+                    &mut out[y * ww * 4..(y + 1) * ww * 4],
+                )
+                .expect("validated buffer sizes");
+            }
+            (out, true)
+        }
+        PixelLayout::Yuv420 => unreachable!(),
+    })
+}
+
+/// Quantize alpha values to `num_levels` distinct values using k-means clustering.
+///
+/// Matches libwebp's `QuantizeLevels()` behavior: reduces distinct alpha values
+/// for better compression while maintaining perceptual quality.
+fn quantize_alpha_levels(data: &mut [u8], num_levels: u16) {
+    if num_levels >= 256 || data.is_empty() {
+        return;
+    }
+    let num_levels = num_levels.max(2) as usize;
+
+    // Build histogram
+    let mut histogram = [0u32; 256];
+    for &v in data.iter() {
+        histogram[v as usize] += 1;
+    }
+
+    // Find min/max
+    let min_val = histogram.iter().position(|&c| c > 0).unwrap_or(0);
+    let max_val = histogram.iter().rposition(|&c| c > 0).unwrap_or(255);
+
+    if min_val == max_val {
+        return; // single value, nothing to quantize
+    }
+
+    // Initialize cluster centers uniformly across [min, max]
+    let mut centers = Vec::with_capacity(num_levels);
+    for i in 0..num_levels {
+        centers
+            .push(min_val as f32 + (max_val - min_val) as f32 * i as f32 / (num_levels - 1) as f32);
+    }
+
+    // K-means iteration (max 6 iterations, matching libwebp)
+    let mut map = [0u8; 256];
+    for _ in 0..6 {
+        // Assign each value to nearest center
+        for val in min_val..=max_val {
+            if histogram[val] == 0 {
+                continue;
+            }
+            let mut best_idx = 0;
+            let mut best_dist = f32::MAX;
+            for (i, &c) in centers.iter().enumerate() {
+                let d = (val as f32 - c).abs();
+                if d < best_dist {
+                    best_dist = d;
+                    best_idx = i;
+                }
+            }
+            map[val] = best_idx as u8;
+        }
+
+        // Recompute centers
+        let mut sums = alloc::vec![0.0f64; num_levels];
+        let mut counts = alloc::vec![0u64; num_levels];
+        for val in min_val..=max_val {
+            if histogram[val] == 0 {
+                continue;
+            }
+            let idx = map[val] as usize;
+            sums[idx] += val as f64 * histogram[val] as f64;
+            counts[idx] += histogram[val] as u64;
+        }
+
+        let mut converged = true;
+        for i in 0..num_levels {
+            if counts[i] > 0 {
+                let new_center = (sums[i] / counts[i] as f64) as f32;
+                if (new_center - centers[i]).abs() > 0.5 {
+                    converged = false;
+                }
+                centers[i] = new_center;
+            }
+        }
+
+        if converged {
+            break;
+        }
+    }
+
+    // Build final lookup table: value → quantized value (rounded center)
+    let mut lut = [0u8; 256];
+    for val in min_val..=max_val {
+        lut[val] = (centers[map[val] as usize] + 0.5) as u8;
+    }
+    // Values below min_val map to min_val's center
+    for val in 0..min_val {
+        lut[val] = lut[min_val];
+    }
+    // Values above max_val map to max_val's center
+    for val in (max_val + 1)..=255 {
+        lut[val] = lut[max_val];
+    }
+
+    // Apply quantization
+    for v in data.iter_mut() {
+        *v = lut[*v as usize];
+    }
+}
+
+/// True when every alpha sample in the image is 255 (fully opaque).
+///
+/// libwebp decides whether a lossy encode carries an ALPH chunk by scanning
+/// the actual pixels (`WebPPictureHasTransparency`), not by the input layout
+/// — an opaque RGBA source encodes as a plain `VP8 ` file. zenwebp
+/// historically keyed on the layout alone, wrapping opaque RGBA in a
+/// VP8X + ALPH container (~80 wasted bytes on a 64×64, plus the extended
+/// header on every such file). Both cost models now skip the alpha plane
+/// when it is uniformly 255. (#38)
+pub(crate) fn alpha_is_opaque(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    color: PixelLayout,
+) -> bool {
+    let bytes_per_pixel = match color {
+        PixelLayout::La8 => 2usize,
+        PixelLayout::Rgba8 | PixelLayout::Bgra8 | PixelLayout::Argb8 => 4,
+        _ => return true,
+    };
+    let alpha_offset = match color {
+        PixelLayout::Argb8 => 0usize,
+        _ => bytes_per_pixel - 1,
+    };
+    let ww = width as usize;
+    let hh = height as usize;
+    let stride_bytes = stride * bytes_per_pixel;
+    let row_bytes = ww * bytes_per_pixel;
+    (0..hh).all(|y| {
+        data[y * stride_bytes..y * stride_bytes + row_bytes]
+            .iter()
+            .skip(alpha_offset)
+            .step_by(bytes_per_pixel)
+            .all(|&a| a == 255)
+    })
+}
+
+/// Encodes the alpha part of the image data losslessly.
+/// Used for lossy images that include transparency.
+///
+/// Both cost models run libwebp's full `EncodeAlpha` pipeline
+/// (`alpha_enc.c`): `QuantizeLevels` preprocessing (the tuned default keeps
+/// its historical uniform level mapping), the `GetFilterMap` filter-trial
+/// loop (none/horizontal/vertical/gradient at the default FAST filtering),
+/// a per-trial raw fallback when compression does not pay, and the winning
+/// payload coded with the VP8L encoder at libwebp's alpha operating point
+/// (`method = effort`, `quality = 8·effort`, alpha in the GREEN channel
+/// with R=B=0). Only `StrictLibwebpParity` keeps libwebp's escalation to
+/// VP8L quality 100 at `alpha_quality == 100 && effort == 6`; the tuned
+/// default caps alpha at `8·effort` — the escalation costs ~40x for the
+/// last ~25% of the ALPH chunk (see `alpha_vp8l_payload_inner`).
+///
+/// # Panics
+///
+/// Panics if the image data is not of the indicated dimensions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_alpha_lossless(
+    writer: &mut Vec<u8>,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    color: PixelLayout,
+    alpha_quality: u8,
+    effort_level: u8,
+    cost_model: CostModel,
+    alloc_pref: crate::decoder::alloc_util::AllocPreference,
+    stop: &dyn enough::Stop,
+) -> EncodeResult<()> {
+    let bytes_per_pixel = match color {
+        PixelLayout::La8 => 2usize,
+        PixelLayout::Rgba8 | PixelLayout::Bgra8 | PixelLayout::Argb8 => 4,
+        _ => unreachable!(),
+    };
+    // Alpha channel offset within each pixel
+    let alpha_offset = match color {
+        PixelLayout::Argb8 => 0usize,
+        _ => bytes_per_pixel - 1,
+    };
+    if width == 0 || width > 16384 || height == 0 || height > 16384 {
+        return Err(at!(EncodeError::InvalidDimensions));
+    }
+
+    // Extract alpha channel (row-by-row to handle stride)
+    let ww = width as usize;
+    let hh = height as usize;
+    let stride_bytes = stride * bytes_per_pixel;
+    let row_bytes = ww * bytes_per_pixel;
+    // Tight alpha plane: a top-level O(pixels) buffer (#63).
+    let mut alpha_data =
+        crate::decoder::alloc_util::alloc_with_capacity(alloc_pref, false, ww * hh)
+            .map_err(alloc_failed_error)?;
+    for y in 0..hh {
+        let row = &data[y * stride_bytes..y * stride_bytes + row_bytes];
+        alpha_data.extend(row.iter().skip(alpha_offset).step_by(bytes_per_pixel));
+    }
+
+    debug_assert_eq!(alpha_data.len(), (width * height) as usize);
+
+    // Level quantization: parity uses libwebp's `QuantizeLevels` k-means
+    // with its (q<=70 ? 2+q/5 : 16+(q-70)*8) mapping; the tuned default
+    // keeps its historical uniform mapping so its decoded ALPHA VALUES are
+    // unchanged. Everything downstream (filter trials, full-VP8L payload,
+    // raw fallback) is shared: it re-encodes the same quantized plane
+    // losslessly, so tuned adoption is a pure size win — measured 54->26 B
+    // (gradient), 109->32 B (checker) per 64x64 plane; see
+    // benchmarks/tuned_candidates_2026-07-16.md.
+    let reduce_levels = alpha_quality < 100;
+    if reduce_levels {
+        if cost_model == CostModel::StrictLibwebpParity {
+            super::alpha::quantize_levels(
+                &mut alpha_data,
+                super::alpha::alpha_levels_for_quality(alpha_quality),
+            );
+        } else {
+            let num_levels = 1u16 + u16::from(alpha_quality) * 255 / 100;
+            quantize_alpha_levels(&mut alpha_data, num_levels);
+        }
+    }
+
+    encode_alpha_libwebp_pipeline(
+        writer,
+        alpha_data,
+        width,
+        height,
+        effort_level.min(6),
+        reduce_levels,
+        cost_model == CostModel::StrictLibwebpParity,
+        alloc_pref,
+        stop,
+    )
+}
+
+/// libwebp's `EncodeAlpha` + `ApplyFiltersAndEncode` + `EncodeAlphaInternal`
+/// (`alpha_enc.c`), at the shipped defaults `alpha_compression = 1`
+/// (lossless) and `alpha_filtering = 1` (FAST). See
+/// `crate::encoder::alpha` for the ported stages. (#38)
+fn encode_alpha_libwebp_pipeline(
+    writer: &mut Vec<u8>,
+    alpha_data: Vec<u8>,
+    width: u32,
+    height: u32,
+    effort_level: u8,
+    reduce_levels: bool,
+    parity: bool,
+    alloc_pref: crate::decoder::alloc_util::AllocPreference,
+    stop: &dyn enough::Stop,
+) -> EncodeResult<()> {
+    use super::alpha as alph;
+
+    let ww = width as usize;
+    let hh = height as usize;
+    let data_size = ww * hh;
+
+    let try_map = alph::filter_try_map(
+        &alpha_data,
+        ww,
+        hh,
+        alph::AlphaFiltering::Fast,
+        effort_level,
+    );
+
+    // (score, filter, method, payload); libwebp keeps the FIRST minimum
+    // (strict `<`) iterating filters in ascending order.
+    let mut best: Option<(usize, u8, u8, Vec<u8>)> = None;
+    for filter in 0u8..4 {
+        if try_map & (1 << filter) == 0 {
+            continue;
+        }
+        let plane = alph::apply_filter(filter, &alpha_data, ww, hh);
+        let payload = alpha_vp8l_payload_inner(
+            &plane,
+            width,
+            height,
+            effort_level,
+            !reduce_levels,
+            parity,
+            alloc_pref,
+            stop,
+        )?;
+
+        // Per-trial raw fallback: compressed larger than source reverts to
+        // ALPHA_NO_COMPRESSION for THIS trial (`EncodeAlphaInternal`).
+        let (method, out) = if payload.len() > data_size {
+            (0u8, plane)
+        } else {
+            (1u8, payload)
+        };
+        let score = 1 + out.len(); // ALPHA_HEADER_LEN + payload
+        if best.as_ref().is_none_or(|b| score < b.0) {
+            best = Some((score, filter, method, out));
+        }
+    }
+
+    let (_, filter, method, out) = best.expect("try_map always contains at least one filter");
+    let header = method | (filter << 2) | (u8::from(reduce_levels) << 4);
+    writer.push(header);
+    writer.extend_from_slice(&out);
+    Ok(())
+}
+
+/// One alpha VP8L trial payload: libwebp transfers the (filtered) alpha
+/// values to the GREEN channel with R = B = 0 (`WebPDispatchAlphaToGreen`)
+/// and encodes that image with the full lossless coder at
+/// `method = effort_level`, `quality = (use_quality_100 && effort == 6)
+/// ? 100 : 8 * effort` (`EncodeLossless`, alpha_enc.c). (#38)
+///
+/// The quality-100 escalation is PARITY-ONLY: at m6 with the default
+/// `alpha_quality = 100` it kicks the per-trial VP8L into the q100/m6
+/// cruncher (predictor transform-bits sweep, dual refs), which costs
+/// ~40x the q48 point for the last ~25% of an ALPH chunk — measured
+/// 558ms -> 13.7ms on a 150x150 RGBA at q80 m6 (debug-wedge, 2026-08-20;
+/// native libwebp pays 223ms on the same input). The tuned default caps
+/// alpha at `quality = 8 * effort`.
+pub(crate) fn alpha_vp8l_payload_inner(
+    plane: &[u8],
+    width: u32,
+    height: u32,
+    effort_level: u8,
+    use_quality_100: bool,
+    parity: bool,
+    alloc_pref: crate::decoder::alloc_util::AllocPreference,
+    stop: &dyn enough::Stop,
+) -> EncodeResult<Vec<u8>> {
+    // `WebPDispatchAlphaToGreen` leaves A/R/B ZEROED — the alpha-in-green
+    // pixels are 0x0000aa00 with ALPHA = 0, not opaque (this is why libwebp
+    // sets exact=1: without it the all-transparent pixels' green would be
+    // scrubbed). Dumped bit-level: an opaque variant flips the palette
+    // image's alpha tree from {0} to {0,255} and diverges from byte 4. (#38)
+    // Alpha-in-green RGBA plane: a top-level O(pixels) buffer (#63).
+    let mut rgba =
+        crate::decoder::alloc_util::alloc_with_capacity(alloc_pref, false, plane.len() * 4)
+            .map_err(alloc_failed_error)?;
+    for &a in plane {
+        rgba.extend_from_slice(&[0, a, 0, 0]);
+    }
+    // Full VP8L pipeline (palette / predictors / LZ77 / meta-huffman) with
+    // the ALPH stream framing — NOT the literal-only implicit-dimensions
+    // fallback in `encode_frame_lossless`, which is what capped zen's alpha
+    // compression before (#38).
+    let vp8l_config = super::vp8l::Vp8lConfig {
+        quality: super::vp8l::Vp8lQuality {
+            quality: super::alpha::alpha_vp8l_quality(effort_level, use_quality_100, parity) as u8,
+            method: effort_level,
+        },
+        exact: true,
+        omit_headers: true,
+        parity,
+        ..super::vp8l::Vp8lConfig::default()
+    };
+    super::vp8l::encode_vp8l_with_alloc(&rgba, width, height, true, &vp8l_config, alloc_pref, stop)
+}
+
+pub(crate) const fn chunk_size(inner_bytes: usize) -> u32 {
+    if inner_bytes % 2 == 1 {
+        (inner_bytes + 1) as u32 + 8
+    } else {
+        inner_bytes as u32 + 8
+    }
+}
+
+pub(crate) fn write_chunk(w: &mut Vec<u8>, name: &[u8], data: &[u8]) {
+    debug_assert!(name.len() == 4);
+
+    w.write_all(name);
+    w.write_u32_le(data.len() as u32);
+    w.write_all(data);
+    if data.len() % 2 == 1 {
+        w.push(0);
+    }
+}
+
+/// Internal WebP encoder (not public API — use [`EncodeRequest`] instead).
+pub(crate) struct WebPEncoder<'a> {
+    writer: &'a mut Vec<u8>,
+    icc_profile: Vec<u8>,
+    exif_metadata: Vec<u8>,
+    xmp_metadata: Vec<u8>,
+    params: EncoderParams,
+    stop: &'a dyn enough::Stop,
+    progress: &'a dyn EncodeProgress,
+}
+
+impl<'a> WebPEncoder<'a> {
+    /// Create a new encoder that writes its output to `w`.
+    ///
+    /// Only supports "VP8L" lossless encoding.
+    pub fn new(w: &'a mut Vec<u8>) -> Self {
+        Self {
+            writer: w,
+            icc_profile: Vec::new(),
+            exif_metadata: Vec::new(),
+            xmp_metadata: Vec::new(),
+            params: EncoderParams::default(),
+            stop: &enough::Unstoppable,
+            progress: &NO_PROGRESS,
+        }
+    }
+
+    /// Set the ICC profile to use for the image.
+    pub fn set_icc_profile(&mut self, icc_profile: Vec<u8>) {
+        self.icc_profile = icc_profile;
+    }
+
+    /// Set the EXIF metadata to use for the image.
+    pub fn set_exif_metadata(&mut self, exif_metadata: Vec<u8>) {
+        self.exif_metadata = exif_metadata;
+    }
+
+    /// Set the XMP metadata to use for the image.
+    pub fn set_xmp_metadata(&mut self, xmp_metadata: Vec<u8>) {
+        self.xmp_metadata = xmp_metadata;
+    }
+
+    /// Set the `EncoderParams` to use.
+    pub fn set_params(&mut self, params: EncoderParams) {
+        self.params = params;
+    }
+
+    /// Set a cooperative cancellation token.
+    pub fn set_stop(&mut self, stop: &'a dyn enough::Stop) {
+        self.stop = stop;
+    }
+
+    /// Set a progress callback.
+    pub fn set_progress(&mut self, progress: &'a dyn EncodeProgress) {
+        self.progress = progress;
+    }
+
+    /// Encode image data with the indicated color type.
+    ///
+    /// Returns [`EncodeStats`] with information about the encoded output.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the image data is not of the indicated dimensions.
+    pub fn encode(
+        self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        stride: usize,
+        color: PixelLayout,
+    ) -> EncodeResult<EncodeStats> {
+        let mut frame = Vec::new();
+
+        // Content-based, like libwebp's WebPPictureHasTransparency: an opaque
+        // RGBA/BGRA/LA source carries no ALPH chunk and (absent metadata) uses
+        // the simple container. See `alpha_is_opaque`. (#38)
+        let use_lossy = self.params.use_lossy;
+        let lossy_with_alpha =
+            use_lossy && color.has_alpha() && !alpha_is_opaque(data, width, height, stride, color);
+        let alpha_quality = self.params.alpha_quality;
+        let alpha_effort = self.params.alpha_effort.unwrap_or(self.params.method);
+        let alpha_cost_model = self.params.cost_model;
+        let alloc_pref = self.params.alloc_pref;
+
+        let mut stats = EncodeStats::default();
+
+        let frame_chunk = if self.params.use_lossy {
+            stats = encode_frame_lossy(
+                &mut frame,
+                data,
+                width,
+                height,
+                stride,
+                color,
+                &self.params,
+                self.stop,
+                self.progress,
+            )?;
+            b"VP8 "
+        } else {
+            encode_frame_lossless(
+                &mut frame,
+                data,
+                width,
+                height,
+                stride,
+                color,
+                self.params,
+                self.stop,
+            )?;
+            b"VP8L"
+        };
+
+        // If the image has no metadata and isn't lossy with alpha,
+        // it can be encoded with the "simple" WebP container format.
+        let use_simple_container = self.icc_profile.is_empty()
+            && self.exif_metadata.is_empty()
+            && self.xmp_metadata.is_empty()
+            && !lossy_with_alpha;
+
+        if use_simple_container {
+            self.writer.write_all(b"RIFF");
+            self.writer.write_u32_le(chunk_size(frame.len()) + 4);
+            self.writer.write_all(b"WEBP");
+            write_chunk(self.writer, frame_chunk, &frame);
+        } else {
+            let mut total_bytes = 22 + chunk_size(frame.len());
+            if !self.icc_profile.is_empty() {
+                total_bytes += chunk_size(self.icc_profile.len());
+            }
+            if !self.exif_metadata.is_empty() {
+                total_bytes += chunk_size(self.exif_metadata.len());
+            }
+            if !self.xmp_metadata.is_empty() {
+                total_bytes += chunk_size(self.xmp_metadata.len());
+            }
+
+            let alpha_chunk_data = if lossy_with_alpha {
+                let mut alpha_chunk = Vec::new();
+                encode_alpha_lossless(
+                    &mut alpha_chunk,
+                    data,
+                    width,
+                    height,
+                    stride,
+                    color,
+                    alpha_quality,
+                    alpha_effort,
+                    alpha_cost_model,
+                    alloc_pref,
+                    self.stop,
+                )?;
+
+                total_bytes += chunk_size(alpha_chunk.len());
+                Some(alpha_chunk)
+            } else {
+                None
+            };
+
+            let mut flags = 0;
+            if !self.xmp_metadata.is_empty() {
+                flags |= 1 << 2;
+            }
+            if !self.exif_metadata.is_empty() {
+                flags |= 1 << 3;
+            }
+            if lossy_with_alpha || (!use_lossy && color.has_alpha()) {
+                flags |= 1 << 4;
+            }
+            if !self.icc_profile.is_empty() {
+                flags |= 1 << 5;
+            }
+
+            self.writer.write_all(b"RIFF");
+            self.writer.write_u32_le(total_bytes);
+            self.writer.write_all(b"WEBP");
+
+            let mut vp8x = Vec::new();
+            vp8x.push(flags); // flags
+            vp8x.write_all(&[0; 3]); // reserved
+            vp8x.write_all(&(width - 1).to_le_bytes()[..3]); // canvas width
+            vp8x.write_all(&(height - 1).to_le_bytes()[..3]); // canvas height
+            write_chunk(self.writer, b"VP8X", &vp8x);
+
+            if !self.icc_profile.is_empty() {
+                write_chunk(self.writer, b"ICCP", &self.icc_profile);
+            }
+
+            if let Some(alpha_chunk) = alpha_chunk_data {
+                write_chunk(self.writer, b"ALPH", &alpha_chunk);
+            }
+
+            write_chunk(self.writer, frame_chunk, &frame);
+
+            if !self.exif_metadata.is_empty() {
+                write_chunk(self.writer, b"EXIF", &self.exif_metadata);
+            }
+
+            if !self.xmp_metadata.is_empty() {
+                write_chunk(self.writer, b"XMP ", &self.xmp_metadata);
+            }
+        }
+
+        stats.coded_size = self.writer.len() as u32;
+        Ok(stats)
+    }
+
+    /// Same as [`Self::encode`], but routes through the lossy-with-
+    /// diagnostics path so the caller receives the encoder's per-MB
+    /// `segment_map` and grid dimensions alongside the standard
+    /// [`EncodeStats`]. The on-wire bytes are byte-identical to
+    /// `encode`'s output for the same inputs.
+    ///
+    /// This is the internal entry the `target-zensim` closed-loop
+    /// iteration uses for pass 1+ probes when per-segment correction is
+    /// active. Lossless and target_size/target_psnr search paths take the
+    /// regular `encode` route — the diagnostics are only meaningful for
+    /// single-pass lossy encodes.
+    ///
+    /// `target-zensim`-only — see [`EncodeDiagnostics`].
+    #[cfg(feature = "target-zensim")]
+    pub(crate) fn encode_with_diagnostics(
+        self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        stride: usize,
+        color: PixelLayout,
+    ) -> EncodeResult<(EncodeStats, EncodeDiagnostics)> {
+        // Lossless and the no-target-zensim diagnostic path don't have
+        // segment_map. Emit an empty diagnostics struct in those cases —
+        // the iteration loop will fall back to global-q.
+        if !self.params.use_lossy {
+            let stats = self.encode(data, width, height, stride, color)?;
+            return Ok((stats, EncodeDiagnostics::default()));
+        }
+
+        let mut frame = Vec::new();
+        // Content-based, like libwebp's WebPPictureHasTransparency: an opaque
+        // RGBA/BGRA/LA source carries no ALPH chunk and (absent metadata) uses
+        // the simple container. See `alpha_is_opaque`. (#38)
+        let use_lossy = self.params.use_lossy;
+        let lossy_with_alpha =
+            use_lossy && color.has_alpha() && !alpha_is_opaque(data, width, height, stride, color);
+        let alpha_quality = self.params.alpha_quality;
+        let alpha_effort = self.params.alpha_effort.unwrap_or(self.params.method);
+        let alpha_cost_model = self.params.cost_model;
+        let alloc_pref = self.params.alloc_pref;
+        let mut stats;
+        let diagnostics;
+
+        // Diagnostics-collecting lossy frame encode.
+        let frame_chunk: &[u8; 4] = b"VP8 ";
+        {
+            let (s, d) = super::vp8::encode_frame_lossy_with_diagnostics(
+                &mut frame,
+                data,
+                width,
+                height,
+                stride,
+                color,
+                &self.params,
+                self.stop,
+                self.progress,
+            )?;
+            stats = s;
+            diagnostics = d;
+        }
+
+        // Identical container assembly to `Self::encode`.
+        let use_simple_container = self.icc_profile.is_empty()
+            && self.exif_metadata.is_empty()
+            && self.xmp_metadata.is_empty()
+            && !lossy_with_alpha;
+
+        if use_simple_container {
+            self.writer.write_all(b"RIFF");
+            self.writer.write_u32_le(chunk_size(frame.len()) + 4);
+            self.writer.write_all(b"WEBP");
+            write_chunk(self.writer, frame_chunk, &frame);
+        } else {
+            let mut total_bytes = 22 + chunk_size(frame.len());
+            if !self.icc_profile.is_empty() {
+                total_bytes += chunk_size(self.icc_profile.len());
+            }
+            if !self.exif_metadata.is_empty() {
+                total_bytes += chunk_size(self.exif_metadata.len());
+            }
+            if !self.xmp_metadata.is_empty() {
+                total_bytes += chunk_size(self.xmp_metadata.len());
+            }
+
+            let alpha_chunk_data = if lossy_with_alpha {
+                let mut alpha_chunk = Vec::new();
+                encode_alpha_lossless(
+                    &mut alpha_chunk,
+                    data,
+                    width,
+                    height,
+                    stride,
+                    color,
+                    alpha_quality,
+                    alpha_effort,
+                    alpha_cost_model,
+                    alloc_pref,
+                    self.stop,
+                )?;
+                total_bytes += chunk_size(alpha_chunk.len());
+                Some(alpha_chunk)
+            } else {
+                None
+            };
+
+            let mut flags = 0u8;
+            if !self.xmp_metadata.is_empty() {
+                flags |= 1 << 2;
+            }
+            if !self.exif_metadata.is_empty() {
+                flags |= 1 << 3;
+            }
+            if lossy_with_alpha || (!use_lossy && color.has_alpha()) {
+                flags |= 1 << 4;
+            }
+            if !self.icc_profile.is_empty() {
+                flags |= 1 << 5;
+            }
+
+            self.writer.write_all(b"RIFF");
+            self.writer.write_u32_le(total_bytes);
+            self.writer.write_all(b"WEBP");
+
+            let mut vp8x = Vec::new();
+            vp8x.push(flags);
+            vp8x.write_all(&[0; 3]);
+            vp8x.write_all(&(width - 1).to_le_bytes()[..3]);
+            vp8x.write_all(&(height - 1).to_le_bytes()[..3]);
+            write_chunk(self.writer, b"VP8X", &vp8x);
+
+            if !self.icc_profile.is_empty() {
+                write_chunk(self.writer, b"ICCP", &self.icc_profile);
+            }
+
+            if let Some(alpha_chunk) = alpha_chunk_data {
+                write_chunk(self.writer, b"ALPH", &alpha_chunk);
+            }
+
+            write_chunk(self.writer, frame_chunk, &frame);
+
+            if !self.exif_metadata.is_empty() {
+                write_chunk(self.writer, b"EXIF", &self.exif_metadata);
+            }
+
+            if !self.xmp_metadata.is_empty() {
+                write_chunk(self.writer, b"XMP ", &self.xmp_metadata);
+            }
+        }
+
+        stats.coded_size = self.writer.len() as u32;
+        Ok((stats, diagnostics))
+    }
+}
+
+#[cfg(all(test, feature = "std", not(target_arch = "wasm32")))]
+mod tests {
+    use rand::Rng;
+
+    use super::*;
+
+    #[test]
+    fn write_webp() {
+        let mut img = vec![0; 256 * 256 * 4];
+        rand::rng().fill_bytes(&mut img);
+
+        let mut output = Vec::new();
+        let mut encoder = WebPEncoder::new(&mut output);
+        // Random bytes include pixels with alpha=0; the default `exact=false`
+        // would zero their RGB and fail byte-exact roundtrip. Opt into
+        // exact preservation for this test.
+        encoder.set_params(EncoderParams {
+            exact: true,
+            ..EncoderParams::default()
+        });
+        encoder
+            .encode(&img, 256, 256, 256, crate::PixelLayout::Rgba8)
+            .unwrap();
+
+        let mut decoder = crate::WebPDecoder::new(&output).unwrap();
+        let mut img2 = vec![0; 256 * 256 * 4];
+        decoder.read_image(&mut img2).unwrap();
+        assert_eq!(img, img2);
+    }
+
+    #[test]
+    fn write_webp_exif() {
+        let mut img = vec![0; 256 * 256 * 3];
+        rand::rng().fill_bytes(&mut img);
+
+        let mut exif = vec![0; 10];
+        rand::rng().fill_bytes(&mut exif);
+
+        let mut output = Vec::new();
+        let mut encoder = WebPEncoder::new(&mut output);
+        encoder.set_exif_metadata(exif.clone());
+        encoder
+            .encode(&img, 256, 256, 256, crate::PixelLayout::Rgb8)
+            .unwrap();
+
+        let mut decoder = crate::WebPDecoder::new(&output).unwrap();
+
+        let mut img2 = vec![0; 256 * 256 * 3];
+        decoder.read_image(&mut img2).unwrap();
+        assert_eq!(img, img2);
+
+        let exif2 = decoder.exif_metadata().unwrap();
+        assert_eq!(Some(exif), exif2);
+    }
+
+    #[test]
+    fn roundtrip_libwebp() {
+        // Opt into exact=true: random RGBA input includes pixels with alpha=0,
+        // whose RGB the default (libwebp-compatible) lossless path would zero.
+        roundtrip_libwebp_params(EncoderParams {
+            exact: true,
+            ..EncoderParams::default()
+        });
+    }
+
+    fn roundtrip_libwebp_params(params: EncoderParams) {
+        println!("Testing {params:?}");
+
+        let mut img = vec![0; 256 * 256 * 4];
+        rand::rng().fill_bytes(&mut img);
+
+        let mut output = Vec::new();
+        let mut encoder = WebPEncoder::new(&mut output);
+        encoder.set_params(params.clone());
+        encoder
+            .encode(
+                &img[..256 * 256 * 3],
+                256,
+                256,
+                256,
+                crate::PixelLayout::Rgb8,
+            )
+            .unwrap();
+        let decoded = webp::Decoder::new(&output).decode().unwrap();
+        assert_eq!(img[..256 * 256 * 3], *decoded);
+
+        let mut output = Vec::new();
+        let mut encoder = WebPEncoder::new(&mut output);
+        encoder.set_params(params.clone());
+        encoder
+            .encode(&img, 256, 256, 256, crate::PixelLayout::Rgba8)
+            .unwrap();
+        let decoded = webp::Decoder::new(&output).decode().unwrap();
+        assert_eq!(img, *decoded);
+
+        let mut output = Vec::new();
+        let mut encoder = WebPEncoder::new(&mut output);
+        encoder.set_params(params.clone());
+        encoder.set_icc_profile(vec![0; 10]);
+        encoder
+            .encode(&img, 256, 256, 256, crate::PixelLayout::Rgba8)
+            .unwrap();
+        let decoded = webp::Decoder::new(&output).decode().unwrap();
+        assert_eq!(img, *decoded);
+
+        let mut output = Vec::new();
+        let mut encoder = WebPEncoder::new(&mut output);
+        encoder.set_params(params.clone());
+        encoder.set_exif_metadata(vec![0; 10]);
+        encoder
+            .encode(&img, 256, 256, 256, crate::PixelLayout::Rgba8)
+            .unwrap();
+        let decoded = webp::Decoder::new(&output).decode().unwrap();
+        assert_eq!(img, *decoded);
+
+        let mut output = Vec::new();
+        let mut encoder = WebPEncoder::new(&mut output);
+        encoder.set_params(params);
+        encoder.set_xmp_metadata(vec![0; 7]);
+        encoder.set_icc_profile(vec![0; 8]);
+        encoder.set_icc_profile(vec![0; 9]);
+        encoder
+            .encode(&img, 256, 256, 256, crate::PixelLayout::Rgba8)
+            .unwrap();
+        let decoded = webp::Decoder::new(&output).decode().unwrap();
+        assert_eq!(img, *decoded);
+    }
+
+    /// Builder-chain test for the three new lossy knobs added in PR #37
+    /// (`cost_model`, `smooth_segment_map`, `multi_pass_stats`). Verifies the
+    /// fluent setters land the right values on both EncoderConfig and the
+    /// LossyConfig variants, and that defaults match libwebp behavior.
+    #[cfg(feature = "__expert")]
+    #[test]
+    fn lossy_config_builder_threads_review_pr37_knobs() {
+        use crate::encoder::config::LossyConfig;
+
+        // Defaults match libwebp:
+        //   cost_model = ZenwebpDefault (perceptual extensions enabled)
+        //   smooth_segment_map = false (libwebp `preprocessing & 1` default off)
+        //   multi_pass_stats = false (zenwebp keeps stat-pass off; opt-in for target_size)
+        let default_lc = LossyConfig::new();
+        assert_eq!(default_lc.cost_model, CostModel::ZenwebpDefault);
+        assert!(!default_lc.smooth_segment_map);
+        assert!(!default_lc.multi_pass_stats);
+
+        // Fluent chain — each setter consumes self and returns Self, so all
+        // three must be settable in one expression.
+        let lc = LossyConfig::new()
+            .with_cost_model(CostModel::StrictLibwebpParity)
+            .with_smooth_segment_map(true)
+            .with_multi_pass_stats(true);
+        assert_eq!(lc.cost_model, CostModel::StrictLibwebpParity);
+        assert!(lc.smooth_segment_map);
+        assert!(lc.multi_pass_stats);
+
+        // Same knobs on EncoderConfig.
+        let ec = EncoderConfig::default()
+            .cost_model(CostModel::StrictLibwebpParity)
+            .smooth_segment_map(true)
+            .multi_pass_stats(true);
+        assert_eq!(ec.cost_model, CostModel::StrictLibwebpParity);
+        assert!(ec.smooth_segment_map);
+        assert!(ec.multi_pass_stats);
+
+        // Round-trip through to_params: the EncoderParams the encoder sees
+        // must reflect the configured knobs.
+        let params = ec.to_params();
+        assert_eq!(params.cost_model, CostModel::StrictLibwebpParity);
+        assert!(params.smooth_segment_map);
+        assert!(params.multi_pass_stats);
+    }
+
+    /// Encoding under each `CostModel` must complete and produce a valid
+    /// (decodable) WebP. This catches accidental panics in the cost-model
+    /// gating threading without needing a libwebp comparison.
+    #[test]
+    fn cost_model_variants_encode_and_decode() {
+        let img = vec![128u8; 64 * 64 * 3];
+        for &model in &[CostModel::ZenwebpDefault, CostModel::StrictLibwebpParity] {
+            let mut output = Vec::new();
+            let mut encoder = WebPEncoder::new(&mut output);
+            encoder.set_params(EncoderParams {
+                cost_model: model,
+                ..EncoderParams::default()
+            });
+            encoder
+                .encode(&img, 64, 64, 64, crate::PixelLayout::Rgb8)
+                .expect("encode under cost model variant");
+            assert!(!output.is_empty(), "{model:?} produced empty output");
+            // Decode round-trip — confirms the file is well-formed.
+            let mut decoder = crate::WebPDecoder::new(&output).unwrap();
+            let mut img2 = vec![0u8; 64 * 64 * 3];
+            decoder.read_image(&mut img2).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod encode_category_tests {
+    use super::{EncodeError, PixelLayout};
+    use zencodec::{
+        CategorizedError, ErrorCategory as C, InvalidKind as IK, LimitKind as L,
+        RequestError as RE, ResourceError as ReE, UnsupportedOperation as UO,
+    };
+
+    #[test]
+    fn encode_error_category_mapping() {
+        assert_eq!(EncodeError::InvalidDimensions.codec_name(), Some("zenwebp"));
+
+        // Caller config / parameters.
+        assert_eq!(
+            EncodeError::InvalidDimensions.category(),
+            C::Request(RE::Invalid(IK::Parameters))
+        );
+        // Well-formed request, unsupported pixel layout for the target-zensim
+        // iteration loop — a caller-request "unsupported operation", not a
+        // bad parameter value.
+        assert_eq!(
+            EncodeError::TargetZensimUnsupportedLayout(PixelLayout::Yuv420).category(),
+            C::Request(RE::Unsupported(UO::PixelFormat))
+        );
+
+        // Caller pixel buffer geometry.
+        assert_eq!(
+            EncodeError::InvalidBufferSize("x".into()).category(),
+            C::Request(RE::Invalid(IK::Buffer))
+        );
+
+        // Colour-management transform required (no CICP carrier in WebP).
+        assert_eq!(
+            EncodeError::IccSynthesisUnavailable("x".into()).category(),
+            C::Request(RE::CmsRequired)
+        );
+
+        // Resource limits. `LimitExceeded` now carries the real `LimitKind`
+        // from the construction site instead of a hardcoded stand-in.
+        assert_eq!(
+            EncodeError::LimitExceeded(L::Pixels, "x".into()).category(),
+            C::Resource(ReE::Limits(L::Pixels))
+        );
+        assert_eq!(
+            EncodeError::LimitExceeded(L::Memory, "x".into()).category(),
+            C::Resource(ReE::Limits(L::Memory))
+        );
+        assert_eq!(
+            EncodeError::LimitExceeded(L::OutputSize, "x".into()).category(),
+            C::Resource(ReE::Limits(L::OutputSize))
+        );
+        assert_eq!(
+            EncodeError::Partition0Overflow {
+                size: 600_000,
+                max: 524_287,
+            }
+            .category(),
+            C::Resource(ReE::Limits(L::OutputSize))
+        );
+
+        // Cancellation delegates to StopReason (cancel vs timeout preserved).
+        assert_eq!(
+            EncodeError::Cancelled(enough::StopReason::Cancelled).category(),
+            C::Stopped(enough::StopReason::Cancelled)
+        );
+        assert_eq!(
+            EncodeError::Cancelled(enough::StopReason::TimedOut).category(),
+            C::Stopped(enough::StopReason::TimedOut)
+        );
+
+        // Unsupported operation delegates to the zencodec cause type.
+        assert_eq!(
+            EncodeError::UnsupportedOperation(UO::AnimationEncode).category(),
+            C::Request(RE::Unsupported(UO::AnimationEncode))
+        );
+
+        // The At<E> blanket impl forwards both category and codec name.
+        let traced = whereat::at!(EncodeError::InvalidDimensions);
+        assert_eq!(traced.category(), C::Request(RE::Invalid(IK::Parameters)));
+        assert_eq!(traced.codec_name(), Some("zenwebp"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn encode_io_error_is_io() {
+        assert_eq!(
+            EncodeError::IoError(std::io::Error::other("boom")).category(),
+            C::Io(zencodec::CodecIoKind::opaque())
+        );
+    }
+}

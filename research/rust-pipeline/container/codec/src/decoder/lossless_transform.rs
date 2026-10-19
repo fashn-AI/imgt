@@ -1,0 +1,1306 @@
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ops::Range;
+use whereat::{At, at};
+
+use archmage::prelude::*;
+
+use super::internal_error::InternalDecodeError;
+
+use super::lossless::subsample_size;
+
+#[derive(Debug, Clone)]
+pub(crate) enum TransformType {
+    PredictorTransform {
+        size_bits: u8,
+        predictor_data: Vec<u8>,
+    },
+    ColorTransform {
+        size_bits: u8,
+        transform_data: Vec<u8>,
+    },
+    SubtractGreen,
+    ColorIndexingTransform {
+        table_size: u16,
+        table_data: Vec<u8>,
+    },
+}
+
+pub(crate) fn apply_predictor_transform(
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) -> Result<(), At<InternalDecodeError>> {
+    // The per-predictor bounds validators run inside the dispatched kernels
+    // on the 2-byte `Result`; the trace starts here at the transform entry
+    // (#60), which is the first cold frame above them.
+    let result = incant!(
+        apply_predictor_transform_impl(image_data, width, height, size_bits, predictor_data),
+        [v3, v1, neon, wasm128, scalar]
+    );
+    result.map_err(|e| at!(e))
+}
+
+/// AVX2 predictor transform — delegates to monolithic #[arcane] entry in SIMD file.
+/// All predictor functions are #[rite] in the same file, enabling full inlining.
+#[cfg(target_arch = "x86_64")]
+fn apply_predictor_transform_impl_v3(
+    token: X64V3Token,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) -> Result<(), InternalDecodeError> {
+    super::lossless_transform_simd::apply_predictor_transform_v3_entry(
+        token,
+        image_data,
+        width,
+        height,
+        size_bits,
+        predictor_data,
+    );
+    Ok(())
+}
+
+/// SSE2 predictor transform wrapper.
+#[cfg(target_arch = "x86_64")]
+fn apply_predictor_transform_impl_v1(
+    token: X64V1Token,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) -> Result<(), InternalDecodeError> {
+    super::lossless_transform_simd::apply_predictor_transform_sse2_entry(
+        token,
+        image_data,
+        width,
+        height,
+        size_bits,
+        predictor_data,
+    );
+    Ok(())
+}
+
+/// NEON predictor transform wrapper (for backward compat with SIMD tests).
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+fn apply_predictor_transform_impl_neon(
+    token: NeonToken,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) -> Result<(), InternalDecodeError> {
+    super::lossless_transform_simd::apply_predictor_transform_neon_entry(
+        token,
+        image_data,
+        width,
+        height,
+        size_bits,
+        predictor_data,
+    );
+    Ok(())
+}
+
+/// WASM128 predictor transform wrapper (for backward compat with SIMD tests).
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+fn apply_predictor_transform_impl_wasm128(
+    token: Wasm128Token,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) -> Result<(), InternalDecodeError> {
+    super::lossless_transform_simd::apply_predictor_transform_wasm128_entry(
+        token,
+        image_data,
+        width,
+        height,
+        size_bits,
+        predictor_data,
+    );
+    Ok(())
+}
+
+/// Scalar predictor transform (public for test use).
+#[cfg(all(test, target_arch = "x86_64"))]
+pub(crate) fn apply_predictor_transform_scalar(
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) -> Result<(), InternalDecodeError> {
+    apply_predictor_transform_impl_scalar(
+        ScalarToken,
+        image_data,
+        width,
+        height,
+        size_bits,
+        predictor_data,
+    )
+}
+
+/// Dispatch a single predictor function over a byte range (scalar path).
+///
+/// Predictors 2-4 and 8-9 use magetypes u8x16 polyfills (ScalarToken) which
+/// LLVM autovectorizes better than hand-written byte-at-a-time loops.
+#[inline(always)]
+fn dispatch_predictor_scalar(
+    predictor: u8,
+    image_data: &mut [u8],
+    start: usize,
+    end: usize,
+    width: usize,
+) -> Result<(), InternalDecodeError> {
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "x86",
+        target_arch = "aarch64",
+        target_arch = "wasm32"
+    ))]
+    {
+        use super::lossless_transform_simd::{predictor_add_body, predictor_avg_body};
+        let range = start..end;
+        match predictor {
+            0 => apply_predictor_transform_0(image_data, range, width)?,
+            1 => apply_predictor_transform_1(image_data, range, width)?,
+            2 => {
+                predictor_add_body(ScalarToken, image_data, &range, width * 4);
+            }
+            3 => {
+                predictor_add_body(ScalarToken, image_data, &range, width * 4 - 4);
+            }
+            4 => {
+                predictor_add_body(ScalarToken, image_data, &range, width * 4 + 4);
+            }
+            5 => apply_predictor_transform_5(image_data, range, width),
+            6 => apply_predictor_transform_6(image_data, range, width)?,
+            7 => apply_predictor_transform_7(image_data, range, width),
+            8 => {
+                predictor_avg_body(ScalarToken, image_data, &range, width * 4 + 4, width * 4);
+            }
+            9 => {
+                predictor_avg_body(ScalarToken, image_data, &range, width * 4, width * 4 - 4);
+            }
+            10 => apply_predictor_transform_10(image_data, range, width),
+            11 => apply_predictor_transform_11(image_data, range, width),
+            12 => apply_predictor_transform_12(image_data, range, width),
+            13 => apply_predictor_transform_13(image_data, range, width),
+            _ => {}
+        }
+        return Ok(());
+    }
+    // Fallback for architectures without the SIMD module
+    #[allow(unreachable_code)]
+    {
+        match predictor {
+            0 => apply_predictor_transform_0(image_data, start..end, width)?,
+            1 => apply_predictor_transform_1(image_data, start..end, width)?,
+            2 => apply_predictor_transform_2(image_data, start..end, width)?,
+            3 => apply_predictor_transform_3(image_data, start..end, width)?,
+            4 => apply_predictor_transform_4(image_data, start..end, width)?,
+            5 => apply_predictor_transform_5(image_data, start..end, width),
+            6 => apply_predictor_transform_6(image_data, start..end, width)?,
+            7 => apply_predictor_transform_7(image_data, start..end, width),
+            8 => apply_predictor_transform_8(image_data, start..end, width)?,
+            9 => apply_predictor_transform_9(image_data, start..end, width)?,
+            10 => apply_predictor_transform_10(image_data, start..end, width),
+            11 => apply_predictor_transform_11(image_data, start..end, width),
+            12 => apply_predictor_transform_12(image_data, start..end, width),
+            13 => apply_predictor_transform_13(image_data, start..end, width),
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Predictor transform preamble: top-left alpha, first row, left column.
+#[inline(always)]
+pub(crate) fn predictor_transform_borders(
+    image_data: &mut [u8],
+    width: usize,
+    height: usize,
+) -> Result<(), InternalDecodeError> {
+    image_data[3] = image_data[3].wrapping_add(255);
+    apply_predictor_transform_1(image_data, 4..width * 4, width)?;
+    for y in 1..height {
+        for i in 0..4 {
+            image_data[y * width * 4 + i] =
+                image_data[y * width * 4 + i].wrapping_add(image_data[(y - 1) * width * 4 + i]);
+        }
+    }
+    Ok(())
+}
+
+fn apply_predictor_transform_impl_scalar(
+    _token: ScalarToken,
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    size_bits: u8,
+    predictor_data: &[u8],
+) -> Result<(), InternalDecodeError> {
+    let block_xsize = usize::from(subsample_size(width, size_bits));
+    let width = usize::from(width);
+    let height = usize::from(height);
+
+    predictor_transform_borders(image_data, width, height)?;
+
+    // Coalesce adjacent blocks with the same predictor mode into a single
+    // range, reducing per-block dispatch overhead and giving SIMD loops
+    // longer runs.
+    for y in 1..height {
+        let row_block_base = (y >> size_bits) * block_xsize;
+        let mut run_start = 0usize;
+        let mut run_end = 0usize;
+        let mut run_pred = 255u8; // invalid, forces first flush
+
+        for block_x in 0..block_xsize {
+            let predictor = predictor_data[(row_block_base + block_x) * 4 + 1];
+            let start_index = (y * width + (block_x << size_bits).max(1)) * 4;
+            let end_index = (y * width + ((block_x + 1) << size_bits).min(width)) * 4;
+
+            if predictor == run_pred && start_index == run_end {
+                run_end = end_index;
+            } else {
+                if run_start < run_end {
+                    dispatch_predictor_scalar(run_pred, image_data, run_start, run_end, width)?;
+                }
+                run_pred = predictor;
+                run_start = start_index;
+                run_end = end_index;
+            }
+        }
+        if run_start < run_end {
+            dispatch_predictor_scalar(run_pred, image_data, run_start, run_end, width)?;
+        }
+    }
+
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_0(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    _width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start + 3;
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(0xff);
+        i += 4;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_1(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    _width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start;
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - 4]);
+        i += 1;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_2(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start;
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - width * 4]);
+        i += 1;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_3(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start;
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - width * 4 + 4]);
+        i += 1;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_4(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start;
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(image_data[i - width * 4 - 4]);
+        i += 1;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_5(image_data: &mut [u8], range: Range<usize>, width: usize) {
+    let (old, current) = image_data[..range.end].split_at_mut(range.start);
+
+    let mut prev: [u8; 4] = *old.last_chunk::<4>().unwrap();
+    let top_right = &old[range.start - width * 4 + 4..];
+    let top = &old[range.start - width * 4..];
+
+    let (current, _) = current.as_chunks_mut::<4>();
+    let (top_right, _) = top_right.as_chunks::<4>();
+    let (top, _) = top.as_chunks::<4>();
+    for ((chunk, tr), t) in current.iter_mut().zip(top_right).zip(top) {
+        prev = [
+            chunk[0].wrapping_add(average2_autovec(average2_autovec(prev[0], tr[0]), t[0])),
+            chunk[1].wrapping_add(average2_autovec(average2_autovec(prev[1], tr[1]), t[1])),
+            chunk[2].wrapping_add(average2_autovec(average2_autovec(prev[2], tr[2]), t[2])),
+            chunk[3].wrapping_add(average2_autovec(average2_autovec(prev[3], tr[3]), t[3])),
+        ];
+        chunk.copy_from_slice(&prev);
+    }
+}
+#[inline(always)]
+pub fn apply_predictor_transform_6(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start;
+    while i < range.end {
+        image_data[i] =
+            image_data[i].wrapping_add(average2(image_data[i - 4], image_data[i - width * 4 - 4]));
+        i += 1;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_7(image_data: &mut [u8], range: Range<usize>, width: usize) {
+    let (old, current) = image_data[..range.end].split_at_mut(range.start);
+
+    let mut prev: [u8; 4] = *old.last_chunk::<4>().unwrap();
+    let top = &old[range.start - width * 4..][..(range.end - range.start)];
+
+    let (current_chunks, current_rem) = current.as_chunks_mut::<64>();
+    let (top_chunks, top_rem) = top.as_chunks::<64>();
+
+    for (current, top) in current_chunks.iter_mut().zip(top_chunks) {
+        let (current, _) = current[..].as_chunks_mut::<4>();
+        let (top, _) = top[..].as_chunks::<4>();
+        for (chunk, t) in current.iter_mut().zip(top) {
+            prev = [
+                chunk[0].wrapping_add(average2_autovec(prev[0], t[0])),
+                chunk[1].wrapping_add(average2_autovec(prev[1], t[1])),
+                chunk[2].wrapping_add(average2_autovec(prev[2], t[2])),
+                chunk[3].wrapping_add(average2_autovec(prev[3], t[3])),
+            ];
+            chunk.copy_from_slice(&prev);
+        }
+    }
+    let (current_rem, _) = current_rem.as_chunks_mut::<4>();
+    let (top_rem, _) = top_rem.as_chunks::<4>();
+    for (chunk, t) in current_rem.iter_mut().zip(top_rem) {
+        prev = [
+            chunk[0].wrapping_add(average2_autovec(prev[0], t[0])),
+            chunk[1].wrapping_add(average2_autovec(prev[1], t[1])),
+            chunk[2].wrapping_add(average2_autovec(prev[2], t[2])),
+            chunk[3].wrapping_add(average2_autovec(prev[3], t[3])),
+        ];
+        chunk.copy_from_slice(&prev);
+    }
+}
+#[inline(always)]
+pub fn apply_predictor_transform_8(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start;
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(average2(
+            image_data[i - width * 4 - 4],
+            image_data[i - width * 4],
+        ));
+        i += 1;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_9(
+    image_data: &mut [u8],
+    range: Range<usize>,
+    width: usize,
+) -> Result<(), InternalDecodeError> {
+    if range.end > image_data.len() {
+        return Err(InternalDecodeError::TransformError);
+    }
+    let mut i = range.start;
+    while i < range.end {
+        image_data[i] = image_data[i].wrapping_add(average2(
+            image_data[i - width * 4],
+            image_data[i - width * 4 + 4],
+        ));
+        i += 1;
+    }
+    Ok(())
+}
+#[inline(always)]
+pub fn apply_predictor_transform_10(image_data: &mut [u8], range: Range<usize>, width: usize) {
+    let (old, current) = image_data[..range.end].split_at_mut(range.start);
+    let mut prev: [u8; 4] = *old.last_chunk::<4>().unwrap();
+
+    let top_left = &old[range.start - width * 4 - 4..];
+    let top = &old[range.start - width * 4..];
+    let top_right = &old[range.start - width * 4 + 4..];
+
+    let (current, _) = current.as_chunks_mut::<4>();
+    let (top_left, _) = top_left.as_chunks::<4>();
+    let (top, _) = top.as_chunks::<4>();
+    let (top_right, _) = top_right.as_chunks::<4>();
+    for (((chunk, tl), t), tr) in current.iter_mut().zip(top_left).zip(top).zip(top_right) {
+        prev = [
+            chunk[0].wrapping_add(average2(average2(prev[0], tl[0]), average2(t[0], tr[0]))),
+            chunk[1].wrapping_add(average2(average2(prev[1], tl[1]), average2(t[1], tr[1]))),
+            chunk[2].wrapping_add(average2(average2(prev[2], tl[2]), average2(t[2], tr[2]))),
+            chunk[3].wrapping_add(average2(average2(prev[3], tl[3]), average2(t[3], tr[3]))),
+        ];
+        chunk.copy_from_slice(&prev);
+    }
+}
+#[inline(always)]
+pub fn apply_predictor_transform_11(image_data: &mut [u8], range: Range<usize>, width: usize) {
+    let (old, current) = image_data[..range.end].split_at_mut(range.start);
+    let top = &old[range.start - width * 4..];
+
+    let mut l = [
+        i16::from(old[range.start - 4]),
+        i16::from(old[range.start - 3]),
+        i16::from(old[range.start - 2]),
+        i16::from(old[range.start - 1]),
+    ];
+    let mut tl = [
+        i16::from(old[range.start - width * 4 - 4]),
+        i16::from(old[range.start - width * 4 - 3]),
+        i16::from(old[range.start - width * 4 - 2]),
+        i16::from(old[range.start - width * 4 - 1]),
+    ];
+
+    let (current, _) = current.as_chunks_mut::<4>();
+    let (top, _) = top.as_chunks::<4>();
+    for (chunk, top) in current.iter_mut().zip(top) {
+        let t = [
+            i16::from(top[0]),
+            i16::from(top[1]),
+            i16::from(top[2]),
+            i16::from(top[3]),
+        ];
+
+        let mut predict_left = 0;
+        let mut predict_top = 0;
+        for i in 0..4 {
+            let predict = l[i] + t[i] - tl[i];
+            predict_left += i16::abs(predict - l[i]);
+            predict_top += i16::abs(predict - t[i]);
+        }
+
+        if predict_left < predict_top {
+            *chunk = [
+                chunk[0].wrapping_add(l[0] as u8),
+                chunk[1].wrapping_add(l[1] as u8),
+                chunk[2].wrapping_add(l[2] as u8),
+                chunk[3].wrapping_add(l[3] as u8),
+            ];
+        } else {
+            *chunk = [
+                chunk[0].wrapping_add(t[0] as u8),
+                chunk[1].wrapping_add(t[1] as u8),
+                chunk[2].wrapping_add(t[2] as u8),
+                chunk[3].wrapping_add(t[3] as u8),
+            ];
+        }
+
+        tl = t;
+        l = [
+            i16::from(chunk[0]),
+            i16::from(chunk[1]),
+            i16::from(chunk[2]),
+            i16::from(chunk[3]),
+        ];
+    }
+}
+#[inline(always)]
+pub fn apply_predictor_transform_12(image_data: &mut [u8], range: Range<usize>, width: usize) {
+    let (old, current) = image_data[..range.end].split_at_mut(range.start);
+    let mut prev: [u8; 4] = *old.last_chunk::<4>().unwrap();
+
+    let top_left = &old[range.start - width * 4 - 4..];
+    let top = &old[range.start - width * 4..];
+
+    let (current, _) = current.as_chunks_mut::<4>();
+    let (top_left, _) = top_left.as_chunks::<4>();
+    let (top, _) = top.as_chunks::<4>();
+    for ((chunk, tl), t) in current.iter_mut().zip(top_left).zip(top) {
+        prev = [
+            chunk[0].wrapping_add(clamp_add_subtract_full(
+                i16::from(prev[0]),
+                i16::from(t[0]),
+                i16::from(tl[0]),
+            )),
+            chunk[1].wrapping_add(clamp_add_subtract_full(
+                i16::from(prev[1]),
+                i16::from(t[1]),
+                i16::from(tl[1]),
+            )),
+            chunk[2].wrapping_add(clamp_add_subtract_full(
+                i16::from(prev[2]),
+                i16::from(t[2]),
+                i16::from(tl[2]),
+            )),
+            chunk[3].wrapping_add(clamp_add_subtract_full(
+                i16::from(prev[3]),
+                i16::from(t[3]),
+                i16::from(tl[3]),
+            )),
+        ];
+        chunk.copy_from_slice(&prev);
+    }
+}
+#[inline(always)]
+pub fn apply_predictor_transform_13(image_data: &mut [u8], range: Range<usize>, width: usize) {
+    let (old, current) = image_data[..range.end].split_at_mut(range.start);
+    let mut prev: [u8; 4] = *old.last_chunk::<4>().unwrap();
+
+    let top_left = &old[range.start - width * 4 - 4..][..(range.end - range.start)];
+    let top = &old[range.start - width * 4..][..(range.end - range.start)];
+
+    let (current, _) = current.as_chunks_mut::<4>();
+    let (top_left, _) = top_left.as_chunks::<4>();
+    let (top, _) = top.as_chunks::<4>();
+    for ((chunk, tl), t) in current.iter_mut().zip(top_left).zip(top) {
+        prev = [
+            chunk[0].wrapping_add(clamp_add_subtract_half(
+                (i16::from(prev[0]) + i16::from(t[0])) / 2,
+                i16::from(tl[0]),
+            )),
+            chunk[1].wrapping_add(clamp_add_subtract_half(
+                (i16::from(prev[1]) + i16::from(t[1])) / 2,
+                i16::from(tl[1]),
+            )),
+            chunk[2].wrapping_add(clamp_add_subtract_half(
+                (i16::from(prev[2]) + i16::from(t[2])) / 2,
+                i16::from(tl[2]),
+            )),
+            chunk[3].wrapping_add(clamp_add_subtract_half(
+                (i16::from(prev[3]) + i16::from(t[3])) / 2,
+                i16::from(tl[3]),
+            )),
+        ];
+        chunk.copy_from_slice(&prev);
+    }
+}
+
+pub(crate) fn apply_color_transform(
+    image_data: &mut [u8],
+    width: u16,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    incant!(
+        apply_color_transform_impl(image_data, width, size_bits, transform_data),
+        [v3, v1, neon, wasm128, scalar]
+    );
+}
+
+/// AVX2 color transform wrapper — delegates to SSE2 intrinsics under AVX2 target_feature
+/// for VEX encoding benefits (3-operand, no transition penalties).
+#[cfg(target_arch = "x86_64")]
+fn apply_color_transform_impl_v3(
+    _token: X64V3Token,
+    image_data: &mut [u8],
+    width: u16,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    super::lossless_transform_simd::transform_color_inverse_sse2_entry(
+        _token.v1(),
+        image_data,
+        usize::from(width),
+        size_bits,
+        transform_data,
+    );
+}
+
+/// SSE2 color transform wrapper.
+#[cfg(target_arch = "x86_64")]
+fn apply_color_transform_impl_v1(
+    token: X64V1Token,
+    image_data: &mut [u8],
+    width: u16,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    super::lossless_transform_simd::transform_color_inverse_sse2_entry(
+        token,
+        image_data,
+        usize::from(width),
+        size_bits,
+        transform_data,
+    );
+}
+
+/// NEON color transform — calls generic 4-pixel unrolled implementation.
+#[cfg(target_arch = "aarch64")]
+fn apply_color_transform_impl_neon(
+    token: NeonToken,
+    image_data: &mut [u8],
+    width: u16,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    super::lossless_transform_simd::transform_color_inverse_generic(
+        token,
+        image_data,
+        usize::from(width),
+        size_bits,
+        transform_data,
+    );
+}
+
+/// WASM128 color transform — calls generic 4-pixel unrolled implementation.
+#[cfg(target_arch = "wasm32")]
+fn apply_color_transform_impl_wasm128(
+    token: Wasm128Token,
+    image_data: &mut [u8],
+    width: u16,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    super::lossless_transform_simd::transform_color_inverse_generic(
+        token,
+        image_data,
+        usize::from(width),
+        size_bits,
+        transform_data,
+    );
+}
+
+fn apply_color_transform_impl_scalar(
+    _token: ScalarToken,
+    image_data: &mut [u8],
+    width: u16,
+    size_bits: u8,
+    transform_data: &[u8],
+) {
+    let block_xsize = usize::from(subsample_size(width, size_bits));
+    let width = usize::from(width);
+
+    for (y, row) in image_data.chunks_exact_mut(width * 4).enumerate() {
+        let row_transform_data_start = (y >> size_bits) * block_xsize * 4;
+        let row_tf_data = &transform_data[row_transform_data_start..];
+
+        for (block, transform) in row
+            .chunks_mut(4 << size_bits)
+            .zip(row_tf_data.as_chunks::<4>().0)
+        {
+            let red_to_blue = transform[0];
+            let green_to_blue = transform[1];
+            let green_to_red = transform[2];
+
+            for pixel in block.as_chunks_mut::<4>().0 {
+                let green = u32::from(pixel[1]);
+                let mut temp_red = u32::from(pixel[0]);
+                let mut temp_blue = u32::from(pixel[2]);
+
+                temp_red += color_transform_delta(green_to_red as i8, green as i8);
+                temp_blue += color_transform_delta(green_to_blue as i8, green as i8);
+                temp_blue += color_transform_delta(red_to_blue as i8, temp_red as i8);
+
+                pixel[0] = (temp_red & 0xff) as u8;
+                pixel[2] = (temp_blue & 0xff) as u8;
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_subtract_green_transform(image_data: &mut [u8]) {
+    incant!(
+        apply_subtract_green_impl(image_data),
+        [v3, v1, neon, wasm128, scalar]
+    );
+}
+
+/// AVX2 subtract green wrapper — delegates to SSE2 entry under AVX2 target_feature.
+#[cfg(target_arch = "x86_64")]
+fn apply_subtract_green_impl_v3(_token: X64V3Token, image_data: &mut [u8]) {
+    super::lossless_transform_simd::add_green_to_blue_and_red_sse2_entry(_token.v1(), image_data);
+}
+
+/// SSE2 subtract green wrapper.
+#[cfg(target_arch = "x86_64")]
+fn apply_subtract_green_impl_v1(token: X64V1Token, image_data: &mut [u8]) {
+    super::lossless_transform_simd::add_green_to_blue_and_red_sse2_entry(token, image_data);
+}
+
+/// NEON subtract green — calls portable 4-pixel unrolled implementation.
+#[cfg(target_arch = "aarch64")]
+fn apply_subtract_green_impl_neon(token: NeonToken, image_data: &mut [u8]) {
+    super::lossless_transform_simd::add_green_portable(token, image_data);
+}
+
+/// WASM128 subtract green — calls portable 4-pixel unrolled implementation.
+#[cfg(target_arch = "wasm32")]
+fn apply_subtract_green_impl_wasm128(token: Wasm128Token, image_data: &mut [u8]) {
+    super::lossless_transform_simd::add_green_portable(token, image_data);
+}
+
+fn apply_subtract_green_impl_scalar(_token: ScalarToken, image_data: &mut [u8]) {
+    for pixel in image_data.as_chunks_mut::<4>().0 {
+        pixel[0] = pixel[0].wrapping_add(pixel[1]);
+        pixel[2] = pixel[2].wrapping_add(pixel[1]);
+    }
+}
+
+pub(crate) fn apply_color_indexing_transform(
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    table_size: u16,
+    table_data: &[u8],
+) -> Result<(), At<InternalDecodeError>> {
+    if table_size == 0 {
+        return Err(at!(InternalDecodeError::TransformError));
+    }
+    if table_size > 16 {
+        // convert the table of colors into a Vec of color values that can be directly indexed
+        let (chunks, _) = table_data.as_chunks::<4>();
+        let mut table: Vec<[u8; 4]> = chunks.to_vec();
+        // pad the table to 256 values if it's smaller than that so we could index into it by u8 without bounds checks
+        // also required for correctness: WebP spec requires out-of-bounds indices to be treated as [0,0,0,0]
+        table.resize(256, [0; 4]);
+        // convince the compiler that the length of the table is 256 to avoid bounds checks in the loop below
+        let table: &[[u8; 4]; 256] = table.as_slice().try_into().unwrap();
+
+        for pixel in image_data.as_chunks_mut::<4>().0 {
+            // Index is in G channel.
+            // WebP format encodes ARGB pixels, but we permute to RGBA immediately after reading from the bitstream.
+            *pixel = table[pixel[1] as usize];
+        }
+    } else {
+        // table_size_u16 is 1 to 16
+        let table_size = table_size as u8;
+
+        // Dispatch to specialized implementation for each table size band for performance.
+        // Otherwise the compiler doesn't know the size of our copies
+        // and ends up calling out to memmove for every pixel even though a single load is sufficient.
+        if table_size <= 2 {
+            // Max 2 colors, 1 bit per pixel index -> W_BITS = 3
+            const W_BITS_VAL: u8 = 3;
+            // EXP_ENTRY_SIZE is 4 bytes/pixel * (1 << W_BITS_VAL) pixels/entry
+            const EXP_ENTRY_SIZE_VAL: usize = 4 * (1 << W_BITS_VAL); // 4 * 8 = 32
+            apply_color_indexing_transform_small_table::<W_BITS_VAL, EXP_ENTRY_SIZE_VAL>(
+                image_data, width, height, table_size, table_data,
+            );
+        } else if table_size <= 4 {
+            // Max 4 colors, 2 bits per pixel index -> W_BITS = 2
+            const W_BITS_VAL: u8 = 2;
+            const EXP_ENTRY_SIZE_VAL: usize = 4 * (1 << W_BITS_VAL); // 4 * 4 = 16
+            apply_color_indexing_transform_small_table::<W_BITS_VAL, EXP_ENTRY_SIZE_VAL>(
+                image_data, width, height, table_size, table_data,
+            );
+        } else {
+            // Max 16 colors (5 to 16), 4 bits per pixel index -> W_BITS = 1
+            // table_size_u16 must be <= 16 here
+            const W_BITS_VAL: u8 = 1;
+            const EXP_ENTRY_SIZE_VAL: usize = 4 * (1 << W_BITS_VAL); // 4 * 2 = 8
+            apply_color_indexing_transform_small_table::<W_BITS_VAL, EXP_ENTRY_SIZE_VAL>(
+                image_data, width, height, table_size, table_data,
+            );
+        }
+    }
+    Ok(())
+}
+
+// Helper function with const generics for W_BITS and EXP_ENTRY_SIZE
+fn apply_color_indexing_transform_small_table<const W_BITS: u8, const EXP_ENTRY_SIZE: usize>(
+    image_data: &mut [u8],
+    width: u16,
+    height: u16,
+    table_size: u8, // Max 16
+    table_data: &[u8],
+) {
+    // As of Rust 1.87 we cannot use `const` here. The compiler can still optimize them heavily
+    // because W_BITS is a const generic for each instantiation of this function.
+    let pixels_per_packed_byte_u8: u8 = 1 << W_BITS;
+    let bits_per_entry_u8: u8 = 8 / pixels_per_packed_byte_u8;
+    let mask_u8: u8 = (1 << bits_per_entry_u8) - 1;
+
+    // This is also effectively a compile-time constant for each instantiation.
+    let pixels_per_packed_byte_usize: usize = pixels_per_packed_byte_u8 as usize;
+
+    // Verify that the passed EXP_ENTRY_SIZE matches our calculation based on W_BITS, just as a sanity check.
+    debug_assert_eq!(
+        EXP_ENTRY_SIZE,
+        4 * pixels_per_packed_byte_usize,
+        "Mismatch in EXP_ENTRY_SIZE"
+    );
+
+    // Precompute the full lookup table.
+    // Each of the 256 possible packed byte values maps to an array of RGBA pixels.
+    // The array type uses the const generic EXP_ENTRY_SIZE.
+    let expanded_lookup_table_storage: Vec<[u8; EXP_ENTRY_SIZE]> = (0..256u16)
+        .map(|packed_byte_value_u16| {
+            let mut entry_pixels_array = [0u8; EXP_ENTRY_SIZE]; // Uses const generic
+            let packed_byte_value = packed_byte_value_u16 as u8;
+
+            // Loop bound is effectively constant for each instantiation.
+            for pixel_sub_index in 0..pixels_per_packed_byte_usize {
+                let shift_amount = (pixel_sub_index as u8) * bits_per_entry_u8;
+                let k = (packed_byte_value >> shift_amount) & mask_u8;
+
+                let color_source_array: [u8; 4] = if k < table_size {
+                    let color_data_offset = usize::from(k) * 4;
+                    *table_data[color_data_offset..].first_chunk::<4>().unwrap()
+                } else {
+                    [0u8; 4] // WebP spec: out-of-bounds indices are [0,0,0,0]
+                };
+
+                let array_fill_offset = pixel_sub_index * 4;
+                entry_pixels_array[array_fill_offset..array_fill_offset + 4]
+                    .copy_from_slice(&color_source_array);
+            }
+            entry_pixels_array
+        })
+        .collect();
+
+    let expanded_lookup_table_array: &[[u8; EXP_ENTRY_SIZE]; 256] =
+        expanded_lookup_table_storage.as_slice().try_into().unwrap();
+
+    let packed_image_width_in_blocks = width.div_ceil(pixels_per_packed_byte_u8.into()) as usize;
+
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let final_block_expanded_size_bytes =
+        (width as usize * 4) - EXP_ENTRY_SIZE * (packed_image_width_in_blocks.saturating_sub(1));
+
+    let input_stride_bytes_packed = packed_image_width_in_blocks * 4;
+    let output_stride_bytes_expanded = width as usize * 4;
+
+    let mut packed_indices_for_row: Vec<u8> = vec![0; packed_image_width_in_blocks];
+
+    for y_rev_idx in 0..height as usize {
+        let y = height as usize - 1 - y_rev_idx;
+
+        let packed_row_input_global_offset = y * input_stride_bytes_packed;
+        let packed_argb_row_slice =
+            &image_data[packed_row_input_global_offset..][..input_stride_bytes_packed];
+
+        for (packed_argb_chunk, packed_idx) in packed_argb_row_slice
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(packed_indices_for_row.iter_mut())
+        {
+            *packed_idx = packed_argb_chunk[1];
+        }
+
+        let output_row_global_offset = y * output_stride_bytes_expanded;
+        let output_row_slice_mut =
+            &mut image_data[output_row_global_offset..][..output_stride_bytes_expanded];
+
+        let num_full_blocks = packed_image_width_in_blocks.saturating_sub(1);
+
+        let (full_blocks_part, final_block_part) =
+            output_row_slice_mut.split_at_mut(num_full_blocks * EXP_ENTRY_SIZE);
+
+        // `as_chunks_mut` hands out `[u8; EXP_ENTRY_SIZE]` directly: a fixed-size
+        // copy, no per-block `first_chunk_mut().unwrap()` check.
+        for (output_chunk_array, &packed_index_byte) in full_blocks_part
+            .as_chunks_mut::<EXP_ENTRY_SIZE>()
+            .0
+            .iter_mut()
+            .zip(packed_indices_for_row.iter())
+        {
+            *output_chunk_array = expanded_lookup_table_array[packed_index_byte as usize];
+        }
+
+        if packed_image_width_in_blocks > 0 {
+            let final_packed_index_byte = packed_indices_for_row[packed_image_width_in_blocks - 1];
+            let colors_data_full_array =
+                &expanded_lookup_table_array[final_packed_index_byte as usize];
+
+            final_block_part
+                .copy_from_slice(&colors_data_full_array[..final_block_expanded_size_bytes]);
+        }
+    }
+}
+
+//predictor functions
+
+/// Compute block_xsize for transforms.
+pub(crate) fn block_xsize(width: u16, size_bits: u8) -> usize {
+    usize::from(subsample_size(width, size_bits))
+}
+
+/// Get average of 2 bytes
+pub(crate) fn average2(a: u8, b: u8) -> u8 {
+    ((u16::from(a) + u16::from(b)) / 2) as u8
+}
+
+/// Get average of 2 bytes, allows some predictors to be autovectorized by
+/// keeping computation within lanes of `u8`.
+///
+/// LLVM is capable of optimizing `average2` into this but not in all cases.
+fn average2_autovec(a: u8, b: u8) -> u8 {
+    (a & b) + ((a ^ b) >> 1)
+}
+
+/// Clamp add subtract full on one part
+fn clamp_add_subtract_full(a: i16, b: i16, c: i16) -> u8 {
+    // Clippy suggests the clamp method, but it seems to optimize worse as of rustc 1.82.0 nightly.
+    #![allow(clippy::manual_clamp)]
+    (a + b - c).max(0).min(255) as u8
+}
+
+/// Clamp add subtract half on one part
+fn clamp_add_subtract_half(a: i16, b: i16) -> u8 {
+    // Clippy suggests the clamp method, but it seems to optimize worse as of rustc 1.82.0 nightly.
+    #![allow(clippy::manual_clamp)]
+    (a + (a - b) / 2).max(0).min(255) as u8
+}
+
+/// Does color transform on 2 numbers
+pub(crate) fn color_transform_delta(t: i8, c: i8) -> u32 {
+    (i32::from(t) * i32::from(c)) as u32 >> 5
+}
+
+/// Per-block dispatch without coalescing (for correctness tests).
+#[cfg(test)]
+fn apply_predictor_body_per_block(
+    image_data: &mut [u8],
+    width: usize,
+    height: usize,
+    size_bits: u8,
+    predictor_data: &[u8],
+) {
+    let block_xsize = usize::from(subsample_size(width as u16, size_bits));
+    for y in 1..height {
+        for block_x in 0..block_xsize {
+            let block_index = (y >> size_bits) * block_xsize + block_x;
+            let predictor = predictor_data[block_index * 4 + 1];
+            let start_index = (y * width + (block_x << size_bits).max(1)) * 4;
+            let end_index = (y * width + ((block_x + 1) << size_bits).min(width)) * 4;
+            let _ = dispatch_predictor_scalar(predictor, image_data, start_index, end_index, width);
+        }
+    }
+}
+
+/// Coalesced dispatch (for correctness tests — matches the production path).
+#[cfg(test)]
+fn apply_predictor_body_coalesced(
+    image_data: &mut [u8],
+    width: usize,
+    height: usize,
+    size_bits: u8,
+    predictor_data: &[u8],
+) {
+    let block_xsize = usize::from(subsample_size(width as u16, size_bits));
+    for y in 1..height {
+        let row_block_base = (y >> size_bits) * block_xsize;
+        let mut run_start = 0usize;
+        let mut run_end = 0usize;
+        let mut run_pred = 255u8;
+
+        for block_x in 0..block_xsize {
+            let predictor = predictor_data[(row_block_base + block_x) * 4 + 1];
+            let start_index = (y * width + (block_x << size_bits).max(1)) * 4;
+            let end_index = (y * width + ((block_x + 1) << size_bits).min(width)) * 4;
+
+            if predictor == run_pred && start_index == run_end {
+                run_end = end_index;
+            } else {
+                if run_start < run_end {
+                    let _ =
+                        dispatch_predictor_scalar(run_pred, image_data, run_start, run_end, width);
+                }
+                run_pred = predictor;
+                run_start = start_index;
+                run_end = end_index;
+            }
+        }
+        if run_start < run_end {
+            let _ = dispatch_predictor_scalar(run_pred, image_data, run_start, run_end, width);
+        }
+    }
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    extern crate alloc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// Verify coalesced dispatch produces identical output to per-block dispatch.
+    #[test]
+    fn coalesced_matches_per_block() {
+        let width: usize = 128;
+        let height: usize = 64;
+        let size_bits: u8 = 3;
+        let block_xsize = width >> size_bits;
+        let block_ysize = height >> size_bits;
+
+        let mut predictor_data = vec![0u8; block_xsize * block_ysize * 4];
+        let modes = [0, 1, 2, 3, 5, 7, 11, 12, 13, 2, 2, 2, 4, 8, 9, 10];
+        for by in 0..block_ysize {
+            for bx in 0..block_xsize {
+                predictor_data[(by * block_xsize + bx) * 4 + 1] =
+                    modes[(by * block_xsize + bx) % modes.len()];
+            }
+        }
+
+        let base: Vec<u8> = (0..width * height * 4)
+            .map(|i| (i * 37 + 13) as u8)
+            .collect();
+
+        let mut data_block = base.clone();
+        let _ = super::predictor_transform_borders(&mut data_block, width, height);
+        super::apply_predictor_body_per_block(
+            &mut data_block,
+            width,
+            height,
+            size_bits,
+            &predictor_data,
+        );
+
+        let mut data_coal = base;
+        let _ = super::predictor_transform_borders(&mut data_coal, width, height);
+        super::apply_predictor_body_coalesced(
+            &mut data_coal,
+            width,
+            height,
+            size_bits,
+            &predictor_data,
+        );
+
+        assert_eq!(
+            data_block, data_coal,
+            "coalesced output differs from per-block"
+        );
+    }
+
+    /// Same test but with uniform predictors (maximum coalescing).
+    #[test]
+    fn coalesced_matches_per_block_uniform() {
+        let width: usize = 256;
+        let height: usize = 32;
+        let size_bits: u8 = 4;
+        let block_xsize = width >> size_bits;
+        let block_ysize = height >> size_bits;
+
+        for mode in 0..14u8 {
+            let mut predictor_data = vec![0u8; block_xsize * block_ysize * 4];
+            for i in 0..block_xsize * block_ysize {
+                predictor_data[i * 4 + 1] = mode;
+            }
+
+            let base: Vec<u8> = (0..width * height * 4)
+                .map(|i| (i * 53 + 7) as u8)
+                .collect();
+
+            let mut data_block = base.clone();
+            let _ = super::predictor_transform_borders(&mut data_block, width, height);
+            super::apply_predictor_body_per_block(
+                &mut data_block,
+                width,
+                height,
+                size_bits,
+                &predictor_data,
+            );
+
+            let mut data_coal = base;
+            let _ = super::predictor_transform_borders(&mut data_coal, width, height);
+            super::apply_predictor_body_coalesced(
+                &mut data_coal,
+                width,
+                height,
+                size_bits,
+                &predictor_data,
+            );
+
+            assert_eq!(
+                data_block, data_coal,
+                "coalesced output differs for predictor mode {mode}"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "_benchmarks"))]
+mod benches {
+    use rand::RngExt;
+    use test::{Bencher, black_box};
+
+    fn measure_predictor(b: &mut Bencher, predictor: fn(&mut [u8], std::ops::Range<usize>, usize)) {
+        let width = 256;
+        let mut data = vec![0u8; width * 8];
+        rand::rng().fill(&mut data[..]);
+        b.bytes = 4 * width as u64 - 4;
+        b.iter(|| {
+            predictor(
+                black_box(&mut data),
+                black_box(width * 4 + 4..width * 8),
+                black_box(width),
+            )
+        });
+    }
+
+    type PredictorResultFn =
+        fn(&mut [u8], std::ops::Range<usize>, usize) -> Result<(), super::InternalDecodeError>;
+
+    fn measure_predictor_result(b: &mut Bencher, predictor: PredictorResultFn) {
+        let width = 256;
+        let mut data = vec![0u8; width * 8];
+        rand::rng().fill(&mut data[..]);
+        b.bytes = 4 * width as u64 - 4;
+        b.iter(|| {
+            predictor(
+                black_box(&mut data),
+                black_box(width * 4 + 4..width * 8),
+                black_box(width),
+            )
+            .unwrap()
+        });
+    }
+
+    #[bench]
+    fn predictor00(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_0);
+    }
+    #[bench]
+    fn predictor01(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_1);
+    }
+    #[bench]
+    fn predictor02(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_2);
+    }
+    #[bench]
+    fn predictor03(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_3);
+    }
+    #[bench]
+    fn predictor04(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_4);
+    }
+    #[bench]
+    fn predictor05(b: &mut Bencher) {
+        measure_predictor(b, super::apply_predictor_transform_5);
+    }
+    #[bench]
+    fn predictor06(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_6);
+    }
+    #[bench]
+    fn predictor07(b: &mut Bencher) {
+        measure_predictor(b, super::apply_predictor_transform_7);
+    }
+    #[bench]
+    fn predictor08(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_8);
+    }
+    #[bench]
+    fn predictor09(b: &mut Bencher) {
+        measure_predictor_result(b, super::apply_predictor_transform_9);
+    }
+    #[bench]
+    fn predictor10(b: &mut Bencher) {
+        measure_predictor(b, super::apply_predictor_transform_10);
+    }
+    #[bench]
+    fn predictor11(b: &mut Bencher) {
+        measure_predictor(b, super::apply_predictor_transform_11);
+    }
+    #[bench]
+    fn predictor12(b: &mut Bencher) {
+        measure_predictor(b, super::apply_predictor_transform_12);
+    }
+    #[bench]
+    fn predictor13(b: &mut Bencher) {
+        measure_predictor(b, super::apply_predictor_transform_13);
+    }
+
+    #[bench]
+    fn color_transform(b: &mut Bencher) {
+        let width = 256;
+        let height = 256;
+        let size_bits = 3;
+        let mut data = vec![0u8; width * height * 4];
+        let mut transform_data = vec![0u8; (width * height * 4) >> (size_bits * 2)];
+        rand::rng().fill(&mut data[..]);
+        rand::rng().fill(&mut transform_data[..]);
+        b.bytes = 4 * width as u64 * height as u64;
+        b.iter(|| {
+            super::apply_color_transform(
+                black_box(&mut data),
+                black_box(width as u16),
+                black_box(size_bits),
+                black_box(&transform_data),
+            );
+        });
+    }
+
+    #[bench]
+    fn subtract_green(b: &mut Bencher) {
+        let mut data = vec![0u8; 1024 * 4];
+        rand::rng().fill(&mut data[..]);
+        b.bytes = data.len() as u64;
+        b.iter(|| {
+            super::apply_subtract_green_transform(black_box(&mut data));
+        });
+    }
+}
+
+/// Dev-only per-kernel access for `benches/kernel_tiers.rs`. NOT public API.
+#[cfg(feature = "_dev")]
+#[doc(hidden)]
+pub mod __bench_kernels {
+    /// Inverse subtract-green transform (decode side), dispatched.
+    pub fn apply_subtract_green_transform(image_data: &mut [u8]) {
+        super::apply_subtract_green_transform(image_data)
+    }
+}

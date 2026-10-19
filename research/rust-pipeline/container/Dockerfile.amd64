@@ -1,0 +1,35 @@
+FROM rust:1.93.0-bookworm AS build
+WORKDIR /src
+COPY codec /codec
+COPY formats /formats
+COPY inflate /inflate
+COPY rust/Cargo.toml rust/Cargo.lock ./
+COPY rust/src ./src
+ARG IMGT_TEST_FEATURES=""
+ARG IMGT_RENDERER_VERSION="research-owned-rust-encoder-tuned"
+ENV CARGO_BUILD_JOBS=2
+# This renderer differs from production because the resampler changes pixels.
+RUN --mount=type=cache,id=imgt-owned-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=imgt-owned-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=imgt-owned-target-rust193-amd64,target=/src/target,sharing=locked \
+    find /codec/src /src/src -type f -exec touch {} + && \
+    IMGT_RENDERER_VERSION="$IMGT_RENDERER_VERSION" cargo build --locked --release --features "$IMGT_TEST_FEATURES" \
+    && cp target/release/imgt-container /server-built
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libjemalloc2 \
+    && ln -s "$(find /usr/lib -name libjemalloc.so.2 -print -quit)" /usr/local/lib/libjemalloc.so.2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 imgt \
+    && useradd --uid 1000 --gid imgt --create-home imgt
+COPY --from=build /server-built /server
+ENV PORT=8080 \
+    LD_PRELOAD=/usr/local/lib/libjemalloc.so.2 \
+    RESEARCH_READER=png \
+    RESEARCH_KERNEL=float \
+    RESEARCH_PREFILTER=box \
+    RESEARCH_PNG_PAETH=scalar
+USER imgt
+EXPOSE 8080
+CMD ["/server"]

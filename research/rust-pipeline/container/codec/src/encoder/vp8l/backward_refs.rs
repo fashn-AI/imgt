@@ -1,0 +1,1136 @@
+//! Backward reference finding using hash chains.
+//!
+//! Converts image pixels into a stream of literals and LZ77 backward references.
+//! Implements multiple LZ77 strategies matching libwebp:
+//! - LZ77 Standard: greedy with look-ahead optimization
+//! - LZ77 RLE: run-length encoding (distance=1 and distance=xsize)
+//! - Strategy selection: tries both, picks best based on histogram entropy
+//! - Color cache: estimates optimal cache bits, applies to refs
+//! - 2D locality: converts raw distances to plane codes
+
+use alloc::vec::Vec;
+
+use super::color_cache::ColorCache;
+use super::cost_model::trace_backwards_optimize;
+use super::entropy::estimate_histogram_bits;
+use super::hash_chain::HashChain;
+use super::histogram::Histogram;
+use super::types::{
+    BackwardRefs, MAX_LENGTH, MIN_LENGTH, NUM_LENGTH_CODES, NUM_LITERAL_CODES, PixOrCopy,
+    argb_alpha, argb_blue, argb_green, argb_red,
+};
+use enough::Stop;
+
+/// Distance code lookup table for 2D neighborhood.
+/// Maps (xoffset, yoffset) pairs to distance codes 1-120.
+#[rustfmt::skip]
+const DISTANCE_MAP: [(i8, i8); 120] = [
+    (0, 1),  (1, 0),  (1, 1),  (-1, 1), (0, 2),  (2, 0),  (1, 2),  (-1, 2),
+    (2, 1),  (-2, 1), (2, 2),  (-2, 2), (0, 3),  (3, 0),  (1, 3),  (-1, 3),
+    (3, 1),  (-3, 1), (2, 3),  (-2, 3), (3, 2),  (-3, 2), (0, 4),  (4, 0),
+    (1, 4),  (-1, 4), (4, 1),  (-4, 1), (3, 3),  (-3, 3), (2, 4),  (-2, 4),
+    (4, 2),  (-4, 2), (0, 5),  (3, 4),  (-3, 4), (4, 3),  (-4, 3), (5, 0),
+    (1, 5),  (-1, 5), (5, 1),  (-5, 1), (2, 5),  (-2, 5), (5, 2),  (-5, 2),
+    (4, 4),  (-4, 4), (3, 5),  (-3, 5), (5, 3),  (-5, 3), (0, 6),  (6, 0),
+    (1, 6),  (-1, 6), (6, 1),  (-6, 1), (2, 6),  (-2, 6), (6, 2),  (-6, 2),
+    (4, 5),  (-4, 5), (5, 4),  (-5, 4), (3, 6),  (-3, 6), (6, 3),  (-6, 3),
+    (0, 7),  (7, 0),  (1, 7),  (-1, 7), (5, 5),  (-5, 5), (7, 1),  (-7, 1),
+    (4, 6),  (-4, 6), (6, 4),  (-6, 4), (2, 7),  (-2, 7), (7, 2),  (-7, 2),
+    (3, 7),  (-3, 7), (7, 3),  (-7, 3), (5, 6),  (-5, 6), (6, 5),  (-6, 5),
+    (8, 0),  (4, 7),  (-4, 7), (7, 4),  (-7, 4), (8, 1),  (8, 2),  (6, 6),
+    (-6, 6), (8, 3),  (5, 7),  (-5, 7), (7, 5),  (-7, 5), (8, 4),  (6, 7),
+    (-6, 7), (7, 6),  (-7, 6), (8, 5),  (7, 7),  (-7, 7), (8, 6),  (8, 7)
+];
+
+/// Reverse lookup table: given (yoffset * 16 + 8 - xoffset), get distance code.
+#[rustfmt::skip]
+const PLANE_TO_CODE_LUT: [u8; 128] = [
+    96,  73,  55,  39,  23, 13, 5,  1,  255, 255, 255, 255, 255, 255, 255, 255,
+    101, 78,  58,  42,  26, 16, 8,  2,  0,   3,   9,   17,  27,  43,  59,  79,
+    102, 86,  62,  46,  32, 20, 10, 6,  4,   7,   11,  21,  33,  47,  63,  87,
+    105, 90,  70,  52,  37, 28, 18, 14, 12,  15,  19,  29,  38,  53,  71,  91,
+    110, 99,  82,  66,  48, 35, 30, 24, 22,  25,  31,  36,  49,  67,  83,  100,
+    115, 108, 94,  76,  64, 50, 44, 40, 34,  41,  45,  51,  65,  77,  95,  109,
+    118, 113, 103, 92,  80, 68, 60, 56, 54,  57,  61,  69,  81,  93,  104, 114,
+    119, 116, 111, 106, 97, 88, 84, 74, 72,  75,  85,  89,  98,  107, 112, 117
+];
+
+/// Convert linear distance to distance code.
+pub fn distance_to_plane_code(xsize: usize, dist: usize) -> u32 {
+    let yoffset = dist / xsize;
+    let xoffset = dist - yoffset * xsize;
+
+    if xoffset <= 8 && yoffset < 8 {
+        u32::from(PLANE_TO_CODE_LUT[yoffset * 16 + 8 - xoffset]) + 1
+    } else if xoffset + 8 > xsize && yoffset < 7 {
+        u32::from(PLANE_TO_CODE_LUT[(yoffset + 1) * 16 + 8 + (xsize - xoffset)]) + 1
+    } else {
+        (dist + 120) as u32
+    }
+}
+
+/// Convert distance code back to linear distance.
+pub fn plane_code_to_distance(xsize: usize, code: u32) -> usize {
+    if code > 120 {
+        (code - 120) as usize
+    } else {
+        let (xoff, yoff) = DISTANCE_MAP[(code - 1) as usize];
+        let dist = xoff as i32 + yoff as i32 * xsize as i32;
+        if dist < 1 { 1 } else { dist as usize }
+    }
+}
+
+/// Pixels between `stop` polls inside the O(pixels) reference passes. Index
+/// variables advance by whole match lengths, so loops poll on a crossed
+/// boundary (`next_check`) rather than a fixed residue of the index.
+const REFS_STOP_CHECK_STRIDE: usize = 1 << 15;
+
+/// Apply 2D locality transform to backward references.
+/// Converts raw distances to plane codes for better compression.
+/// Must be called after all LZ77 optimization is complete.
+pub fn apply_2d_locality(
+    refs: &mut BackwardRefs,
+    xsize: usize,
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    for chunk in refs.tokens.chunks_mut(REFS_STOP_CHECK_STRIDE) {
+        stop.check()?;
+        for token in chunk {
+            if let PixOrCopy::Copy { dist, .. } = token {
+                *dist = distance_to_plane_code(xsize, *dist as usize);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Add a single literal, checking the color cache first.
+#[inline]
+fn add_single_literal(argb_val: u32, cache: &mut Option<&mut ColorCache>, refs: &mut BackwardRefs) {
+    if let Some(c) = cache {
+        if let Some(idx) = c.lookup(argb_val) {
+            refs.push(PixOrCopy::cache_idx(idx));
+        } else {
+            refs.push(PixOrCopy::literal(argb_val));
+            c.insert(argb_val);
+        }
+    } else {
+        refs.push(PixOrCopy::literal(argb_val));
+    }
+}
+
+/// LZ77 Standard with look-ahead optimization.
+///
+/// Matches libwebp's BackwardReferencesLz77:
+/// - Uses hash chain for best matches
+/// - Look-ahead: checks positions i+1..i+len for better "reach" (j + len_j)
+/// - Stores RAW distances (not plane codes)
+pub(super) fn backward_references_lz77(
+    argb: &[u32],
+    _xsize: usize,
+    _ysize: usize,
+    cache_bits: u8,
+    hash_chain: &HashChain,
+    stop: &dyn enough::Stop,
+) -> Result<BackwardRefs, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    let pix_count = argb.len();
+    let mut refs = BackwardRefs::with_capacity(pix_count);
+    let use_color_cache = cache_bits > 0;
+    let mut cache = if use_color_cache {
+        Some(ColorCache::new(cache_bits))
+    } else {
+        None
+    };
+
+    let mut i = 0;
+    let mut i_last_check: i32 = -1;
+    while i < pix_count {
+        stop.check()?;
+        let batch_end = i.saturating_add(REFS_STOP_CHECK_STRIDE).min(pix_count);
+        while i < batch_end {
+            let (offset, len) = hash_chain.find_copy(i);
+            let mut chosen_len;
+
+            if len >= MIN_LENGTH {
+                let len_ini = len;
+                let mut max_reach = 0i64;
+                let j_max = if i + len_ini >= pix_count {
+                    pix_count - 1
+                } else {
+                    i + len_ini
+                };
+
+                // Only start from what we have not checked already
+                i_last_check = i_last_check.max(i as i32);
+
+                // Look-ahead: find best combination of current + next match
+                // Check positions i+1 through i+len to see if deferring gives better reach
+                chosen_len = len;
+                for j in ((i_last_check + 1) as usize)..=j_max {
+                    let len_j = hash_chain.length(j);
+                    let reach = j as i64
+                        + if len_j >= MIN_LENGTH {
+                            len_j as i64
+                        } else {
+                            1 // Single literal
+                        };
+                    if reach > max_reach {
+                        chosen_len = j - i;
+                        max_reach = reach;
+                        if max_reach >= pix_count as i64 {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                chosen_len = 1;
+            }
+
+            if chosen_len <= 1 {
+                // Emit literal
+                add_single_literal(argb[i], &mut cache.as_mut(), &mut refs);
+                i += 1;
+            } else {
+                // Emit backward reference with RAW distance
+                refs.push(PixOrCopy::copy(chosen_len as u16, offset as u32));
+                // Update color cache with copied pixels
+                if let Some(ref mut c) = cache {
+                    for k in 0..chosen_len {
+                        c.insert(argb[i + k]);
+                    }
+                }
+                i += chosen_len;
+            }
+        }
+    }
+
+    Ok(refs)
+}
+
+/// RLE backward references (distance=1 and distance=xsize only).
+///
+/// Matches libwebp's BackwardReferencesRle.
+pub(super) fn backward_references_rle(
+    argb: &[u32],
+    xsize: usize,
+    _ysize: usize,
+    cache_bits: u8,
+    stop: &dyn enough::Stop,
+) -> Result<BackwardRefs, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    let pix_count = argb.len();
+    let mut refs = BackwardRefs::with_capacity(pix_count);
+    let use_color_cache = cache_bits > 0;
+    let mut cache = if use_color_cache {
+        Some(ColorCache::new(cache_bits))
+    } else {
+        None
+    };
+
+    // Add first pixel as literal
+    add_single_literal(argb[0], &mut cache.as_mut(), &mut refs);
+
+    let mut i = 1;
+    while i < pix_count {
+        stop.check()?;
+        let batch_end = i.saturating_add(REFS_STOP_CHECK_STRIDE).min(pix_count);
+        while i < batch_end {
+            let max_len = (pix_count - i).min(MAX_LENGTH);
+
+            // Check RLE match (distance=1, same as previous pixel)
+            // Quick rejection before expensive linear scan (matching libwebp's FindMatchLength)
+            let rle_len = if argb[i] != argb[i - 1] {
+                0
+            } else {
+                let mut len = 1;
+                while len < max_len && argb[i + len] == argb[i - 1 + len] {
+                    len += 1;
+                }
+                len
+            };
+
+            // Check previous row match (distance=xsize)
+            let prev_row_len = if i < xsize || argb[i] != argb[i - xsize] {
+                0
+            } else {
+                let mut len = 1;
+                while len < max_len && argb[i + len] == argb[i - xsize + len] {
+                    len += 1;
+                }
+                len
+            };
+
+            if rle_len >= prev_row_len && rle_len >= MIN_LENGTH {
+                // Use RLE (distance=1)
+                refs.push(PixOrCopy::copy(rle_len as u16, 1));
+                // RLE doesn't change cache state (same pixel repeated)
+                i += rle_len;
+            } else if prev_row_len >= MIN_LENGTH {
+                // Use previous row (distance=xsize)
+                refs.push(PixOrCopy::copy(prev_row_len as u16, xsize as u32));
+                if let Some(ref mut c) = cache {
+                    for k in 0..prev_row_len {
+                        c.insert(argb[i + k]);
+                    }
+                }
+                i += prev_row_len;
+            } else {
+                // Literal
+                add_single_literal(argb[i], &mut cache.as_mut(), &mut refs);
+                i += 1;
+            }
+        }
+    }
+
+    Ok(refs)
+}
+
+/// Maximum window offsets for LZ77 Box (matching libwebp WINDOW_OFFSETS_SIZE_MAX).
+/// Restricts Box to the 32 closest spatial offsets for speed.
+const WINDOW_OFFSETS_SIZE_MAX: usize = 32;
+
+/// LZ77 Box strategy for palette images.
+///
+/// Uses a fixed spatial window of offsets around each pixel, with run-length
+/// counting for fast matching. Optimized for images with few colors where
+/// consecutive identical pixels are common.
+/// Matches libwebp's BackwardReferencesLz77Box.
+///
+/// Returns a HashChain populated with the best offset/length for each position,
+/// then feeds into the standard BackwardReferencesLz77 to produce final refs.
+pub(super) fn backward_references_lz77_box(
+    argb: &[u32],
+    xsize: usize,
+    ysize: usize,
+    cache_bits: u8,
+    hash_chain_best: &HashChain,
+    stop: &dyn enough::Stop,
+) -> Result<BackwardRefs, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    use alloc::vec;
+
+    let pix_count = xsize * ysize;
+    if pix_count == 0 {
+        return Ok(BackwardRefs::new());
+    }
+
+    // counts[i] = how many times pixel at i is repeated starting from i
+    let mut counts = vec![0u16; pix_count];
+    counts[pix_count - 1] = 1;
+    for start in (0..pix_count - 1).step_by(REFS_STOP_CHECK_STRIDE).rev() {
+        stop.check()?;
+        for i in (start
+            ..start
+                .saturating_add(REFS_STOP_CHECK_STRIDE)
+                .min(pix_count - 1))
+            .rev()
+        {
+            if argb[i] == argb[i + 1] {
+                counts[i] = counts[i + 1].saturating_add(1).min(MAX_LENGTH as u16);
+            } else {
+                counts[i] = 1;
+            }
+        }
+    }
+
+    // Build window offsets from VP8LDistanceToPlaneCode spiral order
+    let mut window_offsets = [0i32; WINDOW_OFFSETS_SIZE_MAX];
+    let mut window_offsets_size = 0;
+    for y in 0..=6i32 {
+        for x in -6i32..=6 {
+            let offset = y * xsize as i32 + x;
+            if offset <= 0 {
+                continue;
+            }
+            let plane_code = distance_to_plane_code(xsize, offset as usize);
+            let pc = plane_code as usize;
+            if pc == 0 || pc > WINDOW_OFFSETS_SIZE_MAX {
+                continue;
+            }
+            window_offsets[pc - 1] = offset;
+        }
+    }
+    // Remove zero entries (narrow images may not reach all plane codes)
+    let mut compacted = [0i32; WINDOW_OFFSETS_SIZE_MAX];
+    for &wo in &window_offsets {
+        if wo != 0 {
+            compacted[window_offsets_size] = wo;
+            window_offsets_size += 1;
+        }
+    }
+    let window_offsets = &compacted[..window_offsets_size];
+
+    // Find offsets that are new (not reachable from P-1 with existing offsets)
+    let mut window_offsets_new = Vec::with_capacity(window_offsets_size);
+    for &wo in window_offsets {
+        let is_reachable = window_offsets.iter().any(|&wj| wo == wj + 1);
+        if !is_reachable {
+            window_offsets_new.push(wo);
+        }
+    }
+
+    // Build a hash chain with Box-strategy matches
+    let mut box_chain = HashChain::empty(pix_count);
+    let mut best_offset_prev: i32 = -1;
+    let mut best_length_prev: i32 = -1;
+
+    for start in (1..pix_count).step_by(REFS_STOP_CHECK_STRIDE) {
+        stop.check()?;
+        for i in start..start.saturating_add(REFS_STOP_CHECK_STRIDE).min(pix_count) {
+            let mut best_length = hash_chain_best.find_copy(i).1 as i32;
+            let mut best_offset: i32;
+            let mut do_compute = true;
+
+            if best_length >= MAX_LENGTH as i32 {
+                // Check if best match from hash_chain_best is in our window
+                let bo = hash_chain_best.offset(i) as i32;
+                for &wo in window_offsets {
+                    if bo == wo {
+                        do_compute = false;
+                        break;
+                    }
+                }
+                best_offset = bo;
+            } else {
+                best_offset = 0;
+            }
+
+            if do_compute {
+                let use_prev = best_length_prev > 1 && best_length_prev < MAX_LENGTH as i32;
+                let offsets_to_try = if use_prev {
+                    &window_offsets_new[..]
+                } else {
+                    window_offsets
+                };
+
+                best_length = if use_prev { best_length_prev - 1 } else { 0 };
+                best_offset = if use_prev { best_offset_prev } else { 0 };
+
+                for &wo in offsets_to_try {
+                    let j_offset = i as i32 - wo;
+                    if j_offset < 0 || argb[j_offset as usize] != argb[i] {
+                        continue;
+                    }
+
+                    // Match using run-length counts for fast comparison
+                    let mut curr_length = 0i32;
+                    let mut j = i;
+                    let mut jo = j_offset as usize;
+                    loop {
+                        let cjo = counts[jo] as i32;
+                        let cj = counts[j] as i32;
+                        if cjo != cj {
+                            curr_length += cjo.min(cj);
+                            break;
+                        }
+                        curr_length += cjo;
+                        jo += cjo as usize;
+                        j += cjo as usize;
+                        if curr_length > MAX_LENGTH as i32 || j >= pix_count || argb[jo] != argb[j]
+                        {
+                            break;
+                        }
+                    }
+
+                    if best_length < curr_length {
+                        best_offset = wo;
+                        if curr_length >= MAX_LENGTH as i32 {
+                            best_length = MAX_LENGTH as i32;
+                            break;
+                        } else {
+                            best_length = curr_length;
+                        }
+                    }
+                }
+            }
+
+            if best_length <= MIN_LENGTH as i32 {
+                box_chain.set(i, 0, 0);
+                best_offset_prev = 0;
+                best_length_prev = 0;
+            } else {
+                box_chain.set(
+                    i,
+                    best_offset as usize,
+                    best_length.min(MAX_LENGTH as i32) as usize,
+                );
+                best_offset_prev = best_offset;
+                best_length_prev = best_length;
+            }
+        }
+    }
+
+    // Use the box chain with standard LZ77 to produce final refs
+    backward_references_lz77(argb, xsize, ysize, cache_bits, &box_chain, &stop)
+}
+
+/// Maximum color cache bits.
+const MAX_COLOR_CACHE_BITS: u8 = 10;
+
+/// Color cache hash multiplier (must match ColorCache::hash exactly).
+const COLOR_CACHE_MULT: u32 = 0x1e35a7bd;
+
+/// Calculate best cache size by simulating all sizes simultaneously.
+///
+/// Matches libwebp's CalculateBestCacheSize:
+/// - Tests all cache sizes from 0 to cache_bits_max simultaneously
+/// - Uses nested key derivation (key for size N is key for size N+1 >> 1)
+/// - Picks the size with minimum estimated entropy
+fn calculate_best_cache_size(
+    argb: &[u32],
+    quality: u8,
+    refs: &BackwardRefs,
+    cache_bits_max: u8,
+    stop: &dyn enough::Stop,
+) -> Result<u8, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    if quality <= 25 || cache_bits_max == 0 {
+        return Ok(0);
+    }
+
+    let cache_bits_max = cache_bits_max.min(MAX_COLOR_CACHE_BITS);
+
+    // Build histograms for all cache sizes simultaneously
+    let mut histos: Vec<Histogram> = (0..=cache_bits_max).map(Histogram::new).collect();
+
+    // Flat cache storage: one contiguous buffer for all cache sizes.
+    // Cache for size i starts at offset (1<<1 + 1<<2 + ... + 1<<(i-1)) = (1<<i) - 2.
+    // We use a simpler layout: cache_flat[cache_offset[i]..cache_offset[i] + (1<<i)].
+    let mut cache_offsets = [0usize; 12]; // indices 0..=11
+    let mut total_cache = 0usize;
+    for i in 1..=cache_bits_max as usize {
+        cache_offsets[i] = total_cache;
+        total_cache += 1 << i;
+    }
+    let mut cache_flat = alloc::vec![0u32; total_cache];
+
+    let hash_shift_max = 32 - cache_bits_max as u32;
+    let mut argb_idx = 0usize;
+    let mut next_check = REFS_STOP_CHECK_STRIDE;
+
+    for token in refs.iter() {
+        if argb_idx >= next_check {
+            stop.check()?;
+            next_check = argb_idx.saturating_add(REFS_STOP_CHECK_STRIDE);
+        }
+        match *token {
+            PixOrCopy::Literal(_) | PixOrCopy::CacheIdx(_) => {
+                let pix = if let PixOrCopy::Literal(p) = *token {
+                    p
+                } else {
+                    argb[argb_idx]
+                };
+
+                let a = argb_alpha(pix) as usize;
+                let r = argb_red(pix) as usize;
+                let g = argb_green(pix) as usize;
+                let b = argb_blue(pix) as usize;
+
+                // For cache_bits = 0, always literal
+                histos[0].literal[g] += 1;
+                histos[0].red[r] += 1;
+                histos[0].blue[b] += 1;
+                histos[0].alpha[a] += 1;
+
+                // For cache_bits > 0, check cache hit using precomputed key.
+                let mut key = (COLOR_CACHE_MULT.wrapping_mul(pix) >> hash_shift_max) as usize;
+
+                for i in (1..=cache_bits_max as usize).rev() {
+                    let cache_base = cache_offsets[i];
+                    if cache_flat[cache_base + key] == pix {
+                        // Cache hit
+                        let cache_code = NUM_LITERAL_CODES + NUM_LENGTH_CODES + key;
+                        histos[i].literal[cache_code] += 1;
+                    } else {
+                        // Cache miss
+                        cache_flat[cache_base + key] = pix;
+                        histos[i].literal[g] += 1;
+                        histos[i].red[r] += 1;
+                        histos[i].blue[b] += 1;
+                        histos[i].alpha[a] += 1;
+                    }
+                    key >>= 1;
+                }
+
+                argb_idx += 1;
+            }
+            PixOrCopy::Copy { len, .. } => {
+                let len = len as usize;
+                let (len_code, _) = super::histogram::length_to_code(len as u16);
+                for h in histos.iter_mut() {
+                    h.literal[NUM_LITERAL_CODES + len_code as usize] += 1;
+                }
+
+                let mut prev_argb = argb[argb_idx] ^ 0xFFFFFFFF;
+                for k in 0..len {
+                    let pix = argb[argb_idx + k];
+                    if pix != prev_argb {
+                        let mut key =
+                            (COLOR_CACHE_MULT.wrapping_mul(pix) >> hash_shift_max) as usize;
+                        for i in (1..=cache_bits_max as usize).rev() {
+                            cache_flat[cache_offsets[i] + key] = pix;
+                            key >>= 1;
+                        }
+                        prev_argb = pix;
+                    }
+                }
+                argb_idx += len;
+            }
+        }
+    }
+
+    // Pick cache size with minimum entropy
+    let mut best_bits = 0u8;
+    let mut best_entropy = u64::MAX;
+
+    for i in 0..=cache_bits_max {
+        let entropy = estimate_histogram_bits(&histos[i as usize]);
+        if entropy < best_entropy {
+            best_entropy = entropy;
+            best_bits = i;
+        }
+    }
+
+    Ok(best_bits)
+}
+
+/// Apply color cache to existing backward references.
+///
+/// Converts literal pixels that hit the cache into cache index references.
+/// Matches libwebp's BackwardRefsWithLocalCache.
+pub(super) fn apply_cache_to_refs(
+    argb: &[u32],
+    cache_bits: u8,
+    refs: &mut BackwardRefs,
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    let mut cache = ColorCache::new(cache_bits);
+    let mut pixel_index = 0usize;
+    let mut next_check = REFS_STOP_CHECK_STRIDE;
+
+    for token in refs.tokens.iter_mut() {
+        if pixel_index >= next_check {
+            stop.check()?;
+            next_check = pixel_index.saturating_add(REFS_STOP_CHECK_STRIDE);
+        }
+        match token {
+            PixOrCopy::Literal(argb_val) => {
+                if let Some(idx) = cache.lookup(*argb_val) {
+                    *token = PixOrCopy::cache_idx(idx);
+                } else {
+                    cache.insert(*argb_val);
+                }
+                pixel_index += 1;
+            }
+            PixOrCopy::CacheIdx(_) => {
+                // Should not happen - refs were built without cache
+                pixel_index += 1;
+            }
+            PixOrCopy::Copy { len, .. } => {
+                let len = *len as usize;
+                for k in 0..len {
+                    cache.insert(argb[pixel_index + k]);
+                }
+                pixel_index += len;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Backward-reference selection result.
+///
+/// `refs`/`cache_bits` is the cache-optimized stream. Under `do_no_cache`
+/// (libwebp's method 5, quality >= 75 mode), `refs_no_cache` additionally
+/// carries an INDEPENDENTLY optimized cache-free stream — its own LZ77-type
+/// selection and TraceBackwards pass under the cache-free cost model — for
+/// the encoder to trial against by full encode. `None` when the two streams
+/// would be identical (or `do_no_cache` was off).
+pub struct BackwardRefsResult {
+    pub refs: BackwardRefs,
+    pub cache_bits: u8,
+    pub refs_no_cache: Option<BackwardRefs>,
+}
+
+/// Get the best backward references for the image.
+///
+/// Tries multiple LZ77 strategies and picks the best one.
+/// For quality >= 25, applies cost-based optimal parsing (TraceBackwards).
+/// Optionally applies color cache for further compression.
+///
+/// Method controls backward reference strategy matching libwebp:
+/// - Method 0 (low_effort): no color cache, no TraceBackwards, Standard+RLE only
+/// - Method 1+: full pipeline with cache evaluation per LZ77 type, TraceBackwards DP
+///
+/// Matches libwebp's GetBackwardReferences / GetBackwardReferencesLowEffort flow.
+#[allow(clippy::too_many_arguments)]
+pub fn get_backward_references(
+    argb: &[u32],
+    width: usize,
+    height: usize,
+    quality: u8,
+    method: u8,
+    cache_bits_max: u8,
+    do_no_cache: bool,
+    parity: bool,
+    stop: &dyn enough::Stop,
+) -> Result<BackwardRefsResult, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    get_backward_references_inner(
+        argb,
+        width,
+        height,
+        quality,
+        method,
+        cache_bits_max,
+        0,
+        do_no_cache,
+        parity,
+        &stop,
+    )
+}
+
+/// Get backward references with optional LZ77 Box for palette images.
+#[allow(clippy::too_many_arguments)]
+pub fn get_backward_references_with_palette(
+    argb: &[u32],
+    width: usize,
+    height: usize,
+    quality: u8,
+    method: u8,
+    cache_bits_max: u8,
+    palette_size: usize,
+    do_no_cache: bool,
+    parity: bool,
+    stop: &dyn enough::Stop,
+) -> Result<BackwardRefsResult, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    get_backward_references_inner(
+        argb,
+        width,
+        height,
+        quality,
+        method,
+        cache_bits_max,
+        palette_size,
+        do_no_cache,
+        parity,
+        &stop,
+    )
+}
+
+/// LZ77 type flags (matching libwebp's VP8LLZ77Type enum).
+const LZ77_STANDARD: u32 = 1;
+const LZ77_RLE: u32 = 2;
+const LZ77_BOX: u32 = 4;
+
+#[allow(clippy::too_many_arguments)]
+fn get_backward_references_inner(
+    argb: &[u32],
+    width: usize,
+    height: usize,
+    quality: u8,
+    method: u8,
+    cache_bits_max: u8,
+    palette_size: usize,
+    do_no_cache: bool,
+    parity: bool,
+    stop: &dyn enough::Stop,
+) -> Result<BackwardRefsResult, enough::StopReason> {
+    // may_stop collapses Unstoppable: checks below are a None-test.
+    let stop = stop.may_stop().then_some(stop);
+    let size = width * height;
+
+    if size == 0 {
+        return Ok(BackwardRefsResult {
+            refs: BackwardRefs::new(),
+            cache_bits: 0,
+            refs_no_cache: None,
+        });
+    }
+
+    // Build hash chain
+    let hash_chain = HashChain::new(argb, quality, width, method == 0, parity, &stop)?;
+
+    // Method 0: libwebp's GetBackwardReferencesLowEffort shape — one plain
+    // LZ77 pass, no RLE trial, no TraceBackwards — plus one cheap size lever
+    // libwebp m0 leaves on the floor: a FIXED-size color cache (no 0..=10
+    // search) accepted only when a single A/B histogram-cost check says it
+    // wins. On photographic content this recovers several percent of bytes
+    // for ~2% encode time; the guard keeps flat/synthetic content unaffected.
+    if method == 0 {
+        let mut refs = backward_references_lz77(argb, width, height, 0, &hash_chain, &stop)?;
+        let mut cache_bits = 0u8;
+        if cache_bits_max > 0 {
+            let bits = if palette_size > 0 {
+                // Palette-derived cap was computed by the caller.
+                cache_bits_max
+            } else {
+                // Size heuristic: smaller images can't fill a large cache,
+                // and its header cost dominates.
+                let px = width * height;
+                let by_size: u8 = if px < (1 << 14) {
+                    8
+                } else if px < (1 << 18) {
+                    9
+                } else {
+                    10
+                };
+                by_size.min(cache_bits_max)
+            };
+            let mut cached = refs.clone();
+            apply_cache_to_refs(argb, bits, &mut cached, &stop)?;
+            let cost_without = estimate_histogram_bits(&Histogram::from_refs_with_plane_codes(
+                &refs, 0, width, &stop,
+            )?);
+            let cost_with = estimate_histogram_bits(&Histogram::from_refs_with_plane_codes(
+                &cached, bits, width, &stop,
+            )?);
+            if cost_with < cost_without {
+                refs = cached;
+                cache_bits = bits;
+            }
+        }
+        apply_2d_locality(&mut refs, width, &stop)?;
+        return Ok(BackwardRefsResult {
+            refs,
+            cache_bits,
+            refs_no_cache: None,
+        });
+    }
+
+    // Determine which LZ77 types to try (matching libwebp's n_lz77s logic).
+    // First sub-config always tries Standard + RLE.
+    // Second sub-config (for palette images <=16 colors) tries Box.
+    let lz77_types_to_try = LZ77_STANDARD | LZ77_RLE;
+    let try_box = palette_size > 0 && palette_size <= 16;
+
+    // Phase 1: Find best LZ77 type with cache optimization.
+    // Matches libwebp's GetBackwardReferences: for each LZ77 type, compute
+    // refs with cache_bits=0, then evaluate with optimal cache — and, under
+    // do_no_cache, ALSO track the best cache-free stream independently
+    // (its own LZ77-type choice under the cache-free cost model).
+    let mut histo = Histogram::new(MAX_COLOR_CACHE_BITS);
+    let mut best_refs = BackwardRefs::new();
+    let mut cache_bits_best = 0u8;
+    let mut best_cost = u64::MAX;
+    let mut best_lz77_type = 0u32;
+    let mut best_nc_refs = BackwardRefs::new();
+    let mut best_nc_cost = u64::MAX;
+    let mut best_nc_lz77_type = 0u32;
+
+    // Box hash chain (lazily initialized)
+    let mut hash_chain_box: Option<HashChain> = None;
+
+    let mut evaluate = |refs_tmp: BackwardRefs,
+                        lz77_type: u32,
+                        best_refs: &mut BackwardRefs,
+                        cache_bits_best: &mut u8,
+                        best_cost: &mut u64,
+                        best_lz77_type: &mut u32,
+                        best_nc_refs: &mut BackwardRefs,
+                        best_nc_cost: &mut u64,
+                        best_nc_lz77_type: &mut u32| {
+        // The no-cache candidate first (libwebp evaluates i == 1 first).
+        let mut cost_no_cache = None;
+        if do_no_cache {
+            histo = Histogram::from_refs_with_plane_codes(&refs_tmp, 0, width, &stop)?;
+            let bit_cost = estimate_histogram_bits(&histo);
+            cost_no_cache = Some(bit_cost);
+            if bit_cost < *best_nc_cost {
+                *best_nc_cost = bit_cost;
+                *best_nc_refs = refs_tmp.clone();
+                *best_nc_lz77_type = lz77_type;
+            }
+        }
+
+        // Then with the entropy-selected color cache.
+        let mut cache_bits = cache_bits_max;
+        if cache_bits > 0 {
+            cache_bits =
+                calculate_best_cache_size(argb, quality, &refs_tmp, cache_bits_max, &stop)?;
+        }
+        let mut refs_with_cache = refs_tmp;
+        if cache_bits > 0 {
+            apply_cache_to_refs(argb, cache_bits, &mut refs_with_cache, &stop)?;
+        }
+
+        let bit_cost = match cost_no_cache {
+            // cache_bits == 0: same stream as the no-cache candidate.
+            Some(cost) if cache_bits == 0 => cost,
+            _ => {
+                histo = Histogram::from_refs_with_plane_codes(
+                    &refs_with_cache,
+                    cache_bits,
+                    width,
+                    &stop,
+                )?;
+                estimate_histogram_bits(&histo)
+            }
+        };
+
+        if bit_cost < *best_cost {
+            *best_cost = bit_cost;
+            *best_refs = refs_with_cache;
+            *cache_bits_best = cache_bits;
+            *best_lz77_type = lz77_type;
+        }
+        Ok(())
+    };
+
+    let mut lz77_type = 1u32;
+    let mut types_remaining = lz77_types_to_try;
+    while types_remaining != 0 {
+        if types_remaining & lz77_type == 0 {
+            lz77_type <<= 1;
+            continue;
+        }
+        types_remaining &= !lz77_type;
+
+        let refs_tmp = match lz77_type {
+            LZ77_RLE => backward_references_rle(argb, width, height, 0, &stop)?,
+            LZ77_STANDARD => backward_references_lz77(argb, width, height, 0, &hash_chain, &stop)?,
+            _ => continue,
+        };
+
+        evaluate(
+            refs_tmp,
+            lz77_type,
+            &mut best_refs,
+            &mut cache_bits_best,
+            &mut best_cost,
+            &mut best_lz77_type,
+            &mut best_nc_refs,
+            &mut best_nc_cost,
+            &mut best_nc_lz77_type,
+        )?;
+
+        lz77_type <<= 1;
+    }
+
+    // Try LZ77 Box for palette images
+    if try_box {
+        let refs_box = backward_references_lz77_box(argb, width, height, 0, &hash_chain, &stop)?;
+        let prev_best_lz77_type = best_lz77_type;
+
+        evaluate(
+            refs_box,
+            LZ77_BOX,
+            &mut best_refs,
+            &mut cache_bits_best,
+            &mut best_cost,
+            &mut best_lz77_type,
+            &mut best_nc_refs,
+            &mut best_nc_cost,
+            &mut best_nc_lz77_type,
+        )?;
+
+        if best_lz77_type == LZ77_BOX && prev_best_lz77_type != LZ77_BOX {
+            // Save box chain for potential TraceBackwards use
+            hash_chain_box = Some(HashChain::empty(size));
+            // Rebuild box chain since we need it for TraceBackwards
+        }
+    }
+
+    // If the cache branch settled on no cache with the same LZ77 type, the
+    // two streams are identical — trace once and skip the duplicate trial
+    // (libwebp's clone-and-break shortcut at the end of GetBackwardReferences).
+    let do_no_cache = do_no_cache && !(cache_bits_best == 0 && best_lz77_type == best_nc_lz77_type);
+
+    // Phase 2: Improve on simple LZ77 with TraceBackwards (quality >= 25).
+    // Matches libwebp: only for Standard or Box LZ77 types, run separately
+    // per branch under that branch's cache cost model.
+    if (best_lz77_type == LZ77_STANDARD || best_lz77_type == LZ77_BOX) && quality >= 25 {
+        let hash_chain_for_tb = if best_lz77_type == LZ77_BOX {
+            hash_chain_box.as_ref().unwrap_or(&hash_chain)
+        } else {
+            &hash_chain
+        };
+
+        let optimized = trace_backwards_optimize(
+            argb,
+            width,
+            height,
+            cache_bits_best,
+            hash_chain_for_tb,
+            &best_refs,
+            &stop,
+        )?;
+
+        // Compare TraceBackwards result against current best
+        histo = Histogram::from_refs_with_plane_codes(&optimized, cache_bits_best, width, &stop)?;
+        let cost_trace = estimate_histogram_bits(&histo);
+
+        if cost_trace < best_cost {
+            best_refs = optimized;
+            // Note: do NOT recalculate cache_bits_best (matching libwebp)
+        }
+    }
+
+    if do_no_cache
+        && (best_nc_lz77_type == LZ77_STANDARD || best_nc_lz77_type == LZ77_BOX)
+        && quality >= 25
+    {
+        let hash_chain_for_tb = if best_nc_lz77_type == LZ77_BOX {
+            hash_chain_box.as_ref().unwrap_or(&hash_chain)
+        } else {
+            &hash_chain
+        };
+
+        let optimized = trace_backwards_optimize(
+            argb,
+            width,
+            height,
+            0,
+            hash_chain_for_tb,
+            &best_nc_refs,
+            &stop,
+        )?;
+
+        histo = Histogram::from_refs_with_plane_codes(&optimized, 0, width, &stop)?;
+        let cost_trace = estimate_histogram_bits(&histo);
+
+        if cost_trace < best_nc_cost {
+            best_nc_refs = optimized;
+        }
+    }
+
+    // Phase 3: Apply 2D locality transform
+    apply_2d_locality(&mut best_refs, width, &stop)?;
+
+    let refs_no_cache = if do_no_cache {
+        apply_2d_locality(&mut best_nc_refs, width, &stop)?;
+        Some(best_nc_refs)
+    } else {
+        None
+    };
+
+    Ok(BackwardRefsResult {
+        refs: best_refs,
+        cache_bits: cache_bits_best,
+        refs_no_cache,
+    })
+}
+
+/// Simple backward reference finder for very low quality.
+pub fn compute_backward_refs_simple(argb: &[u32], _width: usize, _height: usize) -> BackwardRefs {
+    let size = argb.len();
+    let mut refs = BackwardRefs::with_capacity(size);
+
+    if size == 0 {
+        return refs;
+    }
+
+    let mut pos = 0;
+    while pos < size {
+        let argb_val = argb[pos];
+
+        // Check for run of identical pixels (distance = 1)
+        let mut run_len = 1;
+        while pos + run_len < size && argb[pos + run_len] == argb_val && run_len < MAX_LENGTH {
+            run_len += 1;
+        }
+
+        if run_len >= MIN_LENGTH {
+            // Emit first pixel as literal, then backward reference
+            refs.push(PixOrCopy::literal(argb_val));
+            if run_len > 1 {
+                // Distance code 1 = distance 1 (previous pixel)
+                refs.push(PixOrCopy::copy((run_len - 1) as u16, 1));
+            }
+            pos += run_len;
+        } else {
+            // Just emit literal
+            refs.push(PixOrCopy::literal(argb_val));
+            pos += 1;
+        }
+    }
+
+    refs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn test_distance_code_roundtrip() {
+        let xsize = 100;
+        for dist in 1..=200 {
+            let code = distance_to_plane_code(xsize, dist);
+            let back = plane_code_to_distance(xsize, code);
+            assert_eq!(back, dist, "dist={}, code={}", dist, code);
+        }
+    }
+
+    #[test]
+    fn test_2d_neighborhood_codes() {
+        let xsize = 100;
+        assert_eq!(distance_to_plane_code(xsize, 1), 2);
+        assert_eq!(distance_to_plane_code(xsize, xsize), 1);
+    }
+
+    #[test]
+    fn test_backward_refs_simple() {
+        let pixels = vec![0xFF000000u32; 100];
+        let refs = compute_backward_refs_simple(&pixels, 10, 10);
+
+        assert_eq!(refs.len(), 2);
+        assert!(refs.tokens[0].is_literal());
+        assert!(refs.tokens[1].is_copy());
+    }
+
+    #[test]
+    fn test_get_backward_references() {
+        // Simple repeating pattern
+        let mut pixels = Vec::new();
+        for _ in 0..100 {
+            pixels.push(0xFF112233u32);
+            pixels.push(0xFF445566u32);
+        }
+        let result = get_backward_references(
+            &pixels,
+            10,
+            20,
+            75,
+            4,
+            10,
+            false,
+            false,
+            &enough::Unstoppable,
+        )
+        .unwrap();
+        let refs = result.refs;
+        assert!(!refs.is_empty());
+    }
+
+    #[test]
+    fn test_lz77_vs_rle() {
+        // Solid color image - RLE should win
+        let pixels = vec![0xFF000000u32; 1000];
+        let hash_chain =
+            HashChain::new(&pixels, 75, 100, false, false, &enough::Unstoppable).unwrap();
+        let refs_lz77 =
+            backward_references_lz77(&pixels, 100, 10, 0, &hash_chain, &enough::Unstoppable)
+                .unwrap();
+        let refs_rle = backward_references_rle(&pixels, 100, 10, 0, &enough::Unstoppable).unwrap();
+
+        // Both should produce valid, compact output
+        assert!(refs_lz77.len() < 100); // Should compress well
+        assert!(refs_rle.len() < 100);
+    }
+}

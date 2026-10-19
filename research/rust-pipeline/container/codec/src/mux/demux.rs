@@ -1,0 +1,824 @@
+//! Zero-copy WebP demuxer.
+//!
+//! Parses a WebP file at the chunk level, exposing frame metadata and raw
+//! bitstream data without decoding pixels.
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use zenwebp::mux::WebPDemuxer;
+//!
+//! let data: &[u8] = &[]; // your WebP data
+//! let demuxer = WebPDemuxer::new(data)?;
+//! println!("{}x{}, {} frame(s)", demuxer.canvas_width(), demuxer.canvas_height(), demuxer.num_frames());
+//!
+//! for frame in demuxer.frames() {
+//!     println!("  frame {}: {}x{} at ({},{}) duration={}ms",
+//!         frame.frame_num, frame.width, frame.height,
+//!         frame.x_offset, frame.y_offset, frame.duration_ms);
+//! }
+//! # Ok::<(), whereat::At<zenwebp::mux::MuxError>>(())
+//! ```
+
+use alloc::vec::Vec;
+
+#[allow(unused_imports)]
+use whereat::at;
+
+use super::error::{MuxError, MuxResult};
+use crate::decoder::LoopCount;
+use crate::slice_reader::SliceReader;
+
+/// How the frame area is disposed after rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisposeMethod {
+    /// Do not dispose. The frame remains on the canvas.
+    None,
+    /// Fill the frame rectangle with the background color.
+    Background,
+}
+
+/// How the frame is blended with the canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendMethod {
+    /// Use alpha blending with the existing canvas content.
+    AlphaBlend,
+    /// Overwrite the canvas region with the frame data.
+    Overwrite,
+}
+
+/// Metadata for a single frame extracted by the demuxer.
+///
+/// The `bitstream` field contains the raw VP8 or VP8L data (not including
+/// any RIFF container framing). For lossy frames with separate alpha, the
+/// `alpha_data` field contains the raw ALPH chunk payload.
+#[derive(Debug, Clone)]
+pub struct DemuxFrame<'a> {
+    /// 1-based frame number.
+    pub frame_num: u32,
+    /// Horizontal offset of the frame on the canvas (always even).
+    pub x_offset: u32,
+    /// Vertical offset of the frame on the canvas (always even).
+    pub y_offset: u32,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Frame duration in milliseconds.
+    pub duration_ms: u32,
+    /// How the frame area is disposed after rendering.
+    pub dispose: DisposeMethod,
+    /// How the frame is blended onto the canvas.
+    pub blend: BlendMethod,
+    /// Whether the frame contains alpha data.
+    pub has_alpha: bool,
+    /// Whether the frame uses lossy (VP8) encoding. `false` means lossless (VP8L).
+    pub is_lossy: bool,
+    /// Raw VP8 or VP8L bitstream data for this frame.
+    pub bitstream: &'a [u8],
+    /// Raw ALPH chunk payload, if present (lossy frames with separate alpha).
+    pub alpha_data: Option<&'a [u8]>,
+}
+
+/// Parsed frame record (byte ranges into the original data).
+#[derive(Debug, Clone)]
+struct FrameRecord {
+    /// Byte offset of the ANMF payload start (after the 8-byte chunk header).
+    anmf_payload_start: usize,
+    /// Total ANMF payload size.
+    anmf_payload_size: usize,
+}
+
+/// Zero-copy WebP demuxer.
+///
+/// Parses a WebP file and provides access to frame metadata, raw bitstreams,
+/// and container-level metadata (ICC, EXIF, XMP) without decoding pixel data.
+pub struct WebPDemuxer<'a> {
+    data: &'a [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    loop_count: LoopCount,
+    background_color: [u8; 4],
+    has_alpha: bool,
+    is_animated: bool,
+    frames: Vec<FrameRecord>,
+    // Byte ranges for metadata chunks (start..end within data)
+    icc_range: Option<(usize, usize)>,
+    exif_range: Option<(usize, usize)>,
+    xmp_range: Option<(usize, usize)>,
+    // For non-animated files: the single image bitstream info
+    single_bitstream_range: Option<(usize, usize)>,
+    single_alpha_range: Option<(usize, usize)>,
+    single_is_lossy: bool,
+    single_width: u32,
+    single_height: u32,
+}
+
+impl<'a> WebPDemuxer<'a> {
+    /// Parse a WebP file from a byte slice.
+    ///
+    /// This only parses the container structure and records byte ranges.
+    /// No pixel decoding is performed.
+    #[track_caller]
+    pub fn new(data: &'a [u8]) -> MuxResult<Self> {
+        Self::new_inner(data)
+    }
+
+    fn new_inner(data: &'a [u8]) -> MuxResult<Self> {
+        if data.len() < 12 {
+            return Err(at!(MuxError::InvalidFormat("File too small".into())));
+        }
+
+        let mut r = SliceReader::new(data);
+
+        // Read RIFF header
+        let mut sig = [0u8; 4];
+        r.read_exact(&mut sig).map_err(|e| at!(MuxError::from(e)))?;
+        if &sig != b"RIFF" {
+            return Err(at!(MuxError::InvalidFormat(
+                "Missing RIFF signature".into()
+            )));
+        }
+
+        let riff_size = r.read_u32_le().map_err(|e| at!(MuxError::from(e)))? as usize;
+
+        r.read_exact(&mut sig).map_err(|e| at!(MuxError::from(e)))?;
+        if &sig != b"WEBP" {
+            return Err(at!(MuxError::InvalidFormat(
+                "Missing WEBP signature".into()
+            )));
+        }
+
+        // Read first chunk fourcc
+        let mut fourcc = [0u8; 4];
+        r.read_exact(&mut fourcc)
+            .map_err(|e| at!(MuxError::from(e)))?;
+        let chunk_size = r.read_u32_le().map_err(|e| at!(MuxError::from(e)))? as usize;
+
+        match &fourcc {
+            b"VP8 " => Self::parse_simple_lossy(data, r, chunk_size),
+            b"VP8L" => Self::parse_simple_lossless(data, r, chunk_size),
+            b"VP8X" => Self::parse_extended(data, r, chunk_size, riff_size),
+            _ => Err(at!(MuxError::InvalidFormat(alloc::format!(
+                "Unknown first chunk: {:?}",
+                fourcc
+            )))),
+        }
+    }
+
+    fn parse_simple_lossy(
+        data: &'a [u8],
+        mut r: SliceReader<'a>,
+        chunk_size: usize,
+    ) -> MuxResult<Self> {
+        let bitstream_start = r.position() as usize;
+
+        // Parse VP8 frame header to get dimensions
+        if chunk_size < 10 {
+            return Err(at!(MuxError::InvalidFormat("VP8 chunk too small".into())));
+        }
+
+        let frame_tag = r.read_u24_le().map_err(|e| at!(MuxError::from(e)))?;
+        let is_keyframe = frame_tag & 1 == 0;
+        if !is_keyframe {
+            return Err(at!(MuxError::InvalidFormat("Not a keyframe".into())));
+        }
+
+        // Skip to magic bytes
+        let mut magic = [0u8; 3];
+        r.read_exact(&mut magic)
+            .map_err(|e| at!(MuxError::from(e)))?;
+        if magic != [0x9D, 0x01, 0x2A] {
+            return Err(at!(MuxError::InvalidFormat("Invalid VP8 magic".into())));
+        }
+
+        let w = r.read_u16_le().map_err(|e| at!(MuxError::from(e)))?;
+        let h = r.read_u16_le().map_err(|e| at!(MuxError::from(e)))?;
+        let width = u32::from(w & 0x3FFF);
+        let height = u32::from(h & 0x3FFF);
+
+        // Clamp the recorded bitstream range to the actual buffer length so
+        // a truncated file (chunk_size declared larger than remaining bytes)
+        // does not panic later when single_frame() slices into self.data.
+        let bitstream_end = bitstream_start
+            .checked_add(chunk_size)
+            .map(|end| end.min(data.len()))
+            .unwrap_or(data.len());
+
+        Ok(Self {
+            data,
+            canvas_width: width,
+            canvas_height: height,
+            loop_count: LoopCount::Times(core::num::NonZeroU16::new(1).unwrap()),
+            background_color: [0; 4],
+            has_alpha: false,
+            is_animated: false,
+            frames: Vec::new(),
+            icc_range: None,
+            exif_range: None,
+            xmp_range: None,
+            single_bitstream_range: Some((bitstream_start, bitstream_end)),
+            single_alpha_range: None,
+            single_is_lossy: true,
+            single_width: width,
+            single_height: height,
+        })
+    }
+
+    fn parse_simple_lossless(
+        data: &'a [u8],
+        mut r: SliceReader<'a>,
+        chunk_size: usize,
+    ) -> MuxResult<Self> {
+        let bitstream_start = r.position() as usize;
+
+        // Parse VP8L header to get dimensions
+        if chunk_size < 5 {
+            return Err(at!(MuxError::InvalidFormat("VP8L chunk too small".into())));
+        }
+
+        let signature = r.read_u8().map_err(|e| at!(MuxError::from(e)))?;
+        if signature != 0x2f {
+            return Err(at!(MuxError::InvalidFormat(
+                "Invalid VP8L signature".into()
+            )));
+        }
+
+        let header = r.read_u32_le().map_err(|e| at!(MuxError::from(e)))?;
+        // Extract the 14-bit field THEN add 1 (width = field + 1, range
+        // [1, 16384]). `(1 + header) & 0x3FFF` adds 1 to the whole header
+        // first, so a max field of 0x3FFF (width 16384) carries into bit 14
+        // and masks to 0 — reporting a legal 16384-wide VP8L as 0. Matches
+        // the authoritative parse in decoder/lossless.rs.
+        let width = (header & 0x3FFF) + 1;
+        let height = ((header >> 14) & 0x3FFF) + 1;
+        let has_alpha = (header >> 28) & 1 != 0;
+
+        // Clamp the recorded bitstream range to the actual buffer length so
+        // a truncated file (chunk_size declared larger than remaining bytes)
+        // does not panic later when single_frame() slices into self.data.
+        let bitstream_end = bitstream_start
+            .checked_add(chunk_size)
+            .map(|end| end.min(data.len()))
+            .unwrap_or(data.len());
+
+        Ok(Self {
+            data,
+            canvas_width: width,
+            canvas_height: height,
+            loop_count: LoopCount::Times(core::num::NonZeroU16::new(1).unwrap()),
+            background_color: [0; 4],
+            has_alpha,
+            is_animated: false,
+            frames: Vec::new(),
+            icc_range: None,
+            exif_range: None,
+            xmp_range: None,
+            single_bitstream_range: Some((bitstream_start, bitstream_end)),
+            single_alpha_range: None,
+            single_is_lossy: false,
+            single_width: width,
+            single_height: height,
+        })
+    }
+
+    fn parse_extended(
+        data: &'a [u8],
+        mut r: SliceReader<'a>,
+        vp8x_size: usize,
+        riff_size: usize,
+    ) -> MuxResult<Self> {
+        if vp8x_size < 10 {
+            return Err(at!(MuxError::InvalidFormat("VP8X chunk too small".into())));
+        }
+
+        let flags = r.read_u8().map_err(|e| at!(MuxError::from(e)))?;
+        let has_icc = flags & 0b00100000 != 0;
+        let has_alpha = flags & 0b00010000 != 0;
+        let has_exif = flags & 0b00001000 != 0;
+        let has_xmp = flags & 0b00000100 != 0;
+        let is_animated = flags & 0b00000010 != 0;
+
+        // Skip 3 reserved bytes
+        r.seek_relative(3).map_err(|e| at!(MuxError::from(e)))?;
+
+        // Canvas dimensions (24-bit LE, stored as value-1)
+        let canvas_width = r.read_u24_le().map_err(|e| at!(MuxError::from(e)))? + 1;
+        let canvas_height = r.read_u24_le().map_err(|e| at!(MuxError::from(e)))? + 1;
+
+        let mut demuxer = Self {
+            data,
+            canvas_width,
+            canvas_height,
+            loop_count: LoopCount::Times(core::num::NonZeroU16::new(1).unwrap()),
+            background_color: [0; 4],
+            has_alpha,
+            is_animated,
+            frames: Vec::new(),
+            icc_range: None,
+            exif_range: None,
+            xmp_range: None,
+            single_bitstream_range: None,
+            single_alpha_range: None,
+            single_is_lossy: false,
+            single_width: canvas_width,
+            single_height: canvas_height,
+        };
+
+        // Skip any remaining VP8X payload padding
+        let vp8x_rounded = vp8x_size as u64 + (vp8x_size & 1) as u64;
+        r.seek_from_start(12 + 8 + vp8x_rounded)
+            .map_err(|e| at!(MuxError::from(e)))?;
+
+        let max_pos = 8 + riff_size as u64; // RIFF header (8 bytes) + declared size
+
+        // Scan all chunks
+        while r.position() + 8 <= max_pos && (r.position() as usize) + 8 <= data.len() {
+            let chunk_start = r.position() as usize;
+            let mut fourcc = [0u8; 4];
+            if r.read_exact(&mut fourcc).is_err() {
+                break;
+            }
+            let size = match r.read_u32_le() {
+                Ok(s) => s as usize,
+                Err(_) => break,
+            };
+            let payload_start = r.position() as usize;
+            let next_pos = next_chunk_pos(chunk_start, size);
+
+            match &fourcc {
+                b"ICCP" if has_icc => {
+                    let end = payload_start
+                        .checked_add(size)
+                        .map(|e| e.min(data.len()))
+                        .unwrap_or(data.len());
+                    demuxer.icc_range = Some((payload_start, end));
+                }
+                b"ANIM"
+                    if is_animated
+                    // ANIM: 4 bytes background color + 2 bytes loop count.
+                    // `size >= 6` is the DECLARED size; the loop only
+                    // guarantees `payload_start <= data.len()`, so the 6
+                    // payload bytes must be separately confirmed present or
+                    // `data[payload_start]` panics on a truncated/crafted
+                    // file (a 38-byte input was enough — OOB at demux.rs).
+                    && size >= 6
+                    && payload_start + 6 <= data.len() =>
+                {
+                    let bg_start = payload_start;
+                    demuxer.background_color = [
+                        data[bg_start],
+                        data[bg_start + 1],
+                        data[bg_start + 2],
+                        data[bg_start + 3],
+                    ];
+                    let lc = u16::from_le_bytes([data[bg_start + 4], data[bg_start + 5]]);
+                    demuxer.loop_count = match lc {
+                        0 => LoopCount::Forever,
+                        n => LoopCount::Times(core::num::NonZeroU16::new(n).unwrap()),
+                    };
+                }
+                b"ANMF" if is_animated => {
+                    // Only record the frame if its declared payload fits
+                    // within the available buffer. Otherwise the ANMF chunk
+                    // header is lying about its size (truncated file or
+                    // adversarial input) and parse_anmf_frame would panic.
+                    if let Some(end) = payload_start.checked_add(size)
+                        && end <= data.len()
+                    {
+                        demuxer.frames.push(FrameRecord {
+                            anmf_payload_start: payload_start,
+                            anmf_payload_size: size,
+                        });
+                    }
+                }
+                b"VP8 " if !is_animated => {
+                    let end = payload_start
+                        .checked_add(size)
+                        .map(|e| e.min(data.len()))
+                        .unwrap_or(data.len());
+                    demuxer.single_bitstream_range = Some((payload_start, end));
+                    demuxer.single_is_lossy = true;
+                }
+                b"VP8L" if !is_animated => {
+                    let end = payload_start
+                        .checked_add(size)
+                        .map(|e| e.min(data.len()))
+                        .unwrap_or(data.len());
+                    demuxer.single_bitstream_range = Some((payload_start, end));
+                    demuxer.single_is_lossy = false;
+                }
+                b"ALPH" if !is_animated => {
+                    let end = payload_start
+                        .checked_add(size)
+                        .map(|e| e.min(data.len()))
+                        .unwrap_or(data.len());
+                    demuxer.single_alpha_range = Some((payload_start, end));
+                }
+                b"EXIF" if has_exif => {
+                    let end = payload_start
+                        .checked_add(size)
+                        .map(|e| e.min(data.len()))
+                        .unwrap_or(data.len());
+                    demuxer.exif_range = Some((payload_start, end));
+                }
+                b"XMP " if has_xmp => {
+                    let end = payload_start
+                        .checked_add(size)
+                        .map(|e| e.min(data.len()))
+                        .unwrap_or(data.len());
+                    demuxer.xmp_range = Some((payload_start, end));
+                }
+                _ => {}
+            }
+
+            // Advance past this chunk's payload
+            if r.seek_from_start(next_pos).is_err() {
+                break;
+            }
+        }
+
+        // Every recorded ANMF must parse: `frames()` yields `DemuxFrame`s
+        // (not `Result`s) and stops at the first frame `parse_anmf_frame`
+        // rejects, while `num_frames()` / `ExactSizeIterator::len()` counted
+        // the record — a malformed middle frame made the iterator under-run
+        // its own length (#78). Reject the file up front instead.
+        for idx in 0..demuxer.frames.len() {
+            if demuxer.parse_anmf_frame(idx).is_none() {
+                return Err(at!(MuxError::InvalidFormat(alloc::format!(
+                    "ANMF frame {} is malformed (payload {} bytes)",
+                    idx + 1,
+                    demuxer.frames[idx].anmf_payload_size
+                ))));
+            }
+        }
+
+        Ok(demuxer)
+    }
+
+    /// Canvas width in pixels.
+    pub fn canvas_width(&self) -> u32 {
+        self.canvas_width
+    }
+
+    /// Canvas height in pixels.
+    pub fn canvas_height(&self) -> u32 {
+        self.canvas_height
+    }
+
+    /// Number of frames. Non-animated images return 1.
+    pub fn num_frames(&self) -> u32 {
+        if self.is_animated {
+            self.frames.len() as u32
+        } else {
+            1
+        }
+    }
+
+    /// Number of frames (alias for [`num_frames()`](Self::num_frames)).
+    pub fn frame_count(&self) -> u32 {
+        self.num_frames()
+    }
+
+    /// Loop count for animated images.
+    pub fn loop_count(&self) -> LoopCount {
+        self.loop_count
+    }
+
+    /// Background color for animated images (BGRA byte order as per the spec).
+    pub fn background_color(&self) -> [u8; 4] {
+        self.background_color
+    }
+
+    /// Whether the image is animated.
+    pub fn is_animated(&self) -> bool {
+        self.is_animated
+    }
+
+    /// Whether the image has alpha data.
+    pub fn has_alpha(&self) -> bool {
+        self.has_alpha
+    }
+
+    /// Get a specific frame by 1-based index.
+    ///
+    /// Returns `None` if the index is out of range.
+    pub fn frame(&self, n: u32) -> Option<DemuxFrame<'a>> {
+        if n == 0 {
+            return None;
+        }
+
+        if !self.is_animated {
+            if n != 1 {
+                return None;
+            }
+            return self.single_frame();
+        }
+
+        let idx = (n - 1) as usize;
+        if idx >= self.frames.len() {
+            return None;
+        }
+
+        self.parse_anmf_frame(idx)
+    }
+
+    /// Iterate over all frames.
+    pub fn frames(&self) -> DemuxFrameIter<'a, '_> {
+        DemuxFrameIter {
+            demuxer: self,
+            current: 1,
+        }
+    }
+
+    /// ICC profile data, if present.
+    pub fn icc_profile(&self) -> Option<&'a [u8]> {
+        self.icc_range.map(|(s, e)| &self.data[s..e])
+    }
+
+    /// EXIF metadata, if present.
+    pub fn exif(&self) -> Option<&'a [u8]> {
+        self.exif_range.map(|(s, e)| &self.data[s..e])
+    }
+
+    /// XMP metadata, if present.
+    pub fn xmp(&self) -> Option<&'a [u8]> {
+        self.xmp_range.map(|(s, e)| &self.data[s..e])
+    }
+
+    fn single_frame(&self) -> Option<DemuxFrame<'a>> {
+        let (bs_start, bs_end) = self.single_bitstream_range?;
+        let alpha_data = self.single_alpha_range.map(|(s, e)| &self.data[s..e]);
+
+        Some(DemuxFrame {
+            frame_num: 1,
+            x_offset: 0,
+            y_offset: 0,
+            width: self.single_width,
+            height: self.single_height,
+            duration_ms: 0,
+            dispose: DisposeMethod::None,
+            blend: BlendMethod::Overwrite,
+            has_alpha: self.has_alpha,
+            is_lossy: self.single_is_lossy,
+            bitstream: &self.data[bs_start..bs_end],
+            alpha_data,
+        })
+    }
+
+    fn parse_anmf_frame(&self, idx: usize) -> Option<DemuxFrame<'a>> {
+        let record = &self.frames[idx];
+        let start = record.anmf_payload_start;
+        let size = record.anmf_payload_size;
+
+        if size < 16 {
+            return None;
+        }
+
+        // Defense in depth: even though parse_extended now validates ranges
+        // before recording a FrameRecord, prefer get() over indexing here so
+        // we cannot panic on a stale or future-corrupted record.
+        let end = start.checked_add(size)?;
+        let d = self.data.get(start..end)?;
+
+        // ANMF payload layout:
+        // 3 bytes: Frame X (in 2-pixel units)
+        // 3 bytes: Frame Y (in 2-pixel units)
+        // 3 bytes: Frame Width Minus One
+        // 3 bytes: Frame Height Minus One
+        // 3 bytes: Frame Duration
+        // 1 byte:  Flags (dispose[0], blend[1], reserved[2-7])
+        // Then: sub-chunks (ALPH + VP8, or VP8L)
+
+        let x_offset = read_u24_le(&d[0..3]) * 2;
+        let y_offset = read_u24_le(&d[3..6]) * 2;
+        let width = read_u24_le(&d[6..9]) + 1;
+        let height = read_u24_le(&d[9..12]) + 1;
+        let duration_ms = read_u24_le(&d[12..15]);
+        let flags = d[15];
+        let dispose = if flags & 1 != 0 {
+            DisposeMethod::Background
+        } else {
+            DisposeMethod::None
+        };
+        let blend = if flags & 2 != 0 {
+            BlendMethod::Overwrite
+        } else {
+            BlendMethod::AlphaBlend
+        };
+
+        // Parse sub-chunks starting at offset 16
+        let sub = &d[16..];
+        if sub.len() < 8 {
+            return None;
+        }
+
+        let sub_fourcc = &sub[0..4];
+        let sub_size = u32::from_le_bytes([sub[4], sub[5], sub[6], sub[7]]) as usize;
+        let sub_payload_offset = start.checked_add(16 + 8)?; // absolute offset in data
+
+        // Clamp sub-chunk payloads to THIS frame's own end (`end = start +
+        // size`, already validated <= data.len()), NOT to the whole file. A
+        // frame declaring `sub_size = u32::MAX` otherwise exposes the entire
+        // rest of the file as its bitstream — so N frames each pointing at the
+        // tail give a consumer that `.to_vec()`s per frame (e.g. WebPMux) an
+        // O(N * filesize) blow-up. ALPH below is bounded the same way.
+        match sub_fourcc {
+            b"VP8L" => {
+                let sub_end = sub_payload_offset
+                    .checked_add(sub_size)
+                    .map(|e| e.min(end))
+                    .unwrap_or(end)
+                    .max(sub_payload_offset);
+                let bitstream = &self.data[sub_payload_offset..sub_end];
+                // Same field the still-image path reads: the VP8L header's
+                // alpha_is_used bit (bit 28 of the LE u32 after the 0x2f
+                // signature). This used to be hard-coded `true` for every
+                // VP8L frame, so an opaque lossless animation reported
+                // alpha on every frame while a still of the same bitstream
+                // did not (#78).
+                let has_alpha = bitstream
+                    .get(1..5)
+                    .map(|h| (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) >> 28) & 1 != 0)
+                    .unwrap_or(false);
+                Some(DemuxFrame {
+                    frame_num: idx as u32 + 1,
+                    x_offset,
+                    y_offset,
+                    width,
+                    height,
+                    duration_ms,
+                    dispose,
+                    blend,
+                    has_alpha,
+                    is_lossy: false,
+                    bitstream: &self.data[sub_payload_offset..sub_end],
+                    alpha_data: None,
+                })
+            }
+            b"VP8 " => {
+                let sub_end = sub_payload_offset
+                    .checked_add(sub_size)
+                    .map(|e| e.min(end))
+                    .unwrap_or(end)
+                    .max(sub_payload_offset);
+                Some(DemuxFrame {
+                    frame_num: idx as u32 + 1,
+                    x_offset,
+                    y_offset,
+                    width,
+                    height,
+                    duration_ms,
+                    dispose,
+                    blend,
+                    has_alpha: false,
+                    is_lossy: true,
+                    bitstream: &self.data[sub_payload_offset..sub_end],
+                    alpha_data: None,
+                })
+            }
+            b"ALPH" => {
+                // ALPH chunk followed by VP8 chunk. All offset arithmetic is
+                // attacker-controlled (sub_size, the trailing VP8 size) so use
+                // checked_add and bounded slicing to avoid panics. Clamp to
+                // this frame's own end, not the whole file (see the VP8L/VP8
+                // arms above).
+                let alpha_end = sub_payload_offset
+                    .checked_add(sub_size)
+                    .map(|e| e.min(end))
+                    .unwrap_or(end)
+                    .max(sub_payload_offset);
+                let alpha_data = self.data.get(sub_payload_offset..alpha_end)?;
+
+                let sub_rounded = sub_size.checked_add(sub_size & 1)?;
+                let vp8_header_start = start.checked_add(16 + 8 + sub_rounded)?;
+                let frame_end = start.checked_add(size)?;
+                if vp8_header_start.checked_add(8)? > frame_end {
+                    return None;
+                }
+
+                let vp8_fourcc = self.data.get(vp8_header_start..vp8_header_start + 4)?;
+                if vp8_fourcc != b"VP8 " {
+                    return None;
+                }
+                let header_bytes = self.data.get(vp8_header_start + 4..vp8_header_start + 8)?;
+                let vp8_size = u32::from_le_bytes([
+                    header_bytes[0],
+                    header_bytes[1],
+                    header_bytes[2],
+                    header_bytes[3],
+                ]) as usize;
+                let vp8_start = vp8_header_start.checked_add(8)?;
+                let vp8_end = vp8_start
+                    .checked_add(vp8_size)
+                    .map(|e| e.min(frame_end))
+                    .unwrap_or(frame_end)
+                    .max(vp8_start);
+
+                Some(DemuxFrame {
+                    frame_num: idx as u32 + 1,
+                    x_offset,
+                    y_offset,
+                    width,
+                    height,
+                    duration_ms,
+                    dispose,
+                    blend,
+                    has_alpha: true,
+                    is_lossy: true,
+                    bitstream: &self.data[vp8_start..vp8_end],
+                    alpha_data: Some(alpha_data),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Iterator over demuxed frames.
+pub struct DemuxFrameIter<'a, 'b> {
+    demuxer: &'b WebPDemuxer<'a>,
+    current: u32,
+}
+
+impl<'a, 'b> Iterator for DemuxFrameIter<'a, 'b> {
+    type Item = DemuxFrame<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let frame = self.demuxer.frame(self.current)?;
+        self.current += 1;
+        Some(frame)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.demuxer.num_frames().saturating_sub(self.current - 1) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for DemuxFrameIter<'_, '_> {}
+
+/// Read a 24-bit little-endian value from 3 bytes.
+fn read_u24_le(bytes: &[u8]) -> u32 {
+    u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16)
+}
+
+/// Byte offset of the chunk following the one starting at `chunk_start`.
+///
+/// `size` is read verbatim from the file, so it spans the whole `u32` range.
+/// The sum MUST be computed in `u64`: on 32-bit targets (wasm32) a `usize`
+/// sum wraps, and a chunk declaring `size == 0xFFFF_FFF8` lands back on
+/// `chunk_start` — the chunk walk then never advances and spins at 100% CPU.
+#[inline]
+fn next_chunk_pos(chunk_start: usize, size: usize) -> u64 {
+    chunk_start as u64 + 8 + size as u64 + (size & 1) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WebPDemuxer, next_chunk_pos};
+
+    /// Regression: a VP8X animation file whose ANIM chunk declares its 6-byte
+    /// payload but truncates before it must not panic. The loop only
+    /// guarantees `payload_start <= data.len()`; a 38-byte crafted file put
+    /// `payload_start == data.len()` and indexed one past the end.
+    #[test]
+    fn truncated_anim_payload_does_not_panic() {
+        let mut out = alloc::vec::Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(b"WEBP");
+        out.extend_from_slice(b"VP8X");
+        out.extend_from_slice(&10u32.to_le_bytes());
+        out.push(0b0000_0010); // animation flag
+        out.extend_from_slice(&[0u8; 9]);
+        out.extend_from_slice(b"ANIM");
+        out.extend_from_slice(&6u32.to_le_bytes()); // declares 6, provides 0
+        let riff = (out.len() - 8) as u32;
+        out[4..8].copy_from_slice(&riff.to_le_bytes());
+        assert_eq!(out.len(), 38);
+
+        // Must return (Ok or Err) without panicking.
+        let _ = WebPDemuxer::new(&out);
+    }
+
+    /// Regression: the chunk walk must move forward for every declared size,
+    /// including the ones that wrap a 32-bit `usize`. Fails cleanly on wasm32
+    /// (and any 32-bit target) if the arithmetic ever narrows again.
+    #[test]
+    fn chunk_walk_advance_does_not_wrap_on_32bit() {
+        // 0xFFFF_FFF8 is the exact value that maps back onto `chunk_start`.
+        assert_eq!(next_chunk_pos(30, 0xFFFF_FFF8), 30 + 8 + 0xFFFF_FFF8);
+        // Neighbours that would seek *backwards* under a 32-bit sum.
+        assert_eq!(next_chunk_pos(4096, 0xFFFF_FFF0), 4096 + 8 + 0xFFFF_FFF0);
+        // u32::MAX: odd, so the +1 padding is what overflows.
+        assert_eq!(next_chunk_pos(0, 0xFFFF_FFFF), 8 + 0xFFFF_FFFF + 1);
+        // Every case must strictly advance past the 8-byte header.
+        for size in [0usize, 1, 2, 0x7FFF_FFFF, 0xFFFF_FFF8, 0xFFFF_FFFF] {
+            assert!(
+                next_chunk_pos(30, size) >= 38,
+                "size {size:#x} did not advance"
+            );
+        }
+    }
+}

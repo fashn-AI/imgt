@@ -1,0 +1,30 @@
+[package]
+name = "imgt-container"
+version = "0.1.0"
+edition = "2021"
+publish = false
+rust-version = "1.93"
+[features]
+test-delay = []
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
+serde_json = "1"
+http-body-util = "0.1"
+png = "=0.18.1"
+fdeflate = "=0.3.7"
+crc32fast = "=1.5.2"
+zenwebp = { path = "../codec", default-features = false, features = ["std", "fast-yuv", "__expert"] }
+enough = { version = "=0.4.5", default-features = false }
+imgt-research-formats = { path = "../formats", features = ["avif"] }
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Exact upstream main manifest patch, required until structural-inventory API is published.
+[patch.crates-io]
+fdeflate = { path = "../inflate" }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "d327434b0826a3e39633665c76f5081c0ceb34cc" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "d327434b0826a3e39633665c76f5081c0ceb34cc" }

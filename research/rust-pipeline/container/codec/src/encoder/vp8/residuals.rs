@@ -1,0 +1,1276 @@
+//! Residual coefficient encoding and statistics recording.
+//!
+//! Contains methods for encoding DCT coefficients into the bitstream,
+//! trellis-optimized quantization dispatch, error diffusion, token buffer
+//! for deferred encoding, and probability statistics recording.
+
+use alloc::vec::Vec;
+
+use crate::common::types::*;
+
+use super::{MacroblockInfo, QuantizedMbCoeffs};
+use crate::encoder::cost::{
+    NUM_BANDS, NUM_CTX, NUM_PROBAS, NUM_TYPES, ProbaStats, TokenType, VP8_ENC_BANDS,
+    trellis_quantize_block,
+};
+
+// Known lengths of PROB_DCT_CAT extra-value probability tables (Cat1-Cat6).
+// Eliminates sentinel `prob == 0` branch per iteration in the hot loop.
+const DCT_CAT_LENGTHS: [usize; 6] = [1, 2, 3, 4, 5, 11];
+
+/// Chroma DC error diffusion — a port of libwebp's `CorrectDCValues`
+/// (`quant_enc.c`). Adjusts each chroma block's DC coefficient in place by the
+/// diffused neighbour error, predicts the resulting quantization error, and
+/// returns the per-channel `[err0, err1, err2, err3]` for the caller to store.
+///
+/// Stateless: the caller supplies the current `top_derr` / `left_derr`
+/// (indexed `[channel][0..2]`) and decides whether to persist the returned
+/// errors. This lets the final emission path (`apply_chroma_error_diffusion`,
+/// which stores) and the m3+ RD mode-selection path (`pick_best_uv`, which only
+/// needs the corrected reconstruction) share byte-identical diffusion. Blocks
+/// are laid out as `[i32; 16*4]` = 4 chroma blocks × 16 coeffs, DC at
+/// `blocks[block_idx * 16]`, in 2×2 raster order (TL, TR, BL, BR).
+pub(crate) fn diffuse_chroma_dc_inplace(
+    u_blocks: &mut [i16; 16 * 4],
+    v_blocks: &mut [i16; 16 * 4],
+    top_derr: &[[i8; 2]; 2],
+    left_derr: &[[i8; 2]; 2],
+    uv_matrix: &crate::encoder::cost::VP8Matrix,
+) -> ([i8; 4], [i8; 4]) {
+    // Diffusion constants from libwebp.
+    const C1: i32 = 7; // fraction from top
+    const C2: i32 = 8; // fraction from left
+    const DSHIFT: i32 = 4;
+    const DSCALE: i32 = 1;
+
+    let q = uv_matrix.q[0] as i32;
+    let iq = uv_matrix.iq[0];
+    let bias = uv_matrix.bias[0];
+
+    // Add diffused error to the DC, predict what quantization will produce, and
+    // return the (descaled, clamped) error to diffuse onward. Leaves `*dc`
+    // adjusted so the caller's quantizer reproduces the same level.
+    let diffuse_dc = |dc16: &mut i16, top_err: i8, left_err: i8| -> i8 {
+        let adjustment = (C1 * top_err as i32 + C2 * left_err as i32) >> (DSHIFT - DSCALE);
+        // DC + small diffusion delta stays i16-bounded (DCT range + ±~120).
+        let dc = i32::from(*dc16) + adjustment;
+        *dc16 = dc as i16;
+
+        let sign = dc < 0;
+        let abs_dc = dc.unsigned_abs();
+
+        let zthresh = ((1u32 << 17) - 1 - bias) / iq;
+        let level = if abs_dc > zthresh {
+            ((abs_dc * iq + bias) >> 17) as i32
+        } else {
+            0
+        };
+
+        let err = abs_dc as i32 - level * q;
+        let signed_err = if sign { -err } else { err };
+        (signed_err >> DSCALE).clamp(-127, 127) as i8
+    };
+
+    // Process one channel's 4 blocks in scan order, propagating errors.
+    let process_channel = |blocks: &mut [i16; 16 * 4], top: [i8; 2], left: [i8; 2]| -> [i8; 4] {
+        let err0 = diffuse_dc(&mut blocks[0], top[0], left[0]); // TL
+        let err1 = diffuse_dc(&mut blocks[16], top[1], err0); // TR
+        let err2 = diffuse_dc(&mut blocks[32], err0, left[1]); // BL
+        let err3 = diffuse_dc(&mut blocks[48], err1, err2); // BR
+        [err0, err1, err2, err3]
+    };
+
+    let u_errs = process_channel(u_blocks, top_derr[0], left_derr[0]);
+    let v_errs = process_channel(v_blocks, top_derr[1], left_derr[1]);
+    (u_errs, v_errs)
+}
+
+// Test-only counter for `trellis_reuse_assertion_is_actually_exercised_at_m6`.
+// Gated on `feature = "std"` because `thread_local!` requires `std::thread`;
+// no_std builds (cargo test --no-default-features) skip both this declaration
+// and its reference site below.
+#[cfg(all(test, debug_assertions, feature = "std"))]
+thread_local! {
+    /// Counts how many times the trellis-reuse cache assertion path runs.
+    /// Read by `trellis_reuse_assertion_is_actually_exercised_at_m6` to
+    /// verify the assertion isn't silently dormant.
+    pub(crate) static TRELLIS_REUSE_HITS: core::cell::Cell<u64> =
+        const { core::cell::Cell::new(0) };
+}
+
+// -----------------------------------------------------------------------
+// Token buffer for deferred coefficient encoding
+// -----------------------------------------------------------------------
+
+/// Flag indicating a token has a constant (embedded) probability.
+const FIXED_PROBA_BIT: u16 = 1 << 14;
+
+/// Compute flat probability index base for `probs[type][band][ctx][0]`.
+/// Add the node offset (0-10) to get the specific probability index.
+#[inline]
+fn token_id(coeff_type: usize, band: usize, ctx: usize) -> u16 {
+    debug_assert!(coeff_type < NUM_TYPES);
+    debug_assert!(band < NUM_BANDS);
+    debug_assert!(ctx < NUM_CTX);
+    (NUM_PROBAS * (ctx + NUM_CTX * (band + NUM_BANDS * coeff_type))) as u16
+}
+
+/// Buffer of bit-level tokens for deferred emission to the arithmetic encoder.
+///
+/// Each token is a u16 matching libwebp's `token_t` layout (token_enc.c):
+/// - bit 15: bit value (0 or 1)
+/// - bit 14: FIXED_PROBA_BIT (1 = constant probability, 0 = indexed)
+/// - bits 0-13: flat probability index (if dynamic) or probability value (if constant)
+///
+/// During recording, tokens are stored alongside ProbaStats updates.
+/// During emission, dynamic tokens look up probabilities from the (now-updated)
+/// probability table, while constant tokens use their embedded probability.
+pub(crate) struct TokenBuffer {
+    tokens: Vec<u16>,
+    /// Per-MB start offsets into `tokens` (one entry per recorded MB).
+    /// Used by `emit_tokens_filtered` to selectively skip a MB's tokens.
+    /// Only populated when `begin_mb()` is called per MB; otherwise stays empty
+    /// and `emit_tokens` emits the whole stream.
+    mb_token_starts: Vec<u32>,
+    /// Which stats node the Cat5/Cat6 magnitude bit is accumulated into.
+    ///
+    /// libwebp has TWO coefficient recorders and they disagree here, so this
+    /// must follow the loop libwebp would actually run for the method:
+    ///
+    /// * `true` — `VP8RecordCoeffTokens` (`token_enc.c`), used by
+    ///   `VP8EncTokenLoop` whenever `use_tokens` is set
+    ///   (`rd_opt >= RD_OPT_BASIC`, so **m3-m6**). It codes the bit with proba
+    ///   index `base_id + 10` but records the statistic into `s + 9`:
+    ///   `AddToken(tokens, 0, base_id + 10, s + 9)`. A consequence upstream is
+    ///   that `stats[..][10]` is never populated at all, so node 10's
+    ///   probability can never adapt, and node 9's count merges
+    ///   Cat3/Cat4/Cat5/Cat6 events.
+    /// * `false` — `VP8RecordCoeffs` (`cost_enc.c`, `USE_LEVEL_CODE_TABLE`
+    ///   path) via `RecordResiduals` under plain `VP8EncLoop`, i.e. **m0-m2**.
+    ///   Its `VP8LevelCodes` pattern records node 10 for v>=35.
+    ///
+    /// The mismatch looks like an upstream slip rather than intent (node 10 is
+    /// the natural home, which is what zenwebp did), but these counts feed
+    /// `FinalizeTokenProbas`, so byte-exactness requires reproducing libwebp's
+    /// accounting per-path. Only set true under `StrictLibwebpParity`; the
+    /// tuned default keeps zenwebp's prior node-10 accounting so its bytes are
+    /// unchanged. (#38)
+    cat56_stat_node9: bool,
+}
+
+#[allow(dead_code)]
+impl TokenBuffer {
+    pub fn new() -> Self {
+        Self {
+            tokens: Vec::new(),
+            mb_token_starts: Vec::new(),
+            cat56_stat_node9: false,
+        }
+    }
+
+    pub fn with_estimated_capacity(num_macroblocks: usize) -> Self {
+        // libwebp uses 2 * 16 * 24 = 768 tokens per macroblock
+        Self {
+            tokens: Vec::with_capacity(num_macroblocks * 768),
+            mb_token_starts: Vec::with_capacity(num_macroblocks + 1),
+            cat56_stat_node9: false,
+        }
+    }
+
+    /// See [`TokenBuffer::cat56_stat_node9`]. Set once per encode from the
+    /// cost model + method, before any recording.
+    pub fn set_cat56_stat_node9(&mut self, on: bool) {
+        self.cat56_stat_node9 = on;
+    }
+
+    pub fn clear(&mut self) {
+        self.tokens.clear();
+        self.mb_token_starts.clear();
+    }
+
+    /// Mark the start of a new macroblock's tokens. Must be called once per MB
+    /// before any `record_coeff_tokens` calls for that MB. Pushes the current
+    /// `tokens.len()` so `emit_tokens_filtered` can locate the MB's span.
+    #[inline]
+    pub fn begin_mb(&mut self) {
+        debug_assert!(
+            self.tokens.len() <= u32::MAX as usize,
+            "token buffer length overflows u32"
+        );
+        self.mb_token_starts.push(self.tokens.len() as u32);
+    }
+
+    /// Record a dynamic-probability bit decision.
+    #[inline]
+    fn add_token(&mut self, bit: bool, proba_idx: u16) {
+        debug_assert!(
+            proba_idx < FIXED_PROBA_BIT,
+            "proba_idx {proba_idx} overlaps FIXED_PROBA_BIT"
+        );
+        self.tokens.push(((bit as u16) << 15) | proba_idx);
+    }
+
+    /// Record a fixed-probability bit decision.
+    #[inline]
+    fn add_constant_token(&mut self, bit: bool, proba: u8) {
+        self.tokens
+            .push(((bit as u16) << 15) | FIXED_PROBA_BIT | (proba as u16));
+    }
+
+    pub fn len(&self) -> usize {
+        self.tokens.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
+
+    /// Emit all tokens to an arithmetic encoder using the given probability table.
+    ///
+    /// Dynamic tokens look up their probability from `probas` using the stored
+    /// flat index. Constant tokens use their embedded probability directly.
+    ///
+    /// Matches libwebp's `VP8EmitTokens` (token_enc.c).
+    pub fn emit_tokens(
+        &self,
+        encoder: &mut crate::encoder::arithmetic::ArithmeticEncoder,
+        probas: &TokenProbTables,
+    ) {
+        // Flatten 4D probability table to 1D for direct indexing.
+        // Layout matches token_id(): probas[t][b][c][p] → flat[token_id(t,b,c) + p]
+        // This eliminates 5 integer divisions per dynamic token in the hot loop.
+        let flat_probas = Self::flatten_probas(probas);
+
+        // Split loop: process dynamic tokens (majority) with minimal branching.
+        // FIXED_PROBA_BIT tokens (sign bits, category extra bits) are ~30% of tokens.
+        for &token in &self.tokens {
+            let bit = (token >> 15) != 0;
+            let raw_idx = token & 0x3FFF;
+            // For fixed-proba tokens, bit 14 is set and bits 0-7 hold the probability.
+            // For dynamic tokens, bits 0-13 hold the flat index.
+            // Branchless: use the fixed proba when FIXED_PROBA_BIT is set, else lookup.
+            let proba = if (token & FIXED_PROBA_BIT) != 0 {
+                raw_idx as u8
+            } else {
+                flat_probas[raw_idx as usize]
+            };
+            encoder.write_bool(bit, proba);
+        }
+    }
+
+    /// Emit tokens to the encoder, suppressing entire MB spans whose
+    /// `skipped[mb_idx]` flag is true.
+    ///
+    /// Used when `use_skip_proba=1` (per-MB skip flag is signaled): the decoder
+    /// reads no residuals for skipped MBs, so we must not emit them either.
+    /// When `use_skip_proba=0` (`macroblock_no_skip_coeff = None`), use the
+    /// plain `emit_tokens` instead — every MB's residuals must be emitted.
+    ///
+    /// Requires `begin_mb()` to have been called once per MB during recording.
+    /// `skipped.len()` must equal the number of recorded MBs.
+    pub fn emit_tokens_filtered(
+        &self,
+        encoder: &mut crate::encoder::arithmetic::ArithmeticEncoder,
+        probas: &TokenProbTables,
+        skipped: &[bool],
+    ) {
+        debug_assert_eq!(
+            self.mb_token_starts.len(),
+            skipped.len(),
+            "begin_mb() count must match skipped.len()"
+        );
+
+        let flat_probas = Self::flatten_probas(probas);
+
+        let num_mbs = self.mb_token_starts.len();
+        for (mb_idx, &is_skipped) in skipped.iter().enumerate() {
+            if is_skipped {
+                continue;
+            }
+            let start = self.mb_token_starts[mb_idx] as usize;
+            let end = if mb_idx + 1 < num_mbs {
+                self.mb_token_starts[mb_idx + 1] as usize
+            } else {
+                self.tokens.len()
+            };
+
+            for &token in &self.tokens[start..end] {
+                let bit = (token >> 15) != 0;
+                let raw_idx = token & 0x3FFF;
+                let proba = if (token & FIXED_PROBA_BIT) != 0 {
+                    raw_idx as u8
+                } else {
+                    flat_probas[raw_idx as usize]
+                };
+                encoder.write_bool(bit, proba);
+            }
+        }
+    }
+
+    /// Flatten 4D probability table to match token_id() flat indexing.
+    /// TokenProbTables is [4][8][3][11] = 1056 bytes, same layout as flat array.
+    fn flatten_probas(
+        probas: &TokenProbTables,
+    ) -> [u8; NUM_TYPES * NUM_BANDS * NUM_CTX * NUM_PROBAS] {
+        let mut flat = [0u8; NUM_TYPES * NUM_BANDS * NUM_CTX * NUM_PROBAS];
+        for (t, type_bands) in probas.iter().enumerate() {
+            for (b, band_ctxs) in type_bands.iter().enumerate() {
+                for (c, ctx_probas) in band_ctxs.iter().enumerate() {
+                    let offset = NUM_PROBAS * (c + NUM_CTX * (b + NUM_BANDS * t));
+                    flat[offset..offset + NUM_PROBAS].copy_from_slice(ctx_probas);
+                }
+            }
+        }
+        flat
+    }
+
+    /// Record tokens for a quantized coefficient block.
+    ///
+    /// Simultaneously records bit-level tokens for deferred emission AND
+    /// updates ProbaStats for probability refinement.
+    ///
+    /// Returns true if the block has non-zero coefficients (for complexity tracking).
+    ///
+    /// Optimized vs libwebp's `VP8RecordCoeffTokens` (token_enc.c):
+    /// - Pre-resolves stats row `&mut [u32; 11]` per band/ctx (eliminates 4D index per call)
+    /// - Inlines magnitude tree (avoids passing &mut stats through function boundary)
+    pub fn record_coeff_tokens(
+        &mut self,
+        stats: &mut ProbaStats,
+        coeffs: &[i16; 16],
+        coeff_type: usize,
+        first_coeff: usize,
+        initial_ctx: usize,
+    ) -> bool {
+        let cat56_idx: usize = if self.cat56_stat_node9 { 9 } else { 10 };
+        // Find last non-zero coefficient
+        let last = coeffs[first_coeff..]
+            .iter()
+            .rposition(|&c| c != 0)
+            .map(|i| (i + first_coeff) as i32)
+            .unwrap_or(-1);
+
+        let mut n = first_coeff;
+        let mut band = VP8_ENC_BANDS[n] as usize;
+        let mut ctx = initial_ctx;
+        let mut base_id = token_id(coeff_type, band, ctx);
+
+        // Node 0: Is there any non-zero coefficient? (not EOB)
+        let not_eob = last >= first_coeff as i32;
+        self.add_token(not_eob, base_id);
+        record_stat(&mut stats.stats[coeff_type][band][ctx][0], not_eob);
+
+        if !not_eob {
+            return false; // All zero
+        }
+
+        while n < 16 {
+            let c = i32::from(coeffs[n]);
+            n += 1;
+            let sign = c < 0;
+            let v = c.unsigned_abs();
+
+            // Pre-resolve stats row for current band/ctx.
+            // All nodes (1-10) within one coefficient use the same band/ctx.
+            let s = &mut stats.stats[coeff_type][band][ctx];
+
+            // Node 1: Is this coefficient non-zero?
+            self.add_token(v != 0, base_id + 1);
+            record_stat(&mut s[1], v != 0);
+
+            if v == 0 {
+                // Zero coefficient: context = 0
+                band = VP8_ENC_BANDS[n] as usize;
+                ctx = 0;
+                base_id = token_id(coeff_type, band, ctx);
+                continue;
+            }
+
+            // Node 2: Is |coeff| > 1?
+            self.add_token(v > 1, base_id + 2);
+            record_stat(&mut s[2], v > 1);
+
+            if v > 1 {
+                // Magnitude tree (nodes 3-10), all same band/ctx as s
+                self.add_token(v > 4, base_id + 3);
+                record_stat(&mut s[3], v > 4);
+
+                if v <= 4 {
+                    self.add_token(v != 2, base_id + 4);
+                    record_stat(&mut s[4], v != 2);
+                    if v != 2 {
+                        self.add_token(v == 4, base_id + 5);
+                        record_stat(&mut s[5], v == 4);
+                    }
+                } else {
+                    self.add_token(v > 10, base_id + 6);
+                    record_stat(&mut s[6], v > 10);
+
+                    if v <= 10 {
+                        self.add_token(v > 6, base_id + 7);
+                        record_stat(&mut s[7], v > 6);
+
+                        if v <= 6 {
+                            self.add_constant_token(v == 6, 159);
+                        } else {
+                            self.add_constant_token(v >= 9, 165);
+                            self.add_constant_token((v & 1) == 0, 145);
+                        }
+                    } else {
+                        let residue = v - 3;
+                        if residue < (8 << 1) {
+                            // Cat3
+                            self.add_token(false, base_id + 8);
+                            record_stat(&mut s[8], false);
+                            self.add_token(false, base_id + 9);
+                            record_stat(&mut s[9], false);
+                            let r = residue - 8;
+                            for i in 0..DCT_CAT_LENGTHS[2] {
+                                self.add_constant_token(
+                                    (r & (1 << (2 - i))) != 0,
+                                    PROB_DCT_CAT[2][i],
+                                );
+                            }
+                        } else if residue < (8 << 2) {
+                            // Cat4
+                            self.add_token(false, base_id + 8);
+                            record_stat(&mut s[8], false);
+                            self.add_token(true, base_id + 9);
+                            record_stat(&mut s[9], true);
+                            let r = residue - (8 << 1);
+                            for i in 0..DCT_CAT_LENGTHS[3] {
+                                self.add_constant_token(
+                                    (r & (1 << (3 - i))) != 0,
+                                    PROB_DCT_CAT[3][i],
+                                );
+                            }
+                        } else if residue < (8 << 3) {
+                            // Cat5
+                            // libwebp codes this with proba index `base_id + 10`
+                            // but records the statistic into `s + 9` on the token
+                            // path (`token_enc.c`). See `cat56_stat_node9`.
+                            self.add_token(true, base_id + 8);
+                            record_stat(&mut s[8], true);
+                            self.add_token(false, base_id + 10);
+                            record_stat(&mut s[cat56_idx], false);
+                            let r = residue - (8 << 2);
+                            for i in 0..DCT_CAT_LENGTHS[4] {
+                                self.add_constant_token(
+                                    (r & (1 << (4 - i))) != 0,
+                                    PROB_DCT_CAT[4][i],
+                                );
+                            }
+                        } else {
+                            // Cat6
+                            // Same proba-index/stat-index split as Cat5 above.
+                            self.add_token(true, base_id + 8);
+                            record_stat(&mut s[8], true);
+                            self.add_token(true, base_id + 10);
+                            record_stat(&mut s[cat56_idx], true);
+                            let r = residue - (8 << 3);
+                            for i in 0..DCT_CAT_LENGTHS[5] {
+                                self.add_constant_token(
+                                    (r & (1 << (10 - i))) != 0,
+                                    PROB_DCT_CAT[5][i],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update band/ctx for next coefficient
+            band = VP8_ENC_BANDS[n] as usize;
+            ctx = if v <= 1 { 1 } else { 2 };
+            base_id = token_id(coeff_type, band, ctx);
+
+            // Sign bit (constant probability 128)
+            self.add_constant_token(sign, 128);
+
+            // Node 0 for next position: more non-zero coefficients?
+            if n == 16 {
+                return true;
+            }
+            let not_eob_next = (n as i32) <= last;
+            self.add_token(not_eob_next, base_id);
+            record_stat(&mut stats.stats[coeff_type][band][ctx][0], not_eob_next);
+
+            if !not_eob_next {
+                return true; // EOB
+            }
+        }
+
+        true
+    }
+}
+
+/// Record a single probability statistic (inlined).
+/// Matches libwebp's VP8RecordStats: upper 16 bits = total, lower 16 = count of 1s.
+#[inline(always)]
+fn record_stat(stat: &mut u32, bit: bool) {
+    if *stat >= 0xfffe_0000 {
+        *stat = ((*stat + 1) >> 1) & 0x7fff_7fff;
+    }
+    *stat += 0x0001_0000 + bit as u32;
+}
+
+impl<'a> super::Vp8Encoder<'a> {
+    /// Apply Floyd-Steinberg-like error diffusion to chroma DC coefficients.
+    ///
+    /// This reduces banding artifacts in smooth gradients by spreading quantization
+    /// error to neighboring blocks. The pattern for a 2x2 grid of chroma blocks:
+    /// ```text
+    /// | c[0] | c[1] |    errors: err0, err1
+    /// | c[2] | c[3] |            err2, err3
+    /// ```
+    ///
+    /// Modifies the DC coefficients in place and stores errors for next macroblock.
+    pub(super) fn apply_chroma_error_diffusion(
+        &mut self,
+        u_blocks: &mut [i16; 16 * 4],
+        v_blocks: &mut [i16; 16 * 4],
+        mbx: usize,
+        uv_matrix: &crate::encoder::cost::VP8Matrix,
+    ) {
+        // m5 (RD_OPT_TRELLIS) reconstructs chroma TWICE in libwebp: PickBestUV
+        // corrects with the neighbour errors and calls StoreDiffusionErrors,
+        // then SimpleQuantize's ReconstructUV corrects AGAIN — but by then
+        // StoreDiffusionErrors has overwritten `top_derr[x]`/`left_derr` with
+        // THIS MB's own errors, so the final coded chroma DC is corrected with
+        // the self errors, not the neighbour errors (quant_enc.c:988 + 1349,
+        // verified: at mb(0,0) the second pass reads top=[2,2] left=[-1,4] and
+        // bumps a U DC level 32->33). m4 (RD_OPT_BASIC) and m6
+        // (RD_OPT_TRELLIS_ALL) reconstruct chroma once. Under parity, replicate
+        // the m5 second correction below; the tuned default corrects once.
+        let double_correct = self.cost_model == crate::encoder::api::CostModel::StrictLibwebpParity
+            && self.do_trellis
+            && !self.do_trellis_i4_mode;
+        // Fresh (pre-correction) DCs, so the second pass corrects the original
+        // FTransform DC with the self errors (like SimpleQuantize's fresh
+        // FTransform), not the once-corrected value.
+        let fresh_dc = double_correct.then(|| {
+            (
+                [u_blocks[0], u_blocks[16], u_blocks[32], u_blocks[48]],
+                [v_blocks[0], v_blocks[16], v_blocks[32], v_blocks[48]],
+            )
+        });
+
+        // UVQDBG: state dump for the first corrected MB, format-comparable to
+        // the instrumented libwebp's UVQDBG in ReconstructUV. (#38)
+        #[cfg(feature = "mode_debug")]
+        let uvqdbg = std::env::var("UVQDBG").is_ok()
+            && std::env::var("TARGX").is_ok_and(|v| v == mbx.to_string());
+        #[cfg(feature = "mode_debug")]
+        if uvqdbg {
+            eprintln!(
+                "ZUVQ pre DC: {} {} {} {} | {} {} {} {} top_derr={:?} left_derr={:?} q0={} iq0={} bias0={}",
+                u_blocks[0],
+                u_blocks[16],
+                u_blocks[32],
+                u_blocks[48],
+                v_blocks[0],
+                v_blocks[16],
+                v_blocks[32],
+                v_blocks[48],
+                self.top_derr[mbx],
+                self.left_derr,
+                uv_matrix.q[0],
+                uv_matrix.iq[0],
+                uv_matrix.bias[0]
+            );
+        }
+        // Apply the intra-MB DC correction (reading neighbour errors from the
+        // previous MB). Shared with the m3+ RD path (`pick_best_uv`) so both use
+        // byte-identical diffusion. Returns the per-channel errors to store.
+        let (u_errs, v_errs) = diffuse_chroma_dc_inplace(
+            u_blocks,
+            v_blocks,
+            &self.top_derr[mbx],
+            &self.left_derr,
+            uv_matrix,
+        );
+        #[cfg(feature = "mode_debug")]
+        if uvqdbg {
+            eprintln!(
+                "ZUVQ post1 DC: {} {} {} {} | {} {} {} {} u_errs={u_errs:?} v_errs={v_errs:?}",
+                u_blocks[0],
+                u_blocks[16],
+                u_blocks[32],
+                u_blocks[48],
+                v_blocks[0],
+                v_blocks[16],
+                v_blocks[32],
+                v_blocks[48],
+            );
+        }
+
+        // Store errors for the next macroblock — inter-MB DC diffusion.
+        //
+        // libwebp calls StoreDiffusionErrors exclusively inside PickBestUV,
+        // which runs only when rd_opt_level > RD_OPT_NONE (method >= 3). At
+        // method 0-2 (RD_OPT_NONE / RefineUsingDistortion) it still runs the
+        // intra-MB CorrectDCValues above (with zero neighbor errors) but never
+        // stores, so top_derr/left_derr stay 0 for the whole frame. (Root cause
+        // traced against an instrumented libwebp — the store fires 0x at m0-2,
+        // 2x at m3-6; `method >= 3` maps exactly to `rd_opt_level > RD_OPT_NONE`.)
+        //
+        // zenwebp's tuned default stores at ALL methods: the extra inter-MB
+        // dithering measurably reduces banding on smooth low-q content
+        // (gradient/noise zensim +~1.6 at q10). So we only match libwebp's
+        // m0-2 no-store behavior under StrictLibwebpParity; the tuned default
+        // keeps propagating. m3-6 stores in every mode.
+        let store = self.method >= 3
+            || self.cost_model != crate::encoder::api::CostModel::StrictLibwebpParity;
+        if store {
+            for (ch, errs) in [(0usize, u_errs), (1, v_errs)] {
+                let [_err0, err1, err2, err3] = errs;
+                // left[0] = err1, left[1] = 3/4 of err3
+                self.left_derr[ch][0] = err1;
+                self.left_derr[ch][1] = ((3 * err3 as i32) >> 2) as i8;
+                // top[0] = err2, top[1] = 1/4 of err3
+                self.top_derr[mbx][ch][0] = err2;
+                self.top_derr[mbx][ch][1] = (err3 as i32 - self.left_derr[ch][1] as i32) as i8;
+            }
+        }
+
+        // m5 parity second correction (see `double_correct` above): re-correct
+        // the FRESH DC with the self errors that `store` just wrote into
+        // `top_derr[mbx]`/`left_derr`. The returned errors are discarded —
+        // libwebp's SimpleQuantize does not re-store, so the next MB still reads
+        // the neighbour-correction errors persisted above. `double_correct`
+        // implies `store` (it needs the self errors in place), so at m5 the
+        // store always ran first.
+        if let Some((u_dc, v_dc)) = fresh_dc {
+            u_blocks[0] = u_dc[0];
+            u_blocks[16] = u_dc[1];
+            u_blocks[32] = u_dc[2];
+            u_blocks[48] = u_dc[3];
+            v_blocks[0] = v_dc[0];
+            v_blocks[16] = v_dc[1];
+            v_blocks[32] = v_dc[2];
+            v_blocks[48] = v_dc[3];
+            let _ = diffuse_chroma_dc_inplace(
+                u_blocks,
+                v_blocks,
+                &self.top_derr[mbx],
+                &self.left_derr,
+                uv_matrix,
+            );
+            #[cfg(feature = "mode_debug")]
+            if uvqdbg {
+                eprintln!(
+                    "ZUVQ post2 DC: {} {} {} {} | {} {} {} {} (self top_derr={:?} left_derr={:?})",
+                    u_blocks[0],
+                    u_blocks[16],
+                    u_blocks[32],
+                    u_blocks[48],
+                    v_blocks[0],
+                    v_blocks[16],
+                    v_blocks[32],
+                    v_blocks[48],
+                    self.top_derr[mbx],
+                    self.left_derr,
+                );
+            }
+        }
+    }
+
+    /// Quantize a macroblock's coefficients without recording tokens.
+    ///
+    /// Separates quantization from token recording so skip detection can check
+    /// the quantized result before committing to token recording.
+    ///
+    /// For non-trellis methods (0-4), quantization doesn't depend on complexity
+    /// context, so this produces identical results to the integrated path.
+    /// For trellis methods (5-6), use `record_residual_tokens_storing` instead.
+    pub(super) fn quantize_mb_coeffs(
+        &self,
+        y_block_data: &super::prediction::LumaBlockResult,
+        u_block_data: &super::prediction::ChromaBlockResult,
+        v_block_data: &super::prediction::ChromaBlockResult,
+    ) -> QuantizedMbCoeffs {
+        // Pure assembly: the transform pass already produced the zigzag
+        // levels during reconstruction (the levels it dequantized are by
+        // construction the levels the decoder will see), so re-quantizing
+        // the raw DCT input here would be redundant work.
+        QuantizedMbCoeffs {
+            y2_zigzag: y_block_data.y2_zigzag,
+            y1_zigzag: y_block_data.y1_zigzag,
+            u_zigzag: u_block_data.zigzag,
+            v_zigzag: v_block_data.zigzag,
+        }
+    }
+
+    /// Record tokens for a macroblock's residual data and return the quantized coefficients.
+    /// Used in multi-pass encoding: pass 1 calls this to get coefficients for storage.
+    ///
+    /// `pre_trellised_y1` is an optional set of trellis-quantized zigzag levels
+    /// for the 16 Y1 sub-blocks. When provided, the recorder reuses them
+    /// instead of running trellis a second time on the same DCT input — this
+    /// is what `transform_luma_block` already produced for reconstruction.
+    /// Pass `None` from contexts that did not run trellis (e.g. older code
+    /// paths or calls where the caller didn't capture trellis output).
+    /// (#35-#8)
+    pub(super) fn record_residual_tokens_storing(
+        &mut self,
+        macroblock_info: &MacroblockInfo,
+        mbx: usize,
+        y_result: &super::prediction::LumaBlockResult,
+        u_result: &super::prediction::ChromaBlockResult,
+        v_result: &super::prediction::ChromaBlockResult,
+    ) -> QuantizedMbCoeffs {
+        let y_block_data = &y_result.coeffs;
+        // Extract segment data by value/copy to avoid borrow conflicts with proba_stats.
+        // Only copies small scalar values (lambdas, flags), not the large matrices.
+        let segment_id = macroblock_info.segment_id.unwrap_or(0);
+        let is_i4 = macroblock_info.luma_mode == LumaMode::B;
+        let y1_trellis_lambda = if self.do_trellis {
+            Some(if is_i4 {
+                self.segments[segment_id].lambda_trellis_i4
+            } else {
+                self.segments[segment_id].lambda_trellis_i16
+            })
+        } else {
+            None
+        };
+
+        let token_type_y1 = if is_i4 {
+            TokenType::I4
+        } else {
+            TokenType::I16AC
+        };
+        let first_coeff_y1 = if is_i4 { 0 } else { 1 };
+
+        let mut token_buf = self
+            .token_buffer
+            .take()
+            .expect("token buffer not initialized");
+
+        // Storage for quantized coefficients
+        let mut stored = QuantizedMbCoeffs {
+            y2_zigzag: [0; 16],
+            y1_zigzag: [[0; 16]; 16],
+            u_zigzag: [[0; 16]; 4],
+            v_zigzag: [[0; 16]; 4],
+        };
+
+        // Y2 (DC transform) - only for I16 mode. Levels were captured during
+        // reconstruction (same WHT input, same quantizer) — reuse them.
+        if !is_i4 {
+            stored.y2_zigzag = y_result.y2_zigzag;
+
+            let complexity = self.left_complexity.y2 + self.top_complexity[mbx].y2;
+            let has_coeffs = token_buf.record_coeff_tokens(
+                &mut self.proba_stats,
+                &stored.y2_zigzag,
+                TokenType::I16DC as usize,
+                0,
+                complexity.min(2) as usize,
+            );
+
+            self.left_complexity.y2 = if has_coeffs { 1 } else { 0 };
+            self.top_complexity[mbx].y2 = if has_coeffs { 1 } else { 0 };
+        }
+
+        // Y1 blocks
+        for y in 0usize..4 {
+            let mut left = self.left_complexity.y[y];
+            for x in 0..4 {
+                let block_idx = y * 4 + x;
+                let block: &[i16; 16] = y_block_data[block_idx * 16..][..16].try_into().unwrap();
+
+                let top = self.top_complexity[mbx].y[x];
+                let ctx0 = (left + top).min(2) as usize;
+
+                if let Some(lambda) = y1_trellis_lambda {
+                    if y_result.y1_from_trellis {
+                        let pre = &y_result.y1_zigzag;
+                        // Reuse the trellis output captured during reconstruction
+                        // in transform_luma_block / transform_luma_blocks_4x4.
+                        // Saves running trellis_quantize_block twice on the same
+                        // DCT input (~10-15% encoder speedup at m5/m6). (#35-#8)
+                        //
+                        // Correctness contract: the recorder's
+                        // (lambda, matrix, level_costs, ctype, ctx0, psy_config,
+                        //  first_coeff, DCT input)
+                        // tuple must match the reconstructor's. If anything
+                        // diverges, the cached zigzag is stale and emitting it
+                        // would produce wrong tokens.
+                        //
+                        // In debug builds, re-run trellis on the FIRST sub-block
+                        // we encounter each encode and assert the result matches.
+                        // A regression that decouples the inputs would fire on
+                        // the very next test run — but we don't pay the 16×/MB
+                        // verification cost across the whole image (which roughly
+                        // doubled debug-mode m5/m6 encode time). The byte-level
+                        // tier-parity tests catch any divergence that escapes
+                        // the first-block check.
+                        #[cfg(debug_assertions)]
+                        {
+                            // Bump a thread-local counter so the verification test
+                            // (`trellis_reuse_assertion_is_actually_exercised_at_m6`)
+                            // can prove this path runs and the assertion isn't
+                            // silently dormant. Cheap; outside the per-encode gate
+                            // so the test can still see hits at every block.
+                            // Gated on `feature = "std"` because `thread_local!` is
+                            // a std macro — no_std test builds simply skip this hit
+                            // counter (the verification test is also std-only).
+                            #[cfg(all(test, feature = "std"))]
+                            TRELLIS_REUSE_HITS.with(|c| c.set(c.get() + 1));
+                            if !self.verified_trellis_reuse {
+                                let mut coeffs_check = *block;
+                                let mut zigzag_check = [0i16; 16];
+                                let y1_matrix = &self.segments[segment_id].y1_matrix;
+                                let psy_config = &self.segments[segment_id].psy_config;
+                                trellis_quantize_block(
+                                    &mut coeffs_check,
+                                    &mut zigzag_check,
+                                    y1_matrix,
+                                    lambda,
+                                    first_coeff_y1,
+                                    &self.level_costs,
+                                    token_type_y1 as usize,
+                                    ctx0,
+                                    psy_config,
+                                );
+                                debug_assert_eq!(
+                                    zigzag_check, pre[block_idx],
+                                    "pre_trellised_y1 cache diverged from a fresh trellis run \
+                                     at block {block_idx} — one of (lambda, y1_matrix, level_costs, \
+                                     ctype, ctx0, psy_config, DCT input) changed between \
+                                     reconstruction and recording. Cached emission would produce \
+                                     wrong tokens."
+                                );
+                                self.verified_trellis_reuse = true;
+                            }
+                        }
+                        #[cfg(not(debug_assertions))]
+                        let _ = lambda;
+                        stored.y1_zigzag[block_idx] = pre[block_idx];
+                    } else {
+                        let mut coeffs = *block;
+                        // Borrow segment fields individually to avoid conflict with proba_stats
+                        let y1_matrix = &self.segments[segment_id].y1_matrix;
+                        let psy_config = &self.segments[segment_id].psy_config;
+                        trellis_quantize_block(
+                            &mut coeffs,
+                            &mut stored.y1_zigzag[block_idx],
+                            y1_matrix,
+                            lambda,
+                            first_coeff_y1,
+                            &self.level_costs,
+                            token_type_y1 as usize,
+                            ctx0,
+                            psy_config,
+                        );
+                    }
+                } else {
+                    // Non-trellis: levels captured during reconstruction.
+                    stored.y1_zigzag[block_idx] = y_result.y1_zigzag[block_idx];
+                }
+
+                let has_coeffs = token_buf.record_coeff_tokens(
+                    &mut self.proba_stats,
+                    &stored.y1_zigzag[block_idx],
+                    token_type_y1 as usize,
+                    first_coeff_y1,
+                    ctx0,
+                );
+
+                left = if has_coeffs { 1 } else { 0 };
+                self.top_complexity[mbx].y[x] = if has_coeffs { 1 } else { 0 };
+            }
+            self.left_complexity.y[y] = left;
+        }
+
+        // U blocks
+        for y in 0usize..2 {
+            let mut left = self.left_complexity.u[y];
+            for x in 0usize..2 {
+                let block_idx = y * 2 + x;
+                stored.u_zigzag[block_idx] = u_result.zigzag[block_idx];
+
+                let top = self.top_complexity[mbx].u[x];
+                let complexity = (left + top).min(2) as usize;
+
+                let has_coeffs = token_buf.record_coeff_tokens(
+                    &mut self.proba_stats,
+                    &stored.u_zigzag[block_idx],
+                    TokenType::Chroma as usize,
+                    0,
+                    complexity,
+                );
+
+                left = if has_coeffs { 1 } else { 0 };
+                self.top_complexity[mbx].u[x] = if has_coeffs { 1 } else { 0 };
+            }
+            self.left_complexity.u[y] = left;
+        }
+
+        // V blocks
+        for y in 0usize..2 {
+            let mut left = self.left_complexity.v[y];
+            for x in 0usize..2 {
+                let block_idx = y * 2 + x;
+                stored.v_zigzag[block_idx] = v_result.zigzag[block_idx];
+
+                let top = self.top_complexity[mbx].v[x];
+                let complexity = (left + top).min(2) as usize;
+
+                let has_coeffs = token_buf.record_coeff_tokens(
+                    &mut self.proba_stats,
+                    &stored.v_zigzag[block_idx],
+                    TokenType::Chroma as usize,
+                    0,
+                    complexity,
+                );
+
+                left = if has_coeffs { 1 } else { 0 };
+                self.top_complexity[mbx].v[x] = if has_coeffs { 1 } else { 0 };
+            }
+            self.left_complexity.v[y] = left;
+        }
+
+        self.token_buffer = Some(token_buf);
+        stored
+    }
+
+    /// Record tokens from pre-quantized coefficients (no re-quantization).
+    /// Used in the two-phase encode path for non-trellis methods.
+    pub(super) fn record_from_stored_coeffs(
+        &mut self,
+        macroblock_info: &MacroblockInfo,
+        mbx: usize,
+        stored: &QuantizedMbCoeffs,
+    ) {
+        let is_i4 = macroblock_info.luma_mode == LumaMode::B;
+
+        let token_type_y1 = if is_i4 {
+            TokenType::I4
+        } else {
+            TokenType::I16AC
+        };
+        let first_coeff_y1 = if is_i4 { 0 } else { 1 };
+
+        let mut token_buf = self
+            .token_buffer
+            .take()
+            .expect("token buffer not initialized");
+
+        // Y2 (DC transform) - only for I16 mode
+        if !is_i4 {
+            let complexity = self.left_complexity.y2 + self.top_complexity[mbx].y2;
+            let has_coeffs = token_buf.record_coeff_tokens(
+                &mut self.proba_stats,
+                &stored.y2_zigzag,
+                TokenType::I16DC as usize,
+                0,
+                complexity.min(2) as usize,
+            );
+
+            self.left_complexity.y2 = if has_coeffs { 1 } else { 0 };
+            self.top_complexity[mbx].y2 = if has_coeffs { 1 } else { 0 };
+        }
+
+        // Y1 blocks
+        for y in 0usize..4 {
+            let mut left = self.left_complexity.y[y];
+            for x in 0..4 {
+                let block_idx = y * 4 + x;
+                let top = self.top_complexity[mbx].y[x];
+                let ctx0 = (left + top).min(2) as usize;
+
+                let has_coeffs = token_buf.record_coeff_tokens(
+                    &mut self.proba_stats,
+                    &stored.y1_zigzag[block_idx],
+                    token_type_y1 as usize,
+                    first_coeff_y1,
+                    ctx0,
+                );
+
+                left = if has_coeffs { 1 } else { 0 };
+                self.top_complexity[mbx].y[x] = if has_coeffs { 1 } else { 0 };
+            }
+            self.left_complexity.y[y] = left;
+        }
+
+        // U blocks
+        for y in 0usize..2 {
+            let mut left = self.left_complexity.u[y];
+            for x in 0usize..2 {
+                let block_idx = y * 2 + x;
+                let top = self.top_complexity[mbx].u[x];
+                let complexity = (left + top).min(2) as usize;
+
+                let has_coeffs = token_buf.record_coeff_tokens(
+                    &mut self.proba_stats,
+                    &stored.u_zigzag[block_idx],
+                    TokenType::Chroma as usize,
+                    0,
+                    complexity,
+                );
+
+                left = if has_coeffs { 1 } else { 0 };
+                self.top_complexity[mbx].u[x] = if has_coeffs { 1 } else { 0 };
+            }
+            self.left_complexity.u[y] = left;
+        }
+
+        // V blocks
+        for y in 0usize..2 {
+            let mut left = self.left_complexity.v[y];
+            for x in 0usize..2 {
+                let block_idx = y * 2 + x;
+                let top = self.top_complexity[mbx].v[x];
+                let complexity = (left + top).min(2) as usize;
+
+                let has_coeffs = token_buf.record_coeff_tokens(
+                    &mut self.proba_stats,
+                    &stored.v_zigzag[block_idx],
+                    TokenType::Chroma as usize,
+                    0,
+                    complexity,
+                );
+
+                left = if has_coeffs { 1 } else { 0 };
+                self.top_complexity[mbx].v[x] = if has_coeffs { 1 } else { 0 };
+            }
+            self.left_complexity.v[y] = left;
+        }
+
+        self.token_buffer = Some(token_buf);
+    }
+}
+
+pub(super) fn get_coeffs0_from_block(blocks: &[i16; 16 * 16]) -> [i32; 16] {
+    let mut coeffs0 = [0i32; 16];
+    for (coeff, first_coeff_value) in coeffs0.iter_mut().zip(blocks.iter().step_by(16)) {
+        *coeff = i32::from(*first_coeff_value);
+    }
+    coeffs0
+}
+
+#[cfg(test)]
+mod token_buffer_tests {
+    //! Unit tests for `TokenBuffer::emit_tokens_filtered`.
+    //!
+    //! The full-#25 fix (per-MB skip-bit gating) records EOB tokens for skipped
+    //! MBs into the token buffer and filters them at emit time when
+    //! `use_skip_proba=1` wins. This is path-agnostic — the tests below build
+    //! a buffer with synthetic tokens, then verify that the filtered emission
+    //! produces byte-identical output to a hand-built buffer that omits the
+    //! skipped MBs entirely. End-to-end coverage of the skip-proba flow lives
+    //! in `simd_tier_parity.rs` (which exercises every encode and rejects
+    //! divergent bytes).
+
+    use alloc::vec;
+
+    use super::*;
+    use crate::common::types::COEFF_PROBS;
+    use crate::encoder::arithmetic::ArithmeticEncoder;
+
+    /// Push a few dynamic + constant tokens that resolve to a deterministic
+    /// byte stream for a given MB. The exact tokens don't matter — we only
+    /// need a non-trivial mix so the comparison is meaningful.
+    fn push_mb_tokens(buf: &mut TokenBuffer, mb_marker: u8) {
+        buf.add_token(false, 0); // dynamic, proba_idx=0, bit=0
+        buf.add_token(true, 7); // dynamic, proba_idx=7, bit=1
+        buf.add_constant_token(false, 128); // constant proba=128, bit=0
+        buf.add_constant_token(true, 64 + (mb_marker & 0x3f)); // varies per MB so silent merging would diverge
+    }
+
+    fn emit_to_bytes<F: FnOnce(&mut ArithmeticEncoder)>(emit: F) -> Vec<u8> {
+        let mut enc = ArithmeticEncoder::new();
+        emit(&mut enc);
+        enc.flush_and_get_buffer()
+    }
+
+    #[test]
+    fn emit_tokens_filtered_skip_mask_all_kept_matches_full_emit() {
+        // skipped = [false; N] should produce the same bytes as `emit_tokens`.
+        let mut buf = TokenBuffer::new();
+        for mb in 0..3 {
+            buf.begin_mb();
+            push_mb_tokens(&mut buf, mb as u8);
+        }
+
+        let baseline = emit_to_bytes(|e| buf.emit_tokens(e, &COEFF_PROBS));
+        let filtered = emit_to_bytes(|e| {
+            buf.emit_tokens_filtered(e, &COEFF_PROBS, &[false, false, false]);
+        });
+        assert_eq!(
+            baseline, filtered,
+            "all-kept skip mask must produce byte-identical output to emit_tokens"
+        );
+    }
+
+    #[test]
+    fn emit_tokens_filtered_drops_middle_mb() {
+        // skipped = [false, true, false] should drop MB 1's tokens entirely.
+        let mut buf = TokenBuffer::new();
+        for mb in 0..3 {
+            buf.begin_mb();
+            push_mb_tokens(&mut buf, mb as u8);
+        }
+
+        // Reference: hand-build a buffer with only MB 0 and MB 2.
+        let mut reference = TokenBuffer::new();
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 0);
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 2);
+
+        let actual = emit_to_bytes(|e| {
+            buf.emit_tokens_filtered(e, &COEFF_PROBS, &[false, true, false]);
+        });
+        let expected = emit_to_bytes(|e| reference.emit_tokens(e, &COEFF_PROBS));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn emit_tokens_filtered_all_skipped_emits_nothing() {
+        // skipped = [true; N] should produce only the trailing flush bytes
+        // (no per-token writes), which equals an empty TokenBuffer's emit.
+        let mut buf = TokenBuffer::new();
+        for mb in 0..3 {
+            buf.begin_mb();
+            push_mb_tokens(&mut buf, mb as u8);
+        }
+
+        let actual = emit_to_bytes(|e| {
+            buf.emit_tokens_filtered(e, &COEFF_PROBS, &[true, true, true]);
+        });
+        let empty = emit_to_bytes(|e| TokenBuffer::new().emit_tokens(e, &COEFF_PROBS));
+        assert_eq!(actual, empty);
+    }
+
+    #[test]
+    fn emit_tokens_filtered_handles_last_mb_skip() {
+        // Edge case: skip the LAST MB. The end-of-span computation uses
+        // `tokens.len()` for the final entry; a bug here would emit garbage
+        // past the start of the skipped MB.
+        let mut buf = TokenBuffer::new();
+        for mb in 0..3 {
+            buf.begin_mb();
+            push_mb_tokens(&mut buf, mb as u8);
+        }
+
+        let mut reference = TokenBuffer::new();
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 0);
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 1);
+
+        let actual = emit_to_bytes(|e| {
+            buf.emit_tokens_filtered(e, &COEFF_PROBS, &[false, false, true]);
+        });
+        let expected = emit_to_bytes(|e| reference.emit_tokens(e, &COEFF_PROBS));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn emit_tokens_filtered_first_mb_skip() {
+        // Edge case: skip the FIRST MB. The `mb_idx == 0` start offset is 0.
+        let mut buf = TokenBuffer::new();
+        for mb in 0..3 {
+            buf.begin_mb();
+            push_mb_tokens(&mut buf, mb as u8);
+        }
+
+        let mut reference = TokenBuffer::new();
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 1);
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 2);
+
+        let actual = emit_to_bytes(|e| {
+            buf.emit_tokens_filtered(e, &COEFF_PROBS, &[true, false, false]);
+        });
+        let expected = emit_to_bytes(|e| reference.emit_tokens(e, &COEFF_PROBS));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn begin_mb_records_offsets_in_order() {
+        // Sanity check: each begin_mb pushes the current tokens.len() so the
+        // starts vector is monotone non-decreasing.
+        let mut buf = TokenBuffer::new();
+        buf.begin_mb();
+        assert_eq!(buf.mb_token_starts, vec![0]);
+
+        push_mb_tokens(&mut buf, 0);
+        let after_first = buf.tokens.len() as u32;
+        buf.begin_mb();
+        assert_eq!(buf.mb_token_starts, vec![0, after_first]);
+
+        push_mb_tokens(&mut buf, 1);
+        buf.begin_mb();
+        let after_second = buf.tokens.len() as u32;
+        assert_eq!(buf.mb_token_starts, vec![0, after_first, after_second]);
+    }
+
+    /// Verify that the trellis-reuse cache assertion in
+    /// record_residual_tokens_storing is actually reached by a debug-mode
+    /// m6 encode. Without this, the assertion could be silently dormant
+    /// (e.g. if do_trellis or pre_trellised_y1 plumbing breaks), giving
+    /// a false sense of protection. Counts cache-reuse hits via the
+    /// thread-local set inside the assert path; must be > 0.
+    #[test]
+    #[cfg(all(debug_assertions, feature = "std"))]
+    fn trellis_reuse_assertion_is_actually_exercised_at_m6() {
+        use crate::encoder::config::LossyConfig;
+        use crate::{EncodeRequest, PixelLayout};
+
+        TRELLIS_REUSE_HITS.with(|c| c.set(0));
+
+        // 64x64 structured-noise RGB. Picks varied modes; quality 75 keeps
+        // Y2 nonzero so trellis_quantize_block actually runs.
+        let mut img = Vec::with_capacity(64 * 64 * 3);
+        for y in 0u32..64 {
+            for x in 0u32..64 {
+                img.push(((x * 7) ^ (y * 11)) as u8);
+                img.push(((x * 13) ^ (y * 17)) as u8);
+                img.push(((x * 19) ^ (y * 23)) as u8);
+            }
+        }
+        let cfg = LossyConfig::new().with_quality(75.0).with_method(6);
+        EncodeRequest::lossy(&cfg, &img, PixelLayout::Rgb8, 64, 64)
+            .encode()
+            .expect("m6 encode failed");
+
+        let hits = TRELLIS_REUSE_HITS.with(|c| c.get());
+        assert!(
+            hits > 0,
+            "trellis-reuse assertion path was never reached during m6 encode \
+             — the debug_assert provides no protection. \
+             do_trellis or pre_trellised_y1 plumbing may be broken."
+        );
+        eprintln!("[trellis-reuse instrumentation] m6 encode hit cache-reuse path {hits} times");
+    }
+
+    #[test]
+    fn empty_mb_span_is_handled() {
+        // A begin_mb with no tokens between it and the next is a valid
+        // (empty-residuals) MB. Filtering should still align spans correctly.
+        let mut buf = TokenBuffer::new();
+        buf.begin_mb(); // MB 0
+        push_mb_tokens(&mut buf, 0);
+        buf.begin_mb(); // MB 1 — no tokens
+        buf.begin_mb(); // MB 2
+        push_mb_tokens(&mut buf, 2);
+
+        let mut reference = TokenBuffer::new();
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 0);
+        reference.begin_mb();
+        // empty MB 1
+        reference.begin_mb();
+        push_mb_tokens(&mut reference, 2);
+
+        let baseline = emit_to_bytes(|e| reference.emit_tokens(e, &COEFF_PROBS));
+        let filtered = emit_to_bytes(|e| {
+            buf.emit_tokens_filtered(e, &COEFF_PROBS, &[false, false, false]);
+        });
+        assert_eq!(filtered, baseline);
+    }
+}
