@@ -456,6 +456,45 @@ test("failed persistence releases deduplication and later requests can retry", a
   assert.equal(h.bucket.objects.size, 1);
 });
 
+test("a transient R2 read failure is retried and still serves the stored image", async () => {
+  const h = createHarness();
+  const original = await h.gateway(imageRequest());
+  await h.drain();
+  h.bucket.failNextGets = 1;
+  const response = await h.gateway(imageRequest());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-imgt-cache"), "R2");
+  assert.equal(await response.text(), await original.text());
+  assert.equal(h.transforms, 1);
+});
+
+test("an R2 read that keeps failing regenerates the image instead of returning 500", async () => {
+  const h = createHarness();
+  await h.gateway(imageRequest());
+  await h.drain();
+  // Both the edge read and the coordinator read fail, each including its retry.
+  h.bucket.failNextGets = 4;
+  const response = await h.gateway(imageRequest());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-imgt-cache"), "MISS");
+  assert.equal(h.transforms, 2);
+  await h.drain();
+  assert.equal(h.bucket.failNextGets, 0);
+});
+
+test("a transient R2 write failure is retried and the derivative is persisted", async () => {
+  const h = createHarness();
+  h.bucket.failNextPuts = 1;
+  assert.equal((await h.gateway(imageRequest())).status, 200);
+  await h.drain();
+  assert.equal(h.bucket.objects.size, 1);
+  assert.equal(
+    (await h.gateway(imageRequest())).headers.get("x-imgt-cache"),
+    "R2",
+  );
+  assert.equal(h.transforms, 1);
+});
+
 test("refresh changes the content ETag and conditional requests match only current bytes", async () => {
   const h = createHarness();
   const original = await h.gateway(imageRequest());

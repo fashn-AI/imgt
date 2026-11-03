@@ -24,11 +24,50 @@ export async function contentEtag(body: ArrayBuffer): Promise<string> {
   return `"${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}"`;
 }
 
-export class DerivativeStore {
-  constructor(private readonly bucket: DerivativeBucket) {}
+// R2 occasionally rejects a call with a transient error, such as an internal
+// error (10001) or too many concurrent reads of one object (10058). One short
+// retry absorbs these without holding a request for long.
+const R2_RETRY_DELAY_MS = 100;
 
+export class DerivativeStore {
+  constructor(
+    private readonly bucket: DerivativeBucket,
+    private readonly retryDelayMs = R2_RETRY_DELAY_MS,
+  ) {}
+
+  async #retryOnce<T>(
+    operation: string,
+    key: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await run();
+    } catch (cause) {
+      console.warn(
+        JSON.stringify({
+          event: "r2_retry",
+          operation,
+          key,
+          error: String(cause),
+        }),
+      );
+      // Jitter keeps simultaneous readers of a hot object from retrying together.
+      const delay = this.retryDelayMs * (0.5 + Math.random());
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      return run();
+    }
+  }
+
+  // A derivative that cannot be read is regenerated instead of failing the
+  // request. Admission limits still bound container work if R2 stays down.
   async get(key: string): Promise<StoredDerivative | null> {
-    const object = await this.bucket.get(key);
+    let object: Awaited<ReturnType<DerivativeBucket["get"]>>;
+    try {
+      object = await this.#retryOnce("get", key, () => this.bucket.get(key));
+    } catch (cause) {
+      console.error("derivative read failed; regenerating", cause);
+      return null;
+    }
     if (!object) return null;
     const metadata = object.customMetadata;
     const freshUntil = Number(metadata?.freshUntil);
@@ -59,7 +98,7 @@ export class DerivativeStore {
     freshUntil: number,
     sourceValidator?: SourceValidator,
   ): Promise<void> {
-    await this.bucket.put(key, body, {
+    const options: R2PutOptions = {
       httpMetadata: {
         contentType: "image/webp",
         cacheControl: cacheControl((freshUntil - Date.now()) / 1000),
@@ -77,10 +116,13 @@ export class DerivativeStore {
             }
           : {}),
       },
-    });
+    };
+    await this.#retryOnce("put", key, () =>
+      this.bucket.put(key, body, options),
+    );
   }
 
   delete(key: string): Promise<void> {
-    return this.bucket.delete(key);
+    return this.#retryOnce("delete", key, () => this.bucket.delete(key));
   }
 }
