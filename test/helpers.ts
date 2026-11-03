@@ -24,8 +24,14 @@ export class MemoryBucket implements DerivativeBucket {
   reads = 0;
   putGate?: Promise<void>;
   failPuts = false;
+  failNextGets = 0;
+  failNextPuts = 0;
   async get(key: string) {
     this.reads += 1;
+    if (this.failNextGets > 0) {
+      this.failNextGets -= 1;
+      throw new Error("get: injected R2 failure (10001)");
+    }
     const value = this.objects.get(key);
     return value
       ? {
@@ -38,6 +44,10 @@ export class MemoryBucket implements DerivativeBucket {
     this.puts += 1;
     await this.putGate;
     if (this.failPuts) throw new Error("injected persistence failure");
+    if (this.failNextPuts > 0) {
+      this.failNextPuts -= 1;
+      throw new Error("put: injected R2 failure (10001)");
+    }
     this.objects.set(key, {
       body: body.slice(0),
       customMetadata: { ...options.customMetadata },
@@ -66,7 +76,7 @@ export function createHarness(
   } = {},
 ) {
   const bucket = new MemoryBucket();
-  const store = new DerivativeStore(bucket);
+  const store = new DerivativeStore(bucket, 0);
   const background: Promise<void>[] = [];
   const waitUntil = (promise: Promise<void>) => {
     background.push(promise);

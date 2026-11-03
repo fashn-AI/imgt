@@ -122,6 +122,12 @@ starting new work; each attempt retains its 60-second transform deadline.
 Recovery from a reset can therefore wait longer than one transform deadline.
 Container upload requests themselves are never replayed. There is no
 original-image fallback.
+
+R2 calls that throw, such as internal errors (`10001`) or too many concurrent
+reads of one object (`10058`), get one retry after 50–150 ms. A derivative read
+that still fails is treated as a miss and regenerated, so an R2 problem costs
+container work instead of a `500`; admission limits still bound that work. A
+write that still fails is logged and the next request regenerates the image.
 A normal HTML image element, including the element rendered by Next.js Image,
 does not implement imgt's `Retry-After` handling; an error can leave a broken image.
 
