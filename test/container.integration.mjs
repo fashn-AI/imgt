@@ -243,6 +243,28 @@ const tests = [
     },
   ],
   [
+    "buffered input budget fails fast and is released",
+    { MAX_INPUT_BYTES: 1000, MAX_BUFFERED_INPUT_BYTES: 1000 },
+    async (s) => {
+      const x = stream(s, Date.now() + 3000);
+      x.request.write(Buffer.alloc(600));
+      try {
+        await until(async () => (await s.health()).bufferedBytes === 600);
+        const rejected = await s.post(Buffer.alloc(600));
+        assert.equal(rejected.status, 503);
+        assert.equal(rejected.headers.get("retry-after"), "1");
+        assert.equal(rejected.headers.get("cache-control"), "no-store");
+        assert.equal((await s.post()).status, 200);
+        x.request.end();
+        assert.equal(await x.response, 400);
+        await until(async () => (await s.health()).bufferedBytes === 0);
+        assert.equal((await s.post(Buffer.alloc(600))).status, 400);
+      } finally {
+        x.request.destroy();
+      }
+    },
+  ],
+  [
     "upload timeout releases admission",
     { MAX_IN_FLIGHT: 1 },
     async (s) => {

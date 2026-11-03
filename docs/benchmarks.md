@@ -5,10 +5,15 @@ estimated-cost charts. These measurements were collected on October 6, 2026.
 
 ## Default configuration
 
-The default is four containers, one CPU each. This configuration handled the tested
-200-image bursts and sustained load at almost the same modeled cost as two 2-CPU
-containers. The cheaper two-1-CPU pair overloaded during stress testing. Choose a
-configuration for your workload using the measurements and pricing assumptions below.
+Since November 2026 the default is an always-on 1-CPU primary container plus a
+3-CPU overflow container that runs only during bursts. It replaced four 1-CPU
+containers after replays of production bursts; see the
+[November 2026 replay](performance.md#primary-and-overflow-containers-november-2026).
+The live measurements below were collected on October 6, 2026 with fixed
+allocations and do not yet include the new default. In those tests four 1-CPU
+containers handled the 200-image bursts and sustained load, and the cheaper
+two-1-CPU pair overloaded. Choose a configuration for your workload using the
+measurements, pricing assumptions and [container sizing guide](configuration.md#container-sizes).
 
 The target includes all FASHN projects: approximately 2.25M monthly transformations
 and a busiest observed 15-minute interval of about 2.9/s. We test 3/s, 10/s and 20/s,

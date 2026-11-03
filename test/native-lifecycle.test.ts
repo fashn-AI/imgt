@@ -4,7 +4,7 @@ import test from "node:test";
 import { RENDERER_VERSION } from "../container/renderer";
 import { config } from "../imgt.config";
 import { DERIVATIVE_PREFIX, MAX_SOURCE_BYTES } from "../src/constants";
-import { containerNameForKey, jobRequest } from "../src/jobs";
+import { containerName, jobRequest } from "../src/jobs";
 import { derivativeKey, parseImageOptions } from "../src/options";
 import { DerivativeStore } from "../src/store";
 import { deferred, imageRequest, MemoryBucket } from "./helpers";
@@ -112,7 +112,7 @@ test("a cold stale refresh defers idle alarms while active and schedules shutdow
     ...options,
     outputKey: await derivativeKey(DERIVATIVE_PREFIX, options),
   };
-  const name = containerNameForKey(job.outputKey, config.containers.shards);
+  const name = containerName("primary");
   const transformer = new ImgtNativeImageTransformer(
     {
       id: { toString: () => name },
@@ -184,7 +184,7 @@ test("a stalled connection restore does not block fresh R2 delivery", async (t) 
     ...options,
     outputKey: await derivativeKey(DERIVATIVE_PREFIX, options),
   };
-  const name = containerNameForKey(job.outputKey, config.containers.shards);
+  const name = containerName("primary");
   await new DerivativeStore(bucket).put(
     job.outputKey,
     await new Response("cached-webp").arrayBuffer(),
@@ -236,4 +236,120 @@ test("a stalled connection restore does not block fresh R2 delivery", async (t) 
   assert.equal(response.headers.get("x-imgt-cache"), "R2");
   assert.equal(await response.text(), "cached-webp");
   assert.equal(starts, 0);
+});
+
+function overflowObject(id: string) {
+  let starts = 0;
+  let running = false;
+  const instances: unknown[] = [];
+  const alarms: number[] = [];
+  const env: Record<string, string>[] = [];
+  const transformer = new ImgtNativeImageTransformer(
+    {
+      id: { toString: () => id },
+      container: {
+        get running() {
+          return running;
+        },
+        images: { transformer: "registry.cloudflare.com/test@sha256:fixed" },
+        start(options?: ContainerStartupOptions) {
+          starts += 1;
+          instances.push(options?.instance);
+          env.push(options?.env ?? {});
+          running = true;
+        },
+        monitor: () => new Promise(() => {}),
+        async inspect() {
+          return null;
+        },
+        async setInactivityTimeout() {},
+        getTcpPort() {
+          return {
+            async fetch(request: Request) {
+              if (request.method === "GET") return new Response("healthy");
+              return new Response(`encoded:${await request.text()}`, {
+                headers: { "x-imgt-renderer": RENDERER_VERSION },
+              });
+            },
+          } as Fetcher;
+        },
+      },
+      storage: {
+        async setAlarm(timestamp: number) {
+          alarms.push(timestamp);
+        },
+      },
+      blockConcurrencyWhile: (work: () => Promise<void>) => work(),
+      waitUntil: () => {},
+    } as unknown as DurableObjectState,
+    {
+      ALLOWED_HOSTS: "images.unsplash.com",
+      DERIVATIVES: new MemoryBucket(),
+      IMGT_NATIVE_TRANSFORMER: {
+        idFromName: (value: string) => ({ toString: () => value }),
+      },
+    } as unknown as ConstructorParameters<typeof ImgtNativeImageTransformer>[1],
+  );
+  return {
+    transformer,
+    alarms,
+    instances,
+    env,
+    get starts() {
+      return starts;
+    },
+  };
+}
+
+test("the overflow object starts its larger container and only runs internal transforms", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const OriginalRequest = Request;
+  globalThis.Request = class extends OriginalRequest {
+    constructor(input: URL | RequestInfo, init?: RequestInit) {
+      super(input, { ...init, duplex: "half" } as RequestInit);
+    }
+  } as typeof Request;
+  t.after(() => {
+    globalThis.Request = OriginalRequest;
+  });
+  const h = overflowObject(containerName("overflow"));
+  const overflow = config.containers.overflow!;
+
+  const prepared = await h.transformer.fetch(
+    new Request("http://container/prepare", { method: "POST" }),
+  );
+  assert.equal(prepared.status, 204);
+  assert.equal(h.starts, 1);
+  assert.deepEqual(h.instances[0], {
+    vcpu: overflow.vcpu,
+    memoryMib: 3072 * overflow.vcpu,
+    diskMb: 2000,
+  });
+  assert.equal(h.env[0]!.TRANSFORM_CONCURRENCY, String(overflow.vcpu));
+  assert.equal(h.alarms.at(-1), Date.now() + overflow.idleTimeoutMs);
+
+  const encoded = await h.transformer.fetch(
+    new Request("http://container/transform?w=640&q=77", {
+      method: "POST",
+      body: "source",
+    }),
+  );
+  assert.equal(await encoded.text(), "encoded:source");
+  assert.equal(encoded.headers.get("x-imgt-renderer"), RENDERER_VERSION);
+  assert.equal(h.starts, 1);
+
+  // Image jobs go to the primary object only.
+  const job = await h.transformer.fetch(
+    new Request("http://container/job", { method: "POST", body: "{}" }),
+  );
+  assert.equal(job.status, 404);
+});
+
+test("objects outside the configured roles never start compute", async () => {
+  const h = overflowObject("arbitrary");
+  const response = await h.transformer.fetch(
+    new Request("http://container/prepare", { method: "POST" }),
+  );
+  assert.equal(response.status, 503);
+  assert.equal(h.starts, 0);
 });

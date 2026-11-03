@@ -2,10 +2,13 @@
 import { RENDERER_VERSION } from "../container/renderer";
 import { config } from "../imgt.config";
 export const DERIVATIVE_PREFIX = `derivatives/${RENDERER_VERSION}`;
-export const MAX_DISTINCT_JOBS_PER_SHARD = 128;
-export const MAX_ACTIVE_JOBS_PER_SHARD = 8;
+// One coordinator handles every cache miss, so these cover all traffic.
+export const MAX_DISTINCT_JOBS = 512;
+// Active jobs mostly wait on R2 and origins. The tier dispatcher separately
+// bounds how many reach the containers.
+export const MAX_ACTIVE_JOBS = 96;
 // Runtime and allocation changes need fresh containers, retaining cached images.
-export const CONTAINER_RUNTIME_VERSION = "v16";
+export const CONTAINER_RUNTIME_VERSION = "v17";
 export const MAX_SOURCE_BYTES = config.transforms.maxSourceBytes;
 if (!Number.isSafeInteger(MAX_SOURCE_BYTES) || MAX_SOURCE_BYTES < 1)
   throw new Error("transforms.maxSourceBytes must be a positive safe integer");

@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { createTransformServer, type ServerOptions } from "../container/app";
 import { RENDERER_VERSION } from "../container/renderer";
 import { encodeImage } from "../container/transform";
-import { MAX_ACTIVE_JOBS_PER_SHARD } from "../src/constants";
+import { MAX_ACTIVE_JOBS } from "../src/constants";
 import { createHarness, deferred, imageRequest } from "./helpers";
 
 async function serve(
@@ -56,7 +56,7 @@ async function until(predicate: () => Promise<boolean>) {
 
 test("a 100-image gallery passes through the Worker, HTTP uploads, Sharp and R2", async (t) => {
   const app = await serve(t, undefined, {
-    maxInFlight: MAX_ACTIVE_JOBS_PER_SHARD,
+    maxInFlight: MAX_ACTIVE_JOBS,
     concurrency: 2,
   });
   const input = await sharp({

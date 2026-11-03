@@ -1,8 +1,9 @@
 # Performance
 
-imgt uses Rust/libvips with four container shards, each allocated 1 vCPU, 3 GiB RAM
-and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so cache hits do not
-start a container.
+imgt uses Rust/libvips with an always-on 1-vCPU primary container and a 3-vCPU
+overflow container that runs only during bursts. Each container has 3 GiB RAM per
+vCPU and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so cache hits
+do not start a container.
 
 ## Current decisions
 
@@ -10,11 +11,13 @@ start a container.
   the evaluated Sharp output, while reducing the runtime footprint. Controlled
   local repeats show similar rendering speed, lower memory use and modest CPU
   savings. The current capacity comparison below includes live Cloudflare load tests.
-- **Four CPUs across four shards:** the October 6 Rust capacity comparison
-  below evaluates smaller pairs and horizontal scaling with four total CPUs. Each
-  shard still admits eight active jobs and at most 128 distinct jobs; ready
-  inputs use one encoder slot per shard. libvips uses one thread per image.
-  Canceled native work retains its slot until processing settles.
+- **Primary plus overflow:** one coordinator admits up to 96 active and 512
+  distinct jobs. It sends transforms to the primary first (three slots per vCPU,
+  one encoder per vCPU). When four jobs wait, it wakes the overflow and uses
+  both until the overflow has been idle for 30 seconds. See the
+  [November 2026 replay](#primary-and-overflow-containers-november-2026).
+  libvips uses one thread per image. Canceled native work retains its slot until
+  processing settles.
 - **Late ICC conversion:** eligible RGB inputs resize before conversion to
   sRGB. Other color and depth cases use the original conversion order. Regression
   tests cover supported formats, EXIF orientation, profiles and transparency.
@@ -26,12 +29,57 @@ start a container.
   evaluated Vercel outputs at the same client quality. This replaces the earlier
   effort-2 throughput tradeoff. Renderer v5 isolates the Rust output from older
   cached images and running containers. Client quality values stay unchanged.
-- **Four shards, two idle minutes:** stable routing deduplicates work for each
-  derivative. The idle alarm waits for foreground requests and background
-  refreshes to finish, balancing awake time against cold starts.
+- **One coordinator, two idle timeouts:** a single coordinator deduplicates work
+  for each derivative. The primary stops after two idle minutes, the overflow
+  after 30 seconds. The idle alarm waits for foreground requests and background
+  refreshes to finish.
 - **Owned native buffers:** the Rust HTTP body owns the encoded allocation
   directly. Input buffers outlive every lazy image depending on their bytes;
   native work retains its permits until completion, including after cancellation.
+
+## Primary and overflow containers, November 2026
+
+Production ran four always-on 1-vCPU shards. Their reserved memory cost about
+$78 a month (288 GiB-hours a day), while CPU averaged 0.23 vCPU and real memory
+use peaked near 275 MiB per container. Traffic never paused long enough for a
+shard to sleep, and bursts were the only reason to keep four CPUs.
+
+The replay sent the two busiest production windows through the real gateway,
+coordinator and `TierDispatcher` to local Rust containers at effort 4. Arrival
+times, sources and variants came from production logs; encode times were
+calibrated to production (117 ms production mean, 123 ms local). Only the
+overflow cold start was simulated. Production `native_container_ready` logs
+show cold starts of 275–418 ms, so 0.5 seconds is the expected case and
+5 seconds a pessimistic bound.
+
+| Nov 1 burst, 1,758 jobs | p50 | p90 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: |
+| Today: four 1-vCPU shards | 2.56 s | 5.70 s | 7.08 s | 7.46 s |
+| One always-on 3-vCPU container | 2.29 s | 6.56 s | 8.05 s | 8.98 s |
+| One always-on 4-vCPU container | 1.49 s | 3.50 s | 4.48 s | 5.79 s |
+| Primary + overflow, 0.5 s cold start | 1.50 s | 3.51 s | 4.48 s | 5.58 s |
+| Primary + overflow, 5 s cold start | 1.69 s | 6.86 s | 7.92 s | 9.01 s |
+
+In the expected case, the primary served 577 jobs and the overflow 1,181. The
+overflow started once and stayed awake for 110 seconds. Dispatch waits reached
+p90 1.76 s and coordinator admission waits p90 0.28 s. Jobs keep their
+admission slot while they wait for a container, so a slow cold start raises both
+waits together (p90 2.05 s and 3.57 s at 5 seconds). The full Nov 2 window
+(393 jobs) finished at p50 1.17 s, p90 4.36 s and max 11.2 s, with two overflow
+starts and 118 seconds awake. The 11.2-second job was equally slow in every
+configuration. With a 5-second cold start, 441 Nov 1 jobs took over 5 seconds. No replay
+returned an error. Peak memory was about 220 MiB on the
+primary and 610 MiB on the overflow.
+
+Including both container Durable Objects, estimated cost is about $33 a month
+plus about $62 a month times the fraction of time the overflow is awake.
+Without per-minute production history, that fraction is estimated at 10–33
+percent, or $39–$53 a month against about $107 for today's four containers and
+their Durable Objects. If the overflow never slept, the cost would be about $95.
+
+WebP effort is part of the R2 derivative key and the Workers Cache key. Effort 2
+replayed the Nov 1 burst at p90 2.22 s instead of 3.51 s, but changing effort
+re-encodes every cached image once, so it remains a separate decision.
 
 ## Rust capacity and horizontal scaling, October 6, 2026
 

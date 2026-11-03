@@ -1,7 +1,7 @@
 mod native;
 const RENDERER_VERSION: &str = env!("IMGT_RENDERER_VERSION");
 use axum::{
-    body::{to_bytes, Body},
+    body::{Body, Bytes},
     extract::{Request, State},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -15,6 +15,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use http_body_util::BodyExt;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     time::{timeout_at, Instant},
@@ -33,11 +34,14 @@ fn setting(key: &str, default: usize) -> usize {
 }
 struct App {
     admission: Arc<Semaphore>,
+    // Bytes reserved by buffered inputs, counted by allocated capacity.
+    buffered: Arc<Semaphore>,
     encoders: Arc<Semaphore>,
     uploading: Arc<AtomicUsize>,
     queued: Arc<AtomicUsize>,
     active: Arc<AtomicUsize>,
     max_inflight: usize,
+    max_buffered: usize,
     max_bytes: usize,
     timeout_ms: u64,
     effort: i32,
@@ -66,13 +70,51 @@ fn error(status: u16, message: impl Into<String>) -> Response {
         .header("content-type", "text/plain; charset=utf-8")
         .header("cache-control", "no-store")
         .header("connection", "close");
-    if status == 429 {
+    if status == 429 || status == 503 {
         r = r.header("retry-after", "1");
     }
     r.body(Body::from(message.into())).unwrap()
 }
+// Inputs are buffered for the native decoder. Reservations only grow and are
+// never awaited, so partially read uploads cannot deadlock one another; an
+// exhausted budget fails fast instead of exceeding the container's memory.
+async fn read_input(
+    mut body: Body,
+    max_bytes: usize,
+    buffered: &Arc<Semaphore>,
+) -> Result<(Bytes, Option<OwnedSemaphorePermit>), Response> {
+    let mut data: Vec<u8> = Vec::new();
+    let mut reserved: Option<OwnedSemaphorePermit> = None;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| error(400, e.to_string()))?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        let needed = data.len() + chunk.len();
+        if needed > max_bytes {
+            return Err(error(413, "input too large"));
+        }
+        if needed > data.capacity() {
+            let capacity = needed.max(data.capacity() * 2).min(max_bytes);
+            let permit = buffered
+                .clone()
+                .try_acquire_many_owned((capacity - data.capacity()) as u32)
+                .map_err(|_| error(503, "transform memory is full"))?;
+            match &mut reserved {
+                Some(r) => r.merge(permit),
+                None => reserved = Some(permit),
+            }
+            data.reserve_exact(capacity - data.len());
+        }
+        data.extend_from_slice(&chunk);
+    }
+    if data.is_empty() {
+        return Err(error(400, "empty input"));
+    }
+    Ok((Bytes::from(data), reserved))
+}
 async fn health(State(s): State<Arc<App>>) -> Response {
-    axum::Json(serde_json::json!({"ok":true,"active":s.active.load(Ordering::SeqCst)>0,"queued":s.queued.load(Ordering::SeqCst),"uploading":s.uploading.load(Ordering::SeqCst),"inFlight":s.max_inflight-s.admission.available_permits(),"activeCount":s.active.load(Ordering::SeqCst)})).into_response()
+    axum::Json(serde_json::json!({"ok":true,"active":s.active.load(Ordering::SeqCst)>0,"queued":s.queued.load(Ordering::SeqCst),"uploading":s.uploading.load(Ordering::SeqCst),"inFlight":s.max_inflight-s.admission.available_permits(),"bufferedBytes":s.max_buffered-s.buffered.available_permits(),"activeCount":s.active.load(Ordering::SeqCst)})).into_response()
 }
 async fn transform(State(s): State<Arc<App>>, request: Request) -> Response {
     let query: std::collections::HashMap<String, String> =
@@ -120,16 +162,12 @@ async fn transform(State(s): State<Arc<App>>, request: Request) -> Response {
     let _cancel = CancelOnDrop(control.clone());
     let upload_start = Instant::now();
     let uploading = Counter::new(s.uploading.clone());
-    let input = match timeout_at(until, to_bytes(request.into_body(), s.max_bytes)).await {
-        Ok(Ok(b)) if !b.is_empty() => b,
-        Ok(Ok(_)) => return error(400, "empty input"),
-        Ok(Err(e)) => {
-            let too_large = std::error::Error::source(&e)
-                .is_some_and(|e| e.is::<http_body_util::LengthLimitError>());
-            return error(if too_large { 413 } else { 400 }, e.to_string());
-        }
-        Err(_) => return error(504, "image transformation timed out"),
-    };
+    let (input, reservation) =
+        match timeout_at(until, read_input(request.into_body(), s.max_bytes, &s.buffered)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(response)) => return response,
+            Err(_) => return error(504, "image transformation timed out"),
+        };
     drop(uploading);
     let input_ms = upload_start.elapsed().as_secs_f64() * 1000.;
     let queued_at = Instant::now();
@@ -150,6 +188,7 @@ async fn transform(State(s): State<Arc<App>>, request: Request) -> Response {
         let dispatch_ms = native_start.elapsed().as_secs_f64() * 1000.;
         let _slot: OwnedSemaphorePermit = slot;
         let _admission: OwnedSemaphorePermit = admission;
+        let _reservation = reservation;
         let _active = Counter::new(active);
         #[cfg(feature = "test-delay")]
         if test_delay > 0 {
@@ -196,15 +235,21 @@ async fn run() {
     let concurrency = setting("TRANSFORM_CONCURRENCY", 2);
     let timeout_ms = setting("TRANSFORM_TIMEOUT_MS", 60000) as u64;
     let effort = setting("WEBP_EFFORT", 4);
+    let max_bytes = setting("MAX_INPUT_BYTES", 100 * 1024 * 1024);
+    let max_buffered = setting("MAX_BUFFERED_INPUT_BYTES", 1024 * 1024 * 1024).max(max_bytes);
     assert!(max_inflight > 0 && concurrency > 0 && timeout_ms > 0 && effort <= 6);
+    assert!(max_bytes > 0 && max_bytes <= u32::MAX as usize);
+    assert!(max_buffered <= Semaphore::MAX_PERMITS);
     let state = Arc::new(App {
         admission: Arc::new(Semaphore::new(max_inflight)),
+        buffered: Arc::new(Semaphore::new(max_buffered)),
         encoders: Arc::new(Semaphore::new(concurrency)),
         uploading: Arc::new(AtomicUsize::new(0)),
         queued: Arc::new(AtomicUsize::new(0)),
         active: Arc::new(AtomicUsize::new(0)),
         max_inflight,
-        max_bytes: setting("MAX_INPUT_BYTES", 100 * 1024 * 1024),
+        max_buffered,
+        max_bytes,
         timeout_ms,
         effort: effort as i32,
     });

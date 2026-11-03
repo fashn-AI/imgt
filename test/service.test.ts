@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DERIVATIVE_PREFIX,
-  MAX_ACTIVE_JOBS_PER_SHARD,
-  MAX_DISTINCT_JOBS_PER_SHARD,
+  MAX_ACTIVE_JOBS,
+  MAX_DISTINCT_JOBS,
 } from "../src/constants";
 import { derivativeKey, parseImageOptions } from "../src/options";
 import { createHarness, deferred, imageRequest } from "./helpers";
@@ -747,20 +747,17 @@ test("full shard rejects distinct jobs while accepting duplicates", async () => 
   const h = createHarness({
     transform: async (body) => {
       await new Response(body).arrayBuffer();
-      if (++started === MAX_ACTIVE_JOBS_PER_SHARD) allStarted.resolve();
+      if (++started === MAX_ACTIVE_JOBS) allStarted.resolve();
       await release.promise;
       return new Response("webp");
     },
   });
-  const requests = Array.from(
-    { length: MAX_DISTINCT_JOBS_PER_SHARD },
-    (_, id) => h.gateway(imageRequest(`?v=${id}`)),
+  const requests = Array.from({ length: MAX_DISTINCT_JOBS }, (_, id) =>
+    h.gateway(imageRequest(`?v=${id}`)),
   );
   await allStarted.promise;
-  assert.equal(h.downloads, MAX_ACTIVE_JOBS_PER_SHARD);
-  const rejected = await h.gateway(
-    imageRequest(`?v=${MAX_DISTINCT_JOBS_PER_SHARD}`),
-  );
+  assert.equal(h.downloads, MAX_ACTIVE_JOBS);
+  const rejected = await h.gateway(imageRequest(`?v=${MAX_DISTINCT_JOBS}`));
   assert.equal(rejected.status, 429);
   assert.equal(rejected.headers.get("retry-after"), "1");
   const duplicate = h.gateway(imageRequest("?v=0"));
@@ -771,7 +768,7 @@ test("full shard rejects distinct jobs while accepting duplicates", async () => 
     ),
   );
   await h.drain();
-  assert.equal(h.transforms, MAX_DISTINCT_JOBS_PER_SHARD);
+  assert.equal(h.transforms, MAX_DISTINCT_JOBS);
 });
 
 test("a 100-image burst runs concurrently without waiting for R2 writes and still deduplicates", async (t) => {
@@ -797,7 +794,7 @@ test("a 100-image burst runs concurrently without waiting for R2 writes and stil
     Array.from({ length: 100 }, (_, id) => h.gateway(imageRequest(`?v=${id}`))),
   );
   assert.ok(responses.every((response) => response.status === 200));
-  assert.equal(peak, MAX_ACTIVE_JOBS_PER_SHARD);
+  assert.equal(peak, MAX_ACTIVE_JOBS);
   assert.equal(h.downloads, 100);
   assert.equal(h.transforms, 100);
   assert.equal(h.bucket.objects.size, 0);
@@ -813,23 +810,23 @@ test("queued jobs expire within the original deadline without downloading their 
     timeoutMs: 80,
     transform: async (body) => {
       await new Response(body).arrayBuffer();
-      if (++calls === MAX_ACTIVE_JOBS_PER_SHARD) started.resolve();
+      if (++calls === MAX_ACTIVE_JOBS) started.resolve();
       await release.promise;
       return new Response("webp");
     },
   });
-  const active = Array.from({ length: MAX_ACTIVE_JOBS_PER_SHARD }, (_, id) =>
+  const active = Array.from({ length: MAX_ACTIVE_JOBS }, (_, id) =>
     h.gateway(imageRequest(`?v=${id}`)),
   );
   await started.promise;
   const expired = await h.gateway(imageRequest("?v=queued"));
   assert.equal(expired.status, 504);
-  assert.equal(h.downloads, MAX_ACTIVE_JOBS_PER_SHARD);
+  assert.equal(h.downloads, MAX_ACTIVE_JOBS);
   release.resolve();
   await Promise.all(active);
   assert.equal((await h.gateway(imageRequest("?v=after"))).status, 200);
   await h.drain();
-  assert.equal(h.downloads, MAX_ACTIVE_JOBS_PER_SHARD + 1);
+  assert.equal(h.downloads, MAX_ACTIVE_JOBS + 1);
 });
 
 test("transformation timeout aborts work and permits a later retry", async () => {
