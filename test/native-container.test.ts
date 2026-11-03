@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  CONTAINER_RESOURCES,
-  isConfiguredShard,
-  NativeContainerTransport,
-} from "../src/native-container";
+import { NativeContainerTransport } from "../src/native-container";
+import { containerResources } from "../src/tiers";
 import { deferred } from "./helpers";
 
 function harness(
@@ -24,7 +21,7 @@ function harness(
     },
     images: { transformer: "registry.cloudflare.com/test/sharp@sha256:fixed" },
     start(options?: ContainerStartupOptions) {
-      assert.deepEqual(options?.instance, CONTAINER_RESOURCES);
+      assert.deepEqual(options?.instance, containerResources(1));
       assert.equal(options?.enableInternet, false);
       assert.equal(options?.image, api.images.transformer);
       starts += 1;
@@ -58,6 +55,7 @@ function harness(
   const stopped: unknown[] = [];
   const transport = new NativeContainerTransport(api, {
     idleTimeoutMs,
+    resources: containerResources(1),
     env: {},
     waitUntil: () => {},
     stopped: (error) => stopped.push(error),
@@ -218,18 +216,6 @@ test("idle timeout accepts positive integer milliseconds up to six hours", () =>
       },
     );
   }
-});
-
-test("only configured shard identities can start native compute", () => {
-  const name = (shard: number) => `id-${shard}`;
-  assert.equal(isConfiguredShard("id-0", 2, name), true);
-  assert.equal(isConfiguredShard("id-1", 2, name), true);
-  assert.equal(isConfiguredShard("id-2", 2, name), false);
-  assert.equal(isConfiguredShard("arbitrary", 2, name), false);
-  assert.equal(isConfiguredShard("id-7", 8, name), true);
-  assert.equal(isConfiguredShard("id-8", 8, name), false);
-  assert.equal(isConfiguredShard("id-8", 9, name), false);
-  assert.equal(isConfiguredShard("id-0", 0, name), false);
 });
 
 test("a delayed old exit does not clear the replacement container readiness", async () => {

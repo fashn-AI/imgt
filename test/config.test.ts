@@ -16,11 +16,11 @@ function configuredLimit(value: string) {
     const { config } = await import('./imgt.config.ts');
     config.transforms.maxSourceBytes = ${value};
     const { MAX_SOURCE_BYTES, DERIVATIVE_PREFIX } = await import('./src/constants.ts');
-    const { containerNameForShard } = await import('./src/jobs.ts');
+    const { containerName } = await import('./src/jobs.ts');
     const { derivativeKey } = await import('./src/options.ts');
     console.log(JSON.stringify({
       limit: MAX_SOURCE_BYTES,
-      shard: containerNameForShard(0),
+      shard: containerName('primary'),
       key: await derivativeKey(DERIVATIVE_PREFIX, {
         sourceUrl: 'https://cdn.example.com/image.png', width: 640, quality: 77,
       }),

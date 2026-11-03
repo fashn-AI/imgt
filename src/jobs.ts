@@ -1,4 +1,6 @@
 import { RENDERER_VERSION } from "../container/renderer";
+import { config } from "../imgt.config";
+import type { LocationHint } from "./settings";
 import {
   CONTAINER_RUNTIME_VERSION,
   DERIVATIVE_PREFIX,
@@ -10,6 +12,7 @@ import {
   isValidQuality,
   isValidWidth,
 } from "./options";
+import type { ContainerRole } from "./tiers";
 
 export interface ResizeJob {
   outputKey: string;
@@ -107,21 +110,17 @@ export class SingleFlight<T> {
   }
 }
 
-// Rotate on input-limit changes too: running containers retain their startup env.
+// Running containers keep their startup size, env and region, so changing the
+// input limit, a role's vCPU or the location hint starts fresh containers.
 // Compatible R2 images keep their existing keys.
-export function containerNameForShard(shard: number): string {
-  return `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}-${MAX_SOURCE_BYTES}-${shard}`;
-}
-
-export function containerNameForKey(key: string, shardCount: number): string {
-  if (!Number.isInteger(shardCount) || shardCount < 1) {
-    throw new Error("container shard count must be a positive integer");
-  }
-
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < key.length; index += 1) {
-    hash ^= key.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return containerNameForShard((hash >>> 0) % shardCount);
+export function containerName(
+  role: ContainerRole,
+  locationHint?: LocationHint,
+): string {
+  const tier =
+    role === "overflow"
+      ? config.containers.overflow
+      : config.containers.primary;
+  const region = locationHint ? `-${locationHint}` : "";
+  return `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}-${MAX_SOURCE_BYTES}-${role}-${tier?.vcpu ?? 0}c${region}`;
 }

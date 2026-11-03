@@ -23,7 +23,8 @@ then select **Deploy**. New installations deny image requests until it is set.
 Include `images.unsplash.com` for the demo; see [source host configuration](configuration.md#allowed-source-hosts).
 `keep_vars: true` preserves dashboard variables on code deployments. An explicit
 `vars.ALLOWED_HOSTS` in `wrangler.jsonc` overrides that variable if you opt into
-repository management.
+repository management. Add the optional `CONTAINER_LOCATION_HINT` variable the
+same way to run containers near your images; see [container location](configuration.md#container-location).
 
 After saving dashboard variables, run another production build from your
 connected GitHub repository before testing images. Dashboard variable deployments
@@ -88,7 +89,9 @@ Use the current [Workers pricing](https://developers.cloudflare.com/workers/plat
 [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/),
 and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for estimates.
 
-Four running 1-CPU shards allocate 12 GiB. Containers stop after two idle minutes once
+The 1-CPU primary allocates 3 GiB, and the 3-CPU overflow another 9 GiB while
+it is awake; memory is billed on that allocation, not on the memory it uses. The
+primary stops after two idle minutes and the overflow after 30 seconds, once
 foreground requests and background image refreshes finish. Shorter idle time
 reduces awake time but can cause more cold starts. Images served from Workers
 Cache or R2 do not start a container. An idle, awake container can still incur
@@ -131,19 +134,21 @@ retain the old one, so its cached images also expire. Keep your existing
 ## Capacity
 
 See [application defaults and fixed limits](configuration.md#application-defaults)
-for default quality, encoding effort, shards, idle time, cache lifetimes and
+for default quality, encoding effort, container sizes, idle time, cache lifetimes and
 fixed resource limits.
 The smaller `basic` and `lite` resource profiles did not pass the large-image
 workload; see [performance decisions](performance.md).
 
-When changing resource allocation or encoder concurrency, bump
-`CONTAINER_RUNTIME_VERSION` in `src/constants.ts` to start fresh containers
-without invalidating compatible derivatives.
+Changing `transforms.maxSourceBytes`, a container's `vcpu` or
+`CONTAINER_LOCATION_HINT` starts fresh containers automatically, without
+invalidating compatible derivatives. For other changes to how containers start,
+such as their environment in `src/index.ts`, bump `CONTAINER_RUNTIME_VERSION`
+in `src/constants.ts`.
 
-Changing shard count changes request routing and can temporarily run old and
-new work for the same derivative during rollout. R2 contents remain valid. Keep
-the shard count stable during routine releases. The per-shard queue limit and
-60-second deadline remain fixed safety limits.
+During a rollout, old and new containers can briefly run work for the same
+derivative. R2 contents remain valid. The admission limit and 60-second
+deadline remain fixed safety limits. See [container sizes](configuration.md#container-sizes)
+for choosing a configuration.
 
 ## Updates
 
@@ -168,7 +173,7 @@ deadline; deploy success is not a promise that every image request succeeds.
 
 When changing `transforms.webpEffort`, bump `RENDERER_VERSION` in
 `container/renderer.ts` in the same change. Running native containers keep their
-previous environment until restart, so the new effort needs new renderer shard
+previous environment until restart, so the new effort needs new renderer container
 IDs and the renderer handshake to prevent old encoder output from being stored
 under the new cache keys. Review the version whenever output pixels or encoding
 defaults change.
@@ -242,7 +247,7 @@ during temporary background refresh failures.
 | Deployment fails with `provisioned_class_missing_from_config` | Declare every existing Durable Object class in `exports`, including the retired class, and retain the native Container attachment. |
 | Smoke test has no `EDGE` hit                 | The source must permit caching. Check its cache headers and the Worker cache configuration.                                                                     |
 | Source returns 403/404/410                   | The source must be publicly accessible. imgt does not forward client credentials.                                                                               |
-| HTTP 429                                     | The IP rate limiter or shard admission limit was reached; honor `Retry-After`.                                                                                  |
+| HTTP 429                                     | The IP rate limiter or coordinator admission limit was reached; honor `Retry-After`.                                                                            |
 | HTTP 504                                     | Source download, startup, queueing, or transform exceeded the deadline. Check timing and source size.                                                           |
 | Container name already exists                | Use a distinct name for a new installation; do not delete an existing application's resources.                                                                  |
 

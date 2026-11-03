@@ -1,5 +1,11 @@
 export type WebpEffort = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
+// Cloudflare custom allocations: 1-4 vCPU, billed for 3 GiB RAM per vCPU.
+export interface ContainerTier {
+  vcpu: 1 | 2 | 3 | 4;
+  idleTimeoutMs: number;
+}
+
 export interface ImgtConfig {
   transforms: {
     defaultQuality: number;
@@ -7,8 +13,8 @@ export interface ImgtConfig {
     maxSourceBytes: number;
   };
   containers: {
-    shards: number;
-    idleTimeoutMs: number;
+    primary: ContainerTier;
+    overflow: (ContainerTier & { wakeAtQueuedJobs: number }) | null;
   };
   cache: {
     minFreshSeconds: number;
@@ -20,16 +26,21 @@ export const config = {
   transforms: {
     // Match Sharp's standard WebP encoding effort; see docs/performance.md.
     defaultQuality: 77,
-    // Bump the renderer version when changing effort so running containers and
-    // the new cache keys cannot use different encoder settings.
+    // Effort is part of the R2 and edge cache keys: changing it re-encodes
+    // every cached image once.
     webpEffort: 4,
     // Original-file limit, shared by the Worker and container (100 MiB).
     maxSourceBytes: 100 * 1024 * 1024,
   },
   containers: {
-    // Routing count. Up to eight configured shards; see docs/performance.md.
-    shards: 4,
-    idleTimeoutMs: 120_000,
+    // Every cache miss goes to the primary first. Steady traffic keeps it
+    // awake, so its size is the main fixed cost.
+    primary: { vcpu: 1, idleTimeoutMs: 120_000 },
+    // A larger container that starts when this many jobs wait for the
+    // primary, and stops soon after the burst. null disables it, for example
+    // with a 3-vCPU primary instead.
+    overflow: { vcpu: 3, idleTimeoutMs: 30_000, wakeAtQueuedJobs: 4 },
+    // Container region is the CONTAINER_LOCATION_HINT Worker variable.
   },
   cache: {
     minFreshSeconds: 4 * 60 * 60,

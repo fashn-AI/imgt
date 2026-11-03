@@ -1,59 +1,94 @@
 import { RENDERER_VERSION } from "../container/renderer";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { parseAllowedHosts } from "./settings";
+import { parseAllowedHosts, parseLocationHint } from "./settings";
 import { config } from "../imgt.config";
-import {
-  MAX_ACTIVE_JOBS_PER_SHARD,
-  MAX_SOURCE_BYTES,
-  TRANSFORM_TIMEOUT_MS,
-} from "./constants";
+import { MAX_SOURCE_BYTES, TRANSFORM_TIMEOUT_MS } from "./constants";
 import { TransformCoordinator } from "./coordinator";
 import { handleGateway } from "./gateway";
-import {
-  containerNameForKey,
-  containerNameForShard,
-  fetchResizeJob,
-  type ResizeJob,
-} from "./jobs";
+import { failureResponse } from "./http";
+import { containerName, fetchResizeJob, type ResizeJob } from "./jobs";
 import { routeImage, handleImageJob } from "./service";
 import { DerivativeStore } from "./store";
 import { NativeIdleAlarm } from "./native-idle";
+import { NativeContainerTransport } from "./native-container";
 import {
-  isConfiguredShard,
-  NativeContainerTransport,
-} from "./native-container";
+  bufferedSourceBytes,
+  containerResources,
+  type ContainerRole,
+  TierDispatcher,
+  transformSlots,
+  validateTier,
+} from "./tiers";
+
+validateTier("primary", config.containers.primary);
+if (config.containers.overflow)
+  validateTier("overflow", config.containers.overflow);
 
 interface Env {
   ALLOWED_HOSTS?: string;
+  CONTAINER_LOCATION_HINT?: string;
   IMGT_NATIVE_TRANSFORMER: DurableObjectNamespace<ImgtNativeImageTransformer>;
   CF_VERSION_METADATA: { id: string; tag: string; timestamp: string };
   DERIVATIVES: R2Bucket;
   IMAGE_RATE_LIMITER: RateLimit;
 }
 
+function transformerStub(env: Env, role: ContainerRole) {
+  const locationHint = parseLocationHint(env.CONTAINER_LOCATION_HINT);
+  return env.IMGT_NATIVE_TRANSFORMER.getByName(
+    containerName(role, locationHint),
+    locationHint ? { locationHint } : undefined,
+  );
+}
+
 // The production transformer uses native Durable Object container scheduling.
+// The primary object coordinates every job and owns the always-on container.
+// The overflow object only runs transforms the primary sends it.
 export class ImgtNativeImageTransformer extends DurableObject<Env> {
-  readonly #idle: NativeIdleAlarm;
-  readonly #transport: NativeContainerTransport;
+  readonly #role?: ContainerRole;
+  readonly #idle?: NativeIdleAlarm;
+  readonly #transport?: NativeContainerTransport;
+  readonly #coordinator?: TransformCoordinator;
   readonly #allowedHosts = parseAllowedHosts(this.env.ALLOWED_HOSTS);
   readonly #store = new DerivativeStore(this.env.DERIVATIVES);
-  readonly #coordinator: TransformCoordinator;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // Native scheduling has no max_instances setting. Only the configured
+    // identities may start compute, including through direct stub calls.
+    const id = ctx.id.toString();
+    const locationHint = parseLocationHint(env.CONTAINER_LOCATION_HINT);
+    const roles: ContainerRole[] = config.containers.overflow
+      ? ["primary", "overflow"]
+      : ["primary"];
+    this.#role = roles.find(
+      (role) =>
+        env.IMGT_NATIVE_TRANSFORMER.idFromName(
+          containerName(role, locationHint),
+        ).toString() === id,
+    );
+    if (!this.#role) return;
+    const role = this.#role;
+    const tier =
+      role === "overflow"
+        ? config.containers.overflow!
+        : config.containers.primary;
     this.#idle = new NativeIdleAlarm({
-      timeoutMs: config.containers.idleTimeoutMs,
+      timeoutMs: tier.idleTimeoutMs,
       running: () => ctx.container!.running,
       destroy: () => ctx.container!.destroy(),
       setAlarm: (timestamp) => ctx.storage.setAlarm(timestamp),
       serialize: (work) => ctx.blockConcurrencyWhile(work),
     });
-    this.#transport = new NativeContainerTransport(ctx.container!, {
-      idleTimeoutMs: config.containers.idleTimeoutMs,
+    const transport = new NativeContainerTransport(ctx.container!, {
+      idleTimeoutMs: tier.idleTimeoutMs,
+      resources: containerResources(tier.vcpu),
+      role,
       env: {
         MAX_INPUT_BYTES: String(MAX_SOURCE_BYTES),
-        MAX_IN_FLIGHT: String(MAX_ACTIVE_JOBS_PER_SHARD),
-        TRANSFORM_CONCURRENCY: "1",
+        MAX_IN_FLIGHT: String(transformSlots(tier.vcpu)),
+        MAX_BUFFERED_INPUT_BYTES: String(bufferedSourceBytes(tier.vcpu)),
+        TRANSFORM_CONCURRENCY: String(tier.vcpu),
         TRANSFORM_TIMEOUT_MS: String(TRANSFORM_TIMEOUT_MS),
         WEBP_EFFORT: String(config.transforms.webpEffort),
       },
@@ -63,7 +98,8 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
           JSON.stringify({
             event: "container_stopped",
             backend: "native",
-            containerId: ctx.id.toString(),
+            role,
+            containerId: id,
             reason:
               error instanceof Error ? error.message : (error ?? "stopped"),
             exitCode:
@@ -73,18 +109,39 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
           }),
         ),
     });
+    this.#transport = transport;
     // Reconnection failures must not block cache reads or object initialization.
     // Transform uploads still require successful readiness checks.
-    ctx.waitUntil(this.#transport.restore());
+    ctx.waitUntil(transport.restore());
+    if (role === "overflow") return;
+
+    const overflow = config.containers.overflow;
+    const dispatcher = new TierDispatcher({
+      primarySlots: transformSlots(tier.vcpu),
+      overflow: overflow && {
+        slots: transformSlots(overflow.vcpu),
+        wakeAtQueuedJobs: overflow.wakeAtQueuedJobs,
+        idleTimeoutMs: overflow.idleTimeoutMs,
+        wake: async () => {
+          const response = await transformerStub(env, "overflow").fetch(
+            new Request("http://container/prepare", { method: "POST" }),
+          );
+          await response.body?.cancel();
+          if (!response.ok)
+            throw new Error(`overflow prepare returned ${response.status}`);
+        },
+      },
+    });
     this.#coordinator = new TransformCoordinator({
       rendererVersion: RENDERER_VERSION,
       allowedHosts: this.#allowedHosts,
       store: this.#store,
       waitUntil: (promise) => ctx.waitUntil(promise),
-      prepare: (signal) => this.#transport.prepare(signal),
-      transform: (body, job, signal, deadline) =>
-        this.#transport.fetch(
-          new Request(
+      prepare: (signal) => transport.prepare(signal),
+      transform: async (body, job, signal, deadline) => {
+        const lease = await dispatcher.acquire(signal);
+        try {
+          const request = new Request(
             `http://container/transform?w=${job.width}&q=${job.quality}`,
             {
               method: "POST",
@@ -92,40 +149,72 @@ export class ImgtNativeImageTransformer extends DurableObject<Env> {
               signal,
               headers: { "x-imgt-deadline": String(deadline) },
             },
-          ),
-        ),
+          );
+          const response =
+            lease.tier === "primary"
+              ? await transport.fetch(request)
+              : await transformerStub(env, "overflow").fetch(request);
+          // Keep the slot until the encoded image has arrived.
+          const encoded = await response.arrayBuffer();
+          const headers = new Headers(response.headers);
+          headers.append(
+            "server-timing",
+            `dispatch;dur=${lease.waitedMs.toFixed(1)};desc="${lease.tier}"`,
+          );
+          return new Response(encoded, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        } finally {
+          lease.release();
+        }
+      },
     });
   }
 
   fetch(request: Request): Promise<Response> {
-    // Native scheduling has no max_instances setting. Only the configured,
-    // bounded shard IDs may start compute, including through direct stub calls.
-    if (
-      !isConfiguredShard(
-        this.ctx.id.toString(),
-        config.containers.shards,
-        (shard) =>
-          this.env.IMGT_NATIVE_TRANSFORMER.idFromName(
-            containerNameForShard(shard),
-          ).toString(),
-      )
-    ) {
+    const idle = this.#idle;
+    if (!idle)
       return Promise.resolve(
-        new Response("invalid container shard", { status: 503 }),
+        new Response("unknown container", { status: 503 }),
       );
-    }
-    return this.#idle.run(() =>
+    if (this.#role === "overflow")
+      return idle.run(() => this.overflowRequest(request));
+    return idle.run(() =>
       handleImageJob(request, {
         allowedHosts: this.#allowedHosts,
         store: this.#store,
-        resize: (job) => this.#idle.run(() => this.#coordinator.resize(job)),
+        resize: (job) => idle.run(() => this.#coordinator!.resize(job)),
         waitUntil: (promise) => this.ctx.waitUntil(promise),
       }),
     );
   }
 
+  // Requests from the primary object only: the Worker never routes here.
+  private async overflowRequest(request: Request): Promise<Response> {
+    const transport = this.#transport!;
+    const { pathname } = new URL(request.url);
+    if (request.method !== "POST")
+      return new Response("method not allowed", { status: 405 });
+    try {
+      if (pathname === "/prepare") {
+        await transport.prepare(request.signal);
+        return new Response(null, { status: 204 });
+      }
+      if (pathname === "/transform") {
+        // Buffer here so the idle alarm covers the whole encode.
+        const response = await transport.fetch(request);
+        return new Response(await response.arrayBuffer(), response);
+      }
+    } catch (cause) {
+      return failureResponse(cause);
+    }
+    return new Response("not found", { status: 404 });
+  }
+
   alarm(): Promise<void> {
-    return this.#idle.alarm();
+    return this.#idle?.alarm() ?? Promise.resolve();
   }
 }
 
@@ -138,8 +227,7 @@ export class ImgtImageTransformer extends DurableObject<Env> {
 }
 
 function requestResize(job: ResizeJob, env: Env): Promise<Response> {
-  const name = containerNameForKey(job.outputKey, config.containers.shards);
-  return fetchResizeJob(job, () => env.IMGT_NATIVE_TRANSFORMER.getByName(name));
+  return fetchResizeJob(job, () => transformerStub(env, "primary"));
 }
 
 export class ImgtImageCache extends WorkerEntrypoint<Env> {

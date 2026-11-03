@@ -14,6 +14,8 @@ account, my own imgt deployment URL and the public HTTPS image sources I use.
    images.unsplash.com if I want the playground. Wildcards such as *.example.com
    do not include the parent example.com. Validate redirect hosts too. Follow
    the deployment guide's GitHub rebuild step after dashboard variable updates.
+   If my images or users are concentrated in one region, suggest setting
+   CONTAINER_LOCATION_HINT to the nearest Cloudflare region.
 3. Keep the imgt R2 bucket private, bound as DERIVATIVES, using Standard storage.
    Complete storage setup with an enabled lifecycle rule that deletes objects
    under derivatives/ after 30 days. Deployment does not add this rule.

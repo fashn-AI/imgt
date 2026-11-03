@@ -1,4 +1,31 @@
 // Deployment-specific settings come from Wrangler vars, not application code.
+
+// Cloudflare Durable Object regions; see the locationHint documentation.
+export const LOCATION_HINTS = [
+  "wnam",
+  "enam",
+  "sam",
+  "weur",
+  "eeur",
+  "apac",
+  "oc",
+  "afr",
+  "me",
+] as const;
+export type LocationHint = (typeof LOCATION_HINTS)[number];
+
+// Unset lets Cloudflare place containers near their first request.
+export function parseLocationHint(
+  value: string | undefined,
+): LocationHint | undefined {
+  const hint = value?.trim().toLowerCase();
+  if (!hint) return undefined;
+  if (!(LOCATION_HINTS as readonly string[]).includes(hint))
+    throw new Error(
+      `CONTAINER_LOCATION_HINT must be one of ${LOCATION_HINTS.join(", ")}`,
+    );
+  return hint as LocationHint;
+}
 export function parseAllowedHosts(
   value: string | undefined,
 ): readonly string[] {

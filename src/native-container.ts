@@ -1,29 +1,6 @@
 import { ImageError } from "./http";
 import { TRANSFORM_TIMEOUT_MS } from "./constants";
 
-// Cloudflare custom allocations require at least 3 GiB per CPU.
-export const CONTAINER_RESOURCES = {
-  vcpu: 1,
-  memoryMib: 3072,
-  diskMb: 2000,
-};
-export const MAX_CONTAINER_SHARDS = 8;
-
-export function isConfiguredShard(
-  id: string,
-  shardCount: number,
-  nameForShard: (shard: number) => string,
-): boolean {
-  return (
-    Number.isInteger(shardCount) &&
-    shardCount >= 1 &&
-    shardCount <= MAX_CONTAINER_SHARDS &&
-    Array.from({ length: shardCount }, (_, shard) =>
-      nameForShard(shard),
-    ).includes(id)
-  );
-}
-
 type ContainerApi = Pick<
   Container,
   | "running"
@@ -71,6 +48,8 @@ export class NativeContainerTransport {
     private readonly container: ContainerApi,
     private readonly options: {
       idleTimeoutMs: number;
+      resources: { vcpu: number; memoryMib: number; diskMb: number };
+      role?: string;
       env: Record<string, string>;
       waitUntil: (promise: Promise<unknown>) => void;
       stopped: (error?: unknown) => void;
@@ -170,13 +149,14 @@ export class NativeContainerTransport {
                 this.container.images.transformer.match(
                   /sha256:[a-f0-9]{64}/,
                 )?.[0],
-              resources: CONTAINER_RESOURCES,
+              role: this.options.role,
+              resources: this.options.resources,
               bootId: this.#bootId,
             }),
           );
           this.container.start({
             image: this.container.images.transformer,
-            instance: CONTAINER_RESOURCES,
+            instance: this.options.resources,
             enableInternet: false,
             env: this.options.env,
             labels: { boot_id: this.#bootId },
@@ -223,6 +203,7 @@ export class NativeContainerTransport {
           console.log(
             JSON.stringify({
               event: "native_container_ready",
+              role: this.options.role,
               durationMs: Date.now() - started,
               polls,
               bootId: this.#bootId,

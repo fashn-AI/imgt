@@ -35,6 +35,8 @@ Prefer working with an agent? Use the [setup prompt](docs/setup-prompt.md).
    comma-separated source image domains, then select **Deploy**. Include
    `images.unsplash.com` for the sample image. New installations deny image
    requests until this is set; see the [configuration guide](docs/configuration.md#allowed-source-hosts).
+   Optionally add `CONTAINER_LOCATION_HINT` to run containers near your
+   images; see [container location](docs/configuration.md#container-location).
 
 3. Run another production GitHub build after saving the variable. Dashboard
    variable deployments can drop native Container image references; Workers
@@ -143,13 +145,14 @@ Wrangler provisions the configured R2 bucket when needed.
 
 ## Defaults and operations
 
-The starter configuration uses four container shards, each with 1 vCPU and
-3 GiB RAM. Shards start on demand and stop after two idle minutes once foreground
-requests and background image refreshes finish. Native scheduling permits only
-the configured shard IDs, with an application limit of eight shards. Each container
-uploads at most eight images at once and processes one at a time. Each shard
-accepts up to 128 distinct jobs, waiting for upload capacity within the existing
-deadline. See
+The starter configuration sends every transform to one primary container
+(1 vCPU, 3 GiB RAM), which stops after two idle minutes once foreground requests
+and background image refreshes finish. When four transforms are waiting for it,
+a 3 vCPU overflow container starts and stops again after 30 idle seconds.
+Native scheduling permits only these two container IDs. Each container uploads
+three images per vCPU at once, within a 1 GiB-per-vCPU input budget, and runs
+one encoder per vCPU. The coordinator accepts up to 512 distinct jobs, waiting
+for upload capacity within the existing deadline. See
 [performance decisions](docs/performance.md).
 
 The public endpoint limits each client IP to approximately 10,000 image requests

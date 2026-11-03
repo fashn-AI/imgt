@@ -11,7 +11,7 @@ the browser loads no highlighting library.
 GET /image?url=…&w=640&q=77
   → gateway: validate source and parameters, rate limit
   → image entrypoint: canonical, tiered Workers Cache
-  → Durable Object shard: R2 lookup
+  → primary Durable Object: R2 lookup
       → fresh: return derivative
       → stale: return derivative, refresh in background
       → missing: fetch source → libvips → return and persist derivative
@@ -72,19 +72,26 @@ origin redirect is checked against the same `ALLOWED_HOSTS` allowlist.
 
 Sources must use HTTPS without credentials or a custom port. Inputs are JPEG,
 PNG, WebP, or AVIF, limited to 100 MiB by default and 50 megapixels. Width accepts any integer
-from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to
-77. Each width and quality combination has a separate cache entry. Output
+from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to 77. Each width and quality combination has a separate cache entry. Output
 preserves orientation and aspect ratio, never enlarges a small source, and uses
 WebP. `transforms.maxSourceBytes` in `imgt.config.ts` configures the original-file
 byte limit. Declared oversized sources are rejected before upload; the Rust
 service also enforces the limit on actual bytes, including chunked uploads.
 Oversized inputs return `413` without being cached.
 
-The configured deterministic shards each accept up to 128 distinct jobs. At most eight
-jobs per shard download sources, start the container, upload, or encode at once;
-the others wait without downloading originals. Within a container, uploads run
-independently and ready inputs enter a queue with one active native encoder per 1-CPU shard. A
-stalled upload does not block ready images. Completed results keep their
+One primary Durable Object coordinates every cache miss and accepts up to 512
+distinct jobs. At most 96 jobs read R2, download sources or wait for a
+container at once; the others wait without downloading originals.
+A dispatcher sends each upload to the always-on primary container first, with
+three uploads per vCPU. When `wakeAtQueuedJobs` uploads are waiting, it starts
+the larger overflow container, held by a second Durable Object, and uses both
+until the overflow has been idle for its own short timeout. The primary keeps
+serving while the overflow starts; a failed start is retried after five seconds.
+Within a container, uploads run independently and ready inputs enter a queue with
+one active native encoder per vCPU. A stalled upload does not block ready
+images. Buffered inputs share a 1 GiB budget per vCPU (at least the source
+limit); an upload that would exceed it fails immediately with retryable `503`
+instead of waiting, so partial uploads cannot block each other. Completed results keep their
 single-flight entry during R2 writes but release active capacity immediately.
 Requests beyond the bounded admission limit return retryable `429`.
 The 60-second deadline covers admission waiting, origin fetch, startup, upload, queueing, and
@@ -99,7 +106,7 @@ fetch, container readiness, upload and encoding. It is not a total HTTP response
 time limit: the edge cache, initial R2 lookup and network delivery can add time
 outside the transform clock. Benchmarks measure the complete response separately.
 
-An expired transform returns `504`; a full shard queue returns `429` with
+An expired transform returns `504`; a full admission queue returns `429` with
 `Retry-After: 1`. Container readiness failures return `503`, and the IP rate
 limiter returns `429` with `Retry-After: 60`. Error responses use `no-store`.
 Temporary source GET network failures and HTTP `500`, `502`, `503` or `504`
@@ -127,7 +134,7 @@ not replay an in-progress container upload automatically.
 ## Container lifecycle and updates
 
 `ImgtNativeImageTransformer` uses `ctx.container` with `durable_object`
-scheduling. Only configured shard IDs may start compute. Concurrent callers
+scheduling. Only the configured primary and overflow IDs may start compute. Concurrent callers
 share startup and private health polling. Reconnect restoration runs in the
 background so an unavailable container connection cannot block cached delivery.
 Uploads still require a healthy container. Startup and health checks share
@@ -140,8 +147,8 @@ a stalled control-plane setting cannot delay uploads. The durable idle alarm
 enforces compute shutdown independently. Canceling one caller does not cancel
 another's startup. Transform uploads are never replayed automatically.
 
-The configured `containers.idleTimeoutMs` defaults to 120,000 milliseconds
-(two minutes) and is restored on reconnect. A durable alarm also stops compute
+Each container's `idleTimeoutMs` (two minutes for the primary, 30 seconds for
+the overflow) is restored on reconnect. A durable alarm also stops compute
 after foreground requests and background refreshes finish, deferring while work
 is active and blocking events during shutdown. Exit monitoring clears readiness
 for the next request.
@@ -152,11 +159,11 @@ Pending I/O, `waitUntil()` work, and monitoring can prevent eviction for up to
 15 minutes per operation while duration charges continue. The alarm enforces
 our shorter container idle timeout independently of object eviction.
 
-Renderer versions isolate R2 keys, edge keys, and shard IDs. A separate runtime
-version rotates shard IDs when container settings change. The configured source
-byte limit is also included in shard IDs, so its changes automatically replace
-containers that retain the previous startup environment, keeping compatible
-derivatives in R2. The Worker checks
+Renderer versions isolate R2 keys, edge keys, and container IDs. A separate
+runtime version rotates container IDs when container settings change. The source
+byte limit, each role's vCPU and the location hint are also part of container
+IDs, so changing them automatically replaces containers that retain the previous
+size, startup environment or region, keeping compatible derivatives in R2. The Worker checks
 the container's renderer header before persisting bytes during rollout. Review
 `RENDERER_VERSION` whenever pixels or encoding defaults change, including WebP
 effort: running containers retain their previous environment until restart.

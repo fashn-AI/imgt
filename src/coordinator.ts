@@ -1,7 +1,7 @@
 import { remainingSeconds } from "./cache";
 import {
-  MAX_ACTIVE_JOBS_PER_SHARD,
-  MAX_DISTINCT_JOBS_PER_SHARD,
+  MAX_ACTIVE_JOBS,
+  MAX_DISTINCT_JOBS,
   TRANSFORM_TIMEOUT_MS,
 } from "./constants";
 import { TransformScheduler } from "../container/scheduler";
@@ -11,10 +11,9 @@ import {
   ImageError,
   imageResponse,
 } from "./http";
-import { containerNameForKey, type ResizeJob, SingleFlight } from "./jobs";
+import { type ResizeJob, SingleFlight } from "./jobs";
 import { fetchSource, type SourceFetch } from "./source";
 import { contentEtag, DerivativeStore } from "./store";
-import { config } from "../imgt.config";
 
 export type Transform = (
   body: ReadableStream<Uint8Array>,
@@ -44,22 +43,30 @@ interface CoordinatorDependencies {
   sourceFetch?: SourceFetch;
   waitUntil: (promise: Promise<void>) => void;
   timeoutMs?: number;
+  maxActiveJobs?: number;
+  maxDistinctJobs?: number;
 }
 
 export class TransformCoordinator {
   readonly #singleFlight = new SingleFlight<ResizeResult>();
-  readonly #scheduler = new TransformScheduler(MAX_ACTIVE_JOBS_PER_SHARD);
-  constructor(private readonly deps: CoordinatorDependencies) {}
+  readonly #scheduler: TransformScheduler;
+  constructor(private readonly deps: CoordinatorDependencies) {
+    this.#scheduler = new TransformScheduler(
+      deps.maxActiveJobs ?? MAX_ACTIVE_JOBS,
+    );
+  }
 
   // The Durable Object's HTTP boundary validates jobs before they reach here.
   async resize(job: ResizeJob): Promise<Response> {
     const coalesced = this.#singleFlight.has(job.outputKey);
-    const shard = containerNameForKey(job.outputKey, config.containers.shards);
-    if (!coalesced && this.#singleFlight.size >= MAX_DISTINCT_JOBS_PER_SHARD) {
+    if (
+      !coalesced &&
+      this.#singleFlight.size >=
+        (this.deps.maxDistinctJobs ?? MAX_DISTINCT_JOBS)
+    ) {
       console.log(
         JSON.stringify({
           event: "transform_rejected",
-          shard,
           inFlight: this.#singleFlight.size,
         }),
       );
@@ -76,7 +83,6 @@ export class TransformCoordinator {
       console.log(
         JSON.stringify({
           event: "transform_request",
-          shard,
           coalesced,
           cache: result.cacheStatus,
           durationMs: performance.now() - started,
@@ -94,7 +100,6 @@ export class TransformCoordinator {
       console.error(
         JSON.stringify({
           event: "transform_failed",
-          shard,
           durationMs: performance.now() - started,
           status: cause instanceof ImageError ? cause.status : 500,
         }),

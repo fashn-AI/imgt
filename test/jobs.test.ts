@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  containerNameForKey,
+  containerName,
   parseResizeJob,
   SingleFlight,
   fetchResizeJob,
@@ -14,6 +14,7 @@ import {
 } from "../src/constants";
 import { RENDERER_VERSION } from "../container/renderer";
 import { derivativeKey } from "../src/options";
+import { config, type ContainerTier } from "../imgt.config";
 
 test("internal jobs accept the quality range and reject invalid JSON qualities", async () => {
   const options = {
@@ -89,26 +90,22 @@ test("internal jobs accept arbitrary bounded widths and reject invalid JSON widt
   }
 });
 
-test("routes a derivative key to a stable container shard", () => {
-  const key = "derivatives/v1/abcdef.webp";
-  assert.equal(containerNameForKey(key, 4), containerNameForKey(key, 4));
+test("names one container per role, rotated by runtime, input limit, size and region", () => {
   const prefix = `instance-${RENDERER_VERSION}-${CONTAINER_RUNTIME_VERSION}-${MAX_SOURCE_BYTES}`;
-  assert.match(containerNameForKey(key, 4), new RegExp(`^${prefix}-[0-3]$`));
-
-  const shards = new Set(
-    Array.from({ length: 64 }, (_, index) =>
-      containerNameForKey(`derivative-${index}`, 4),
-    ),
+  const { overflow } = config.containers;
+  const primary: ContainerTier = config.containers.primary;
+  assert.equal(containerName("primary"), `${prefix}-primary-${primary.vcpu}c`);
+  assert.equal(
+    containerName("overflow", "enam"),
+    `${prefix}-overflow-${overflow!.vcpu}c-enam`,
   );
-  assert.deepEqual(
-    shards,
-    new Set([`${prefix}-0`, `${prefix}-1`, `${prefix}-2`, `${prefix}-3`]),
-  );
-});
-
-test("rejects an invalid container shard count", () => {
-  assert.throws(() => containerNameForKey("key", 0));
-  assert.throws(() => containerNameForKey("key", 1.5));
+  const original = primary.vcpu;
+  try {
+    primary.vcpu = 2;
+    assert.equal(containerName("primary"), `${prefix}-primary-2c`);
+  } finally {
+    primary.vcpu = original;
+  }
 });
 
 test("coalesces concurrent work with the same key", async () => {

@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAllowedHosts } from "../src/settings";
+import { parseAllowedHosts, parseLocationHint } from "../src/settings";
 import { handleGateway } from "../src/gateway";
 import { createHarness } from "./helpers";
+
+test("the container location hint is optional and must be a Cloudflare region", () => {
+  for (const value of [undefined, "", "  "])
+    assert.equal(parseLocationHint(value), undefined);
+  assert.equal(parseLocationHint(" ENAM "), "enam");
+  for (const value of ["us-east", "enam,weur", "*"])
+    assert.throws(() => parseLocationHint(value), /CONTAINER_LOCATION_HINT/);
+});
 
 test("deployment hosts normalize and empty configuration denies image access", async () => {
   assert.deepEqual(
