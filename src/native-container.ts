@@ -1,4 +1,4 @@
-import { ImageError } from "./http";
+import { ImageError, logError } from "./http";
 import { TRANSFORM_TIMEOUT_MS } from "./constants";
 
 type ContainerApi = Pick<
@@ -75,7 +75,7 @@ export class NativeContainerTransport {
     } catch (error) {
       // Platform connection errors during reconnect must not block requests.
       // prepare() still requires a healthy container before accepting uploads.
-      console.error("container state restore failed", error);
+      logError("container_restore_failed", error);
     }
   }
 
