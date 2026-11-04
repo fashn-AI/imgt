@@ -8,6 +8,7 @@ import { TransformScheduler } from "../container/scheduler";
 import {
   errorResponse,
   failureResponse,
+  logError,
   ImageError,
   imageResponse,
 } from "./http";
@@ -260,7 +261,7 @@ export class TransformCoordinator {
           );
         })
         .catch((cause) => {
-          console.error("failed to persist transformed image", cause);
+          logError("derivative_persist_failed", cause);
         });
       this.deps.waitUntil(persistence);
       const serverTiming = [

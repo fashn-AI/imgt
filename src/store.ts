@@ -1,5 +1,6 @@
 import { config } from "../imgt.config";
 import { cacheControl } from "./cache";
+import { logError } from "./http";
 import { parseSourceValidator, type SourceValidator } from "./source";
 
 // Service tests supply a small bucket without emulating the Cloudflare runtime.
@@ -65,7 +66,7 @@ export class DerivativeStore {
     try {
       object = await this.#retryOnce("get", key, () => this.bucket.get(key));
     } catch (cause) {
-      console.error("derivative read failed; regenerating", cause);
+      logError("derivative_read_failed", cause);
       return null;
     }
     if (!object) return null;

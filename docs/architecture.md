@@ -188,6 +188,9 @@ existing installation's old namespace.
   service is retained as a comparison reference.
 
 Worker logs cover transform failures, persistence, and container starts/stops.
+Unexpected errors are logged as JSON events such as `image_request_failed`,
+with the error name, message, a trimmed stack and Cloudflare's `retryable`,
+`overloaded`, `remote` and `durableObjectReset` flags when present.
 MISS timing reports admission waiting, job, origin headers, startup, upload, queue, and native encoding
 work; spans overlap. Container boot labels identify real restarts. Its private
 health endpoint reports active, queued, uploading, and in-flight jobs.

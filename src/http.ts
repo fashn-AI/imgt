@@ -24,10 +24,48 @@ export function errorResponse(
   return new Response(message, { status, headers });
 }
 
+const ERROR_FLAGS = [
+  "retryable",
+  "overloaded",
+  "remote",
+  "durableObjectReset",
+] as const;
+const MAX_STACK_LENGTH = 2000;
+
+export interface ErrorDetails {
+  name?: string;
+  message: string;
+  stack?: string;
+  retryable?: boolean;
+  overloaded?: boolean;
+  remote?: boolean;
+  durableObjectReset?: boolean;
+  cause?: ErrorDetails;
+}
+
+// Logged errors keep their name and message as fields. Passing an Error to
+// console.error can leave Workers Logs with only part of the stack.
+export function describeError(cause: unknown, depth = 0): ErrorDetails {
+  if (!(cause instanceof Error)) return { message: String(cause) };
+  const details: ErrorDetails = { name: cause.name, message: cause.message };
+  if (cause.stack) details.stack = cause.stack.slice(0, MAX_STACK_LENGTH);
+  for (const flag of ERROR_FLAGS) {
+    const value = (cause as unknown as Record<string, unknown>)[flag];
+    if (typeof value === "boolean") details[flag] = value;
+  }
+  if (cause.cause !== undefined && depth < 2)
+    details.cause = describeError(cause.cause, depth + 1);
+  return details;
+}
+
+export function logError(event: string, cause: unknown): void {
+  console.error(JSON.stringify({ event, error: describeError(cause) }));
+}
+
 export function failureResponse(cause: unknown): Response {
   if (cause instanceof ImageError)
     return errorResponse(cause.message, cause.status, cause.retryAfter);
-  console.error("image request failed", cause);
+  logError("image_request_failed", cause);
   return errorResponse("image request failed", 500);
 }
 

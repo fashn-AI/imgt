@@ -1,6 +1,11 @@
 import { remainingSeconds } from "./cache";
 import { DERIVATIVE_PREFIX, STALE_CACHE_TTL_SECONDS } from "./constants";
-import { errorResponse, failureResponse, imageResponse } from "./http";
+import {
+  errorResponse,
+  failureResponse,
+  imageResponse,
+  logError,
+} from "./http";
 import { parseResizeJob, type ResizeJob } from "./jobs";
 import { derivativeKey, parseImageOptions } from "./options";
 import { DerivativeStore } from "./store";
@@ -81,7 +86,7 @@ async function serveImage(
       if (staleTtl > 0) {
         deps.waitUntil(
           refresh(job, deps.resize).catch((cause) =>
-            console.error("background image refresh failed", cause),
+            logError("background_refresh_failed", cause),
           ),
         );
         return imageResponse(stored.body, stored.etag, "STALE", staleTtl);
