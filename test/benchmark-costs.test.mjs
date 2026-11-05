@@ -116,3 +116,23 @@ test("Worker request pricing includes the cached loopback invocation", () => {
   // 16M billed invocations minus 10M included, plus 56M CPU ms minus 30M included.
   assert.equal(cost.cloudflare.worker.toFixed(2), "2.32");
 });
+
+test("an overflow container adds cost only for its awake share", () => {
+  const tiered = allocations.find((a) => a.overflow);
+  const single = allocations[0];
+  const scenario = { ...defaultScenario, included: false };
+  const asleep = estimateCosts(
+    { ...tiered, overflow: { ...tiered.overflow, awakePercent: 0 } },
+    scenario,
+  );
+  assert.equal(asleep.imgtTotal, estimateCosts(single, scenario).imgtTotal);
+  const awake = estimateCosts(tiered, scenario);
+  const share = tiered.overflow.awakePercent / 100;
+  const extraMemory = 30 * 24 * 60 * 60 * share * tiered.overflow.memory;
+  assert.equal(
+    (awake.cloudflare.memory - asleep.cloudflare.memory).toFixed(4),
+    (extraMemory * 0.0000025).toFixed(4),
+  );
+  assert.equal(awake.effectiveAwakePercent, 100);
+  assert.ok(awake.feasible);
+});
