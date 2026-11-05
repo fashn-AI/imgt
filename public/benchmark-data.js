@@ -1,7 +1,35 @@
 // Aggregate measurements only. Raw runs and image sources stay in research.
-// Other container sizes and local Docker runs are in docs/benchmarks.md.
-export const imgtAllocation = "1 CPU + 3 CPU overflow";
+export const profiles = [
+  {
+    id: "tiered",
+    name: "1 CPU + 3 CPU overflow",
+    detail: "3 GiB + 9 GiB during bursts",
+    live: true,
+  },
+  {
+    id: "one-1cpu",
+    name: "1 × 1 CPU",
+    detail: "3 GiB RAM · no overflow · local only",
+    live: false,
+  },
+  { id: "four-1cpu", name: "4 × 1 CPU", detail: "12 GiB RAM", live: true },
+  { id: "two-2cpu", name: "2 × 2 CPUs", detail: "12 GiB RAM", live: true },
+  { id: "two-1cpu", name: "2 × 1 CPU", detail: "6 GiB RAM", live: true },
+  {
+    id: "four-basic",
+    name: "4 × basic",
+    detail: "4 GiB RAM · local only",
+    live: false,
+  },
+  {
+    id: "eight-basic",
+    name: "8 × basic",
+    detail: "8 GiB RAM · local only",
+    live: false,
+  },
+];
 
+export const recommendedProfile = "tiered";
 export const costScenario = {
   transforms: 2_250_000,
   requests: 10_000_000,
@@ -13,86 +41,368 @@ export const costScenario = {
   included: true,
 };
 
-// Live complete-response p95 from one client in Brazil. imgt is the default
-// configuration on production, November 5, 2026. Vercel ran October 6, 2026
-// with a different set of 50 FASHN images.
-export const workloads = [
-  {
-    id: "steady-3",
-    name: "3 new images per second",
-    detail: "Steady traffic, like FASHN's busiest 15 minutes",
-    imgt: { p95Ms: 1280, ok: 180, count: 180 },
-    vercel: { p95Ms: 1273, ok: 180, count: 180 },
-  },
-  {
-    id: "steady-10",
-    name: "10 new images per second",
-    detail: "Steady traffic, over 3× that peak",
-    imgt: { p95Ms: 1239, ok: 600, count: 600 },
-    vercel: { p95Ms: 1252, ok: 600, count: 600 },
-  },
-  {
-    id: "stress-20",
-    name: "20 new images per second",
-    detail: "Heavy traffic for 30 seconds",
-    imgt: { p95Ms: 1282, ok: 600, count: 600 },
-    vercel: { p95Ms: 1219, ok: 600, count: 600 },
-  },
-  {
-    id: "gallery-50",
-    name: "50 new images at once",
-    detail: "A visitor opens a gallery nobody has seen",
-    imgt: { p95Ms: 3525, ok: 50, count: 50 },
-    vercel: { p95Ms: 1100, ok: 50, count: 50 },
-  },
-  {
-    id: "burst-200",
-    name: "200 new images at once",
-    detail: "A large new catalog page or a crawler",
-    imgt: { p95Ms: 11711, ok: 200, count: 200 },
-    vercel: { p95Ms: 2044, ok: 200, count: 200 },
-  },
-];
-
-// The same 200 images requested again after the burst.
-export const cachedP95Ms = 215;
-
-const seconds = (result) =>
-  result?.ok > 0 && Number.isFinite(result.p95Ms) ? result.p95Ms / 1000 : null;
-
-export function status(result) {
-  if (!result) return "Not measured";
-  const failed = result.count - result.ok;
-  return `${result.ok}/${result.count} succeeded${failed ? ` · ${failed} failed` : ""}`;
-}
-
-// Differences under 10% are within run-to-run noise for a single client.
-export function verdict(imgt, vercel) {
-  if (imgt === null || vercel === null) return { winner: null, label: "" };
-  const ratio = Math.max(imgt, vercel) / Math.min(imgt, vercel);
-  if (ratio < 1.1) return { winner: "tie", label: "About the same" };
-  const winner = imgt < vercel ? "imgt" : "vercel";
-  return {
-    winner,
-    label: `${winner === "imgt" ? "imgt" : "Vercel"} ${ratio.toFixed(1)}× faster`,
-  };
-}
-
-export function comparisonRows() {
-  return workloads.map((workload) => {
-    const imgt = seconds(workload.imgt);
-    const vercel = seconds(workload.vercel);
-    return {
-      ...workload,
-      values: { imgt, vercel },
-      statuses: {
-        imgt: status(workload.imgt),
-        vercel: status(workload.vercel),
+export const measurements = {
+  local: {
+    tiered: {
+      "gallery-50": {
+        p95Ms: 1498,
+        ok: 50,
+        count: 50,
       },
-      allSucceeded: [workload.imgt, workload.vercel].every(
-        (result) => result && result.ok === result.count,
-      ),
-      verdict: verdict(imgt, vercel),
+      "steady-3": {
+        p95Ms: 151,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 167,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 388,
+        ok: 600,
+        count: 600,
+      },
+      "burst-200": {
+        p95Ms: 4717,
+        ok: 200,
+        count: 200,
+      },
+    },
+    "one-1cpu": {
+      "gallery-50": {
+        p95Ms: 3912,
+        ok: 50,
+        count: 50,
+      },
+      "steady-3": {
+        p95Ms: 157,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 167,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 16568,
+        ok: 600,
+        count: 600,
+      },
+      "burst-200": {
+        p95Ms: 15316,
+        ok: 200,
+        count: 200,
+      },
+    },
+    "two-2cpu": {
+      "gallery-50": {
+        p95Ms: 2080,
+        ok: 50,
+        count: 50,
+      },
+      "burst-200": {
+        p95Ms: 6702,
+        ok: 200,
+        count: 200,
+      },
+      "steady-3": {
+        p95Ms: 217,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 227,
+        ok: 300,
+        count: 300,
+      },
+      "stress-20": {
+        p95Ms: 339,
+        ok: 600,
+        count: 600,
+      },
+    },
+    "two-1cpu": {
+      "gallery-50": {
+        p95Ms: 3636,
+        ok: 50,
+        count: 50,
+      },
+      "burst-200": {
+        p95Ms: 12291,
+        ok: 200,
+        count: 200,
+      },
+      "steady-3": {
+        p95Ms: 202,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 296,
+        ok: 300,
+        count: 300,
+      },
+      "stress-20": {
+        p95Ms: 7501,
+        ok: 600,
+        count: 600,
+      },
+    },
+    "four-basic": {
+      "gallery-50": {
+        p95Ms: 7480,
+        ok: 50,
+        count: 50,
+      },
+      "burst-200": {
+        p95Ms: 24090,
+        ok: 200,
+        count: 200,
+      },
+      "steady-3": {
+        p95Ms: 1071,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 10067,
+        ok: 300,
+        count: 300,
+      },
+      "stress-20": {
+        p95Ms: 43184,
+        ok: 600,
+        count: 600,
+      },
+    },
+    "eight-basic": {
+      "gallery-50": {
+        p95Ms: 4373,
+        ok: 50,
+        count: 50,
+      },
+      "burst-200": {
+        p95Ms: 13097,
+        ok: 200,
+        count: 200,
+      },
+      "steady-3": {
+        p95Ms: 911,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 2209,
+        ok: 300,
+        count: 300,
+      },
+      "stress-20": {
+        p95Ms: 10767,
+        ok: 600,
+        count: 600,
+      },
+    },
+    "four-1cpu": {
+      "gallery-50": {
+        p95Ms: 2092,
+        ok: 50,
+        count: 50,
+      },
+      "burst-200": {
+        p95Ms: 7475,
+        ok: 200,
+        count: 200,
+      },
+      "steady-3": {
+        p95Ms: 203,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 243,
+        ok: 300,
+        count: 300,
+      },
+      "stress-20": {
+        p95Ms: 440,
+        ok: 600,
+        count: 600,
+      },
+    },
+  },
+  live: {
+    tiered: {
+      "gallery-50": {
+        p95Ms: 3525,
+        ok: 50,
+        count: 50,
+      },
+      "steady-3": {
+        p95Ms: 1280,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 1239,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 1282,
+        ok: 600,
+        count: 600,
+      },
+      "burst-200": {
+        p95Ms: 11711,
+        ok: 200,
+        count: 200,
+      },
+    },
+    "two-2cpu": {
+      "gallery-50": {
+        p95Ms: 2460,
+        ok: 50,
+        count: 50,
+      },
+      "steady-3": {
+        p95Ms: 1063,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 968,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 1282,
+        ok: 3600,
+        count: 3600,
+      },
+      "burst-200": {
+        p95Ms: 7703,
+        ok: 200,
+        count: 200,
+      },
+    },
+    vercel: {
+      "gallery-50": {
+        p95Ms: 1100,
+        ok: 50,
+        count: 50,
+      },
+      "steady-3": {
+        p95Ms: 1273,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 1252,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 1219,
+        ok: 600,
+        count: 600,
+      },
+      "burst-200": {
+        p95Ms: 2044,
+        ok: 200,
+        count: 200,
+      },
+    },
+    "two-1cpu": {
+      "steady-3": {
+        p95Ms: 990,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 1122,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 19857,
+        ok: 612,
+        count: 619,
+        target: 3600,
+      },
+      "burst-200": {
+        p95Ms: 17321,
+        ok: 200,
+        count: 200,
+      },
+      "gallery-50": {
+        p95Ms: 4954,
+        ok: 50,
+        count: 50,
+      },
+    },
+    "four-1cpu": {
+      "steady-3": {
+        p95Ms: 934,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 942,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 1046,
+        ok: 3600,
+        count: 3600,
+      },
+      "burst-200": {
+        p95Ms: 6836,
+        ok: 200,
+        count: 200,
+      },
+      "gallery-50": {
+        p95Ms: 2402,
+        ok: 50,
+        count: 50,
+      },
+    },
+  },
+};
+
+export function latencyRows(environment, workload) {
+  const selected =
+    environment === "live"
+      ? profiles.filter((profile) => profile.live)
+      : profiles;
+  if (environment === "live")
+    selected.push({
+      id: "vercel",
+      name: "Vercel",
+      detail: "Managed optimizer",
+    });
+  return selected.map((profile) => {
+    const result = measurements[environment][profile.id]?.[workload];
+    return {
+      ...profile,
+      value: Number.isFinite(result?.p95Ms) ? result.p95Ms / 1000 : null,
+      emptyLabel: result ? "No successes" : "Not tested",
+      status: result
+        ? `${result.ok}/${result.count} succeeded${result.count > result.ok ? ` · ${result.count - result.ok} failed` : ""}${result.target > result.count ? " · stopped early" : ""}${result.fallbacks ? ` · ${result.fallbacks} originals` : ""}`
+        : "Not measured",
+      recommended: profile.id === recommendedProfile,
     };
   });
+}
+
+export function latencyNote(environment, workload) {
+  return environment === "live"
+    ? "Live services from Brazil. The default ran on production alongside real traffic on November 5, with 50 public FASHN website images; the other profiles ran October 6 with 50 FASHN PNG originals. Bars show successful-response p95; success counts include every dispatched request."
+    : "Local ARM64 Docker, production Rust image with enforced CPU/RAM quotas. The default and 1 × 1 CPU used the November image set; the other profiles used the October set. Basic is unavailable through the current native Cloudflare API." +
+        (workload === "stress-20"
+          ? " 1 × 1 CPU and the basic profiles kept processing after the 30-second arrival window; they did not sustain 20/second."
+          : "");
 }

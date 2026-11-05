@@ -5,11 +5,7 @@ import {
   defaultScenario,
   estimateCosts,
 } from "../public/benchmark-costs.js";
-import {
-  comparisonRows,
-  verdict,
-  workloads,
-} from "../public/benchmark-data.js";
+import { latencyRows, measurements } from "../public/benchmark-data.js";
 
 test("fractional horizontal scaling includes its extra memory and objects", () => {
   const small = estimateCosts(allocations.find((a) => a.name === "2 × 1 CPU"));
@@ -22,23 +18,26 @@ test("fractional horizontal scaling includes its extra memory and objects", () =
   assert.ok(fractional.imgtTotal > small.imgtTotal);
 });
 
-test("comparison verdicts ignore small differences and never show failures as fast", () => {
-  assert.equal(verdict(1.28, 1.219).label, "About the same");
-  assert.deepEqual(verdict(11.711, 2.044), {
-    winner: "vercel",
-    label: "Vercel 5.7× faster",
-  });
-  assert.equal(verdict(1, 2).label, "imgt 2.0× faster");
-  const before = workloads[0].imgt;
+test("latency charts separate local-only profiles and do not present failures as zero latency", () => {
+  assert.ok(
+    latencyRows("local", "gallery-50").some((r) => r.id === "four-basic"),
+  );
+  assert.ok(
+    latencyRows("live", "gallery-50").every((r) => !r.id.includes("basic")),
+  );
+  const before = measurements.local["two-1cpu"];
   try {
-    workloads[0].imgt = { p95Ms: null, ok: 0, count: 180 };
-    const [failed] = comparisonRows();
-    assert.equal(failed.values.imgt, null);
-    assert.equal(failed.allSucceeded, false);
-    assert.equal(failed.statuses.imgt, "0/180 succeeded · 180 failed");
-    assert.equal(failed.verdict.winner, null);
+    measurements.local["two-1cpu"] = {
+      failed: { p95Ms: null, ok: 0, count: 50 },
+    };
+    const failed = latencyRows("local", "failed").find(
+      (r) => r.id === "two-1cpu",
+    );
+    assert.equal(failed.value, null);
+    assert.equal(failed.emptyLabel, "No successes");
+    assert.equal(failed.status, "0/50 succeeded · 50 failed");
   } finally {
-    workloads[0].imgt = before;
+    measurements.local["two-1cpu"] = before;
   }
 });
 
