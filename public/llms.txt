@@ -47,7 +47,7 @@ guide for setup and existing-bucket migration details.
 
 ## Guides
 
-- [Benchmarks and pricing](/benchmarks): Latency and cost charts, container sizing results and methodology. [Markdown summary](/docs/benchmarks.md).
+- [Benchmarks and pricing](/benchmarks): imgt vs Vercel Image Optimization response times and monthly cost. The [Markdown report](/docs/benchmarks.md) adds container sizing results and methodology.
 
 - [Overview and API](/index.md): Usage, defaults, deployment and local development.
 - [Configuration](/docs/configuration.md): Allowed source hosts, matching rules, application settings and fixed limits.

@@ -7,10 +7,10 @@
     <meta name="author" content="FASHN AI" />
     <meta
       name="description"
-      content="Image optimization benchmarks: compare container sizes, response times and estimated monthly costs."
+      content="imgt vs Vercel Image Optimization: measured response times and estimated monthly cost for the same image workloads."
     />
     <meta name="robots" content="max-image-preview:large" />
-    <title>imgt: Benchmarks and pricing on Cloudflare</title>
+    <title>imgt vs Vercel: image optimization benchmarks</title>
     <link rel="canonical" href="https://imgt.fashn.ai/benchmarks" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="imgt" />
@@ -18,11 +18,11 @@
     <meta property="og:url" content="https://imgt.fashn.ai/benchmarks" />
     <meta
       property="og:title"
-      content="imgt: Benchmarks and pricing on Cloudflare"
+      content="imgt vs Vercel: image optimization benchmarks"
     />
     <meta
       property="og:description"
-      content="Image optimization benchmarks: compare container sizes, response times and estimated monthly costs."
+      content="imgt vs Vercel Image Optimization: measured response times and estimated monthly cost for the same image workloads."
     />
     <meta property="og:image" content="https://imgt.fashn.ai/og.png" />
     <meta property="og:image:type" content="image/png" />
@@ -35,11 +35,11 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta
       name="twitter:title"
-      content="imgt: Benchmarks and pricing on Cloudflare"
+      content="imgt vs Vercel: image optimization benchmarks"
     />
     <meta
       name="twitter:description"
-      content="Image optimization benchmarks: compare container sizes, response times and estimated monthly costs."
+      content="imgt vs Vercel Image Optimization: measured response times and estimated monthly cost for the same image workloads."
     />
     <meta name="twitter:image" content="https://imgt.fashn.ai/og.png" />
     <meta
@@ -62,9 +62,9 @@
       {
         "@context": "https://schema.org",
         "@type": "WebPage",
-        "name": "imgt benchmarks and pricing",
+        "name": "imgt vs Vercel image optimization benchmarks",
         "url": "https://imgt.fashn.ai/benchmarks",
-        "description": "Measured image optimization latency and modeled monthly costs.",
+        "description": "Measured image optimization response times and estimated monthly cost for imgt on Cloudflare and Vercel Image Optimization.",
         "dateModified": "2026-11-05",
         "publisher": {
           "@type": "Organization",
@@ -73,7 +73,6 @@
         }
       }
     </script>
-    <script type="module" src="/benchmarks.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#content">Skip to content</a>
@@ -95,138 +94,164 @@
           <p class="hero-badge">
             <span aria-hidden="true"></span>TESTED NOVEMBER 5, 2026
           </p>
-          <h1>Image benchmarks.</h1>
+          <h1>imgt vs Vercel.</h1>
           <p class="hero-intro">
-            Compare speed and cost across container sizes.
+            The same image workloads on imgt's default setup and on Vercel Image
+            Optimization.
           </p>
         </div>
       </section>
-      <section id="latency" class="content-section">
+      <section class="content-section summary-section" aria-label="Summary">
+        <div class="summary-grid">
+          <!-- SUMMARY -->
+        </div>
+      </section>
+      <section id="speed" class="content-section">
         <div class="section-heading">
           <div>
             <p class="eyebrow">01 / SPEED</p>
-            <h2>How long do images take?</h2>
+            <h2>How fast do new images load?</h2>
           </div>
           <p class="section-intro">
-            Complete response time, p95.<br />
-            Lower is faster.
+            Time for 95% of images to arrive (p95).<br />
+            Shorter bars are faster.
           </p>
         </div>
         <div class="benchmark-panel">
-          <div class="chart-heading">
-            <label for="environment">Test</label>
-            <select id="environment">
-              <option value="live">Live services</option>
-              <option value="local">Local Docker</option>
-            </select>
-            <label for="workload">Workload</label>
-            <select id="workload">
-              <option value="gallery-50">50 fresh images together</option>
-              <option value="steady-3">3 fresh images / second</option>
-              <option value="steady-10">10 fresh images / second</option>
-              <option value="stress-20">20 fresh images / second</option>
-              <option value="burst-200">200 fresh images together</option>
-            </select>
+          <div class="chart-legend" aria-hidden="true">
+            <span class="legend-item imgt">imgt</span
+            ><span class="legend-item vercel">Vercel</span>
           </div>
           <div
-            id="latency-chart"
-            class="bar-chart"
+            id="speed-chart"
+            class="compare-chart"
             role="group"
-            aria-label="Image response times"
-            aria-live="polite"
+            aria-label="Response times, imgt and Vercel"
           >
-            <!-- LATENCY_CHART -->
+            <!-- SPEED_CHART -->
           </div>
-          <p id="latency-note" class="chart-note"><!-- LATENCY_NOTE --></p>
         </div>
         <p class="benchmark-copy">
-          640 px, quality 98, WebP effort 4. Fresh cache keys for every image.
-          Fixed allocations and the primary are warm; the overflow starts cold
-          for each workload. Failed requests stay visible. Local results measure
-          the image service and Worker request flow; Cloudflare results include
-          the origin, R2 and network.
+          Every image was new, so both services had to fetch and resize it: a
+          640 px WebP from a full-size original. That is the slowest case. Once
+          an image exists, later visitors get the cached copy. Times are the
+          complete response from a single client in Brazil, including the
+          download.
         </p>
       </section>
-      <section id="pricing" class="content-section">
+      <section id="cost" class="content-section">
         <div class="section-heading">
           <div>
             <p class="eyebrow">02 / COST</p>
-            <h2>What does capacity cost?</h2>
+            <h2>What does a month cost?</h2>
           </div>
           <p class="section-intro">
-            Estimated monthly total.<br />
-            Lower is cheaper.
+            2.25M new images and 10M requests.<br />
+            Shorter bars are cheaper.
           </p>
         </div>
         <div class="benchmark-panel">
           <div
             id="cost-chart"
-            class="bar-chart"
+            class="compare-chart cost-chart"
             role="group"
-            aria-label="Estimated monthly costs"
+            aria-label="Estimated monthly cost, imgt and Vercel"
           >
             <!-- COST_CHART -->
           </div>
-          <p class="chart-note">
-            2.25M fresh images per month. Assumes 10M total image requests, 120
-            KiB outputs and fixed containers awake all month; the overflow is
-            awake 18% of the time, as measured in production. Includes the
-            Workers plan, CPU, RAM, disk, Durable Objects, R2 and modeled output
-            transfer. Basic is ¼ CPU / 1 GiB per container, tested locally only.
-          </p>
+          <div class="cost-breakdown">
+            <!-- COST_BREAKDOWN -->
+          </div>
         </div>
         <p class="benchmark-copy">
-          Both providers use the same modeled image volume. Vercel uses iad1
-          on-demand rates before credits and delivery charges. imgt assumes
-          shared Cloudflare allowances are available. These are estimates, not
-          invoices.
+          Estimates at list prices, before credits, for FASHN's own traffic. In
+          production, imgt's containers and Durable Objects have cost about $43
+          a month at that volume. Vercel's delivery bandwidth is not included.
+          Most of the cost on both comes from creating new images; cached views
+          are cheap.
+        </p>
+      </section>
+      <section id="choose" class="content-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">03 / CHOOSE</p>
+            <h2>Which one fits you?</h2>
+          </div>
+        </div>
+        <div class="choose-grid">
+          <div class="choose-card imgt">
+            <h3>imgt is a good fit if</h3>
+            <ul>
+              <li>Most images are viewed many times, or arrive steadily.</li>
+              <li>Image costs are a noticeable part of your bill.</li>
+              <li>
+                You want to self-host on Cloudflare and use it from any app, not
+                only Next.js.
+              </li>
+              <li>You want open-source code you can read and change.</li>
+            </ul>
+          </div>
+          <div class="choose-card vercel">
+            <h3>Vercel is a good fit if</h3>
+            <ul>
+              <li>
+                Pages often show dozens of images nobody has requested yet.
+              </li>
+              <li>
+                Your app already runs on Vercel and setup time matters most.
+              </li>
+              <li>You would rather not run any image infrastructure.</li>
+            </ul>
+          </div>
+        </div>
+        <p class="benchmark-copy">
+          Need faster bursts with imgt? Larger or more containers help, at a
+          higher cost. Four always-on 1-CPU containers served 200 new images in
+          6.8 s p95. See the
+          <a href="/docs/configuration.md#container-sizes"
+            >container sizing guide</a
+          >.
         </p>
       </section>
       <section id="method" class="content-section benchmark-method">
         <details class="benchmark-details">
-          <summary>Test method, reliability and pricing assumptions</summary>
+          <summary>How we tested</summary>
           <p>
-            The traffic target comes from FASHN's projects together: about 2.25M
-            monthly transformations and a busiest observed 15-minute interval of
-            roughly 2.9 transformations/second. Tests at 10 and 20/second add
-            headroom; the dashboard does not reveal second-by-second peaks.
+            <strong>Images.</strong> Each request asked for 640 px wide WebP at
+            quality 98, with a unique URL so nothing came from cache. Every
+            response was decoded and checked for the right format and width.
+            Failed requests are counted, never shown as fast.
           </p>
           <p>
-            All configurations retain source validation, bounded waiting,
-            deduplication and a 60-second transform deadline, with one native
-            encoder per CPU. The default sends work to an always-on 1-CPU
-            primary and starts a 3-CPU overflow when four jobs wait; the
-            overflow stops after 30 idle seconds. October profiles were fixed
-            shards with eight active jobs each. Cache hits avoid compute.
+            <strong>imgt.</strong> The default setup, measured on the production
+            deployment on November 5, 2026, alongside real traffic: an always-on
+            1-CPU container plus a 3-CPU overflow container that starts when
+            four images are waiting. The overflow had been idle before each
+            test, so its cold start is included. Sources were 50 public FASHN
+            website images, mostly WebP.
           </p>
           <p>
-            Local Docker enforces CPU and RAM limits without swap. Origins are
-            replayed in memory and R2 writes are delayed 300 ms. The overflow's
-            460 ms cold start, the production median, is simulated. These
-            timings do not include Cloudflare provisioning or real network
-            latency. The basic tier cannot run through the current native
-            container scheduling API.
+            <strong>Vercel.</strong> Measured on October 6, 2026 with 50 FASHN
+            PNG originals. That image set has since expired, so the two services
+            were not tested on the same files or on the same day. Treat small
+            differences as noise.
           </p>
           <p>
-            Live tests run from one client in Brazil. October profiles used 50
-            FASHN PNG originals and ran separately. The November default ran on
-            production alongside real traffic, with 50 public FASHN website
-            images, mostly WebP; compare dates with care. Latency charts show
-            successful-response p95 alongside errors; errors cannot be treated
-            as fast responses. Cold starts and maximum latencies are included in
-            the linked report.
+            <strong>Workloads.</strong> FASHN's busiest observed 15 minutes
+            averaged about 2.9 new images per second. Tests at 10 and 20 per
+            second add headroom. The 50 and 200 image tests send every request
+            at once, like a page full of new images.
           </p>
           <p>
-            Cost estimates use 0.14 consumed CPU seconds per transform, a 30-day
-            month, North American container output transfer and 30 days of
-            retained derivatives. A
+            <strong>Cost.</strong> 2.25M new images and 10M total requests a
+            month, 120 KiB per output, 0.14 CPU seconds per image and 30 days of
+            stored results, which needs a
             <a href="/docs/deployment.md#storage-cleanup"
               >30-day R2 lifecycle rule</a
-            >
-            is required for this storage estimate. Total requests and average
-            output size are assumptions, not values inferred from Vercel cache
-            units. Source transfer, excess logs, storage for Durable Objects,
-            taxes and support time are excluded.
+            >. The overflow is billed for the 18% of the month it was awake in
+            production. Vercel uses iad1 on-demand rates. Source transfer, logs,
+            taxes and support time are excluded. These are estimates, not
+            invoices.
           </p>
           <p>
             <a
@@ -235,18 +260,13 @@
             >
             ·
             <a
-              href="https://developers.cloudflare.com/containers/configuration/scheduling-policy/"
-              >Container sizing support ↗</a
-            >
-            ·
-            <a
               href="https://vercel.com/docs/image-optimization/limits-and-pricing"
-              >Vercel image billing ↗</a
+              >Vercel image pricing ↗</a
             >
           </p>
         </details>
         <div class="guide-links">
-          <a href="/docs/benchmarks.md">Results and methodology →</a
+          <a href="/docs/benchmarks.md">Full results and other sizes →</a
           ><a href="/docs/performance.md">Performance history →</a
           ><a href="https://github.com/fashn-AI/imgt">Source code ↗</a>
         </div>

@@ -23,20 +23,24 @@ test("built benchmark charts work without scripts and both JSON-LD blocks satisf
     }
     assert.doesNotMatch(
       page,
-      /<!-- (?:SETUP_PROMPT|LATENCY_CHART|LATENCY_NOTE|COST_CHART) -->/,
+      /<!-- (?:SETUP_PROMPT|SUMMARY|SPEED_CHART|COST_CHART|COST_BREAKDOWN) -->/,
     );
     assert.doesNotMatch(page, /\u2014/);
   }
   const benchmarks = await readFile(new URL("benchmarks.html", assets), "utf8");
-  const latencyChart = benchmarks.match(
-    /id="latency-chart"[\s\S]*?<\/section>/,
+  const speedChart = benchmarks.match(
+    /id="speed-chart"[\s\S]*?<\/section>/,
   )?.[0];
-  assert.ok(latencyChart);
-  assert.match(latencyChart, /<rect width="[1-9][\d.]*"/);
-  assert.match(latencyChart, /4 × 1 CPU/);
-  assert.doesNotMatch(latencyChart, /Not tested/);
-  assert.match(benchmarks, /\$120\.80/);
+  assert.ok(speedChart);
+  assert.equal(speedChart.match(/class="compare-row"/g)?.length, 5);
+  assert.equal(speedChart.match(/<rect width="[1-9][\d.]*"/g)?.length, 10);
+  assert.match(speedChart, /About the same/);
+  assert.match(speedChart, /Vercel 5\.7× faster/);
+  assert.doesNotMatch(speedChart, /No successes|Not measured/);
+  assert.match(benchmarks, /\$60\.18/);
   assert.match(benchmarks, /\$250\.93/);
+  assert.match(benchmarks, /4× cheaper/);
+  assert.doesNotMatch(benchmarks, /benchmarks\.js|<select/);
   assert.doesNotMatch(benchmarks, /comparison in progress|cost-inputs/);
   const agents = await readFile(new URL("llms-full.txt", assets), "utf8");
   assert.match(agents, /Source: \/docs\/benchmarks\.md/);

@@ -1,8 +1,30 @@
 # Benchmarks and pricing
 
-The [benchmark page](https://imgt.fashn.ai/benchmarks) contains response-time and
-estimated-cost charts. The default configuration was measured on November 5, 2026;
-the fixed allocations were measured on October 6, 2026.
+The [benchmark page](https://imgt.fashn.ai/benchmarks) compares imgt's default
+configuration with Vercel Image Optimization. This report adds the other container
+sizes, local Docker runs and the full method. The default configuration was measured
+on November 5, 2026; Vercel and the fixed allocations were measured on October 6, 2026.
+
+## imgt vs Vercel at a glance
+
+Live p95 for new images, 640 px WebP, from one client in Brazil. Every request
+succeeded on both. The two services used different sets of 50 FASHN images on
+different days, so treat differences under 10% as noise.
+
+| Workload | imgt default | Vercel |
+| --- | ---: | ---: |
+| 3 new images per second | 1.280 s | 1.273 s |
+| 10 new images per second | 1.239 s | 1.252 s |
+| 20 new images per second | 1.282 s | 1.219 s |
+| 50 new images at once | 3.525 s | 1.100 s |
+| 200 new images at once | 11.711 s | 2.044 s |
+| Estimated monthly cost | $60.18 | $250.93 |
+
+imgt matches Vercel under steady traffic and costs about a quarter as much. Vercel is
+3 to 6 times faster when a page asks for dozens of images nobody has requested
+before. Images imgt has already made return from Cloudflare's cache in about 0.2 s
+p95. The cost estimate assumes 2.25M new images and 10M requests a month; see
+[Estimated monthly cost](#estimated-monthly-cost).
 
 ## Default configuration
 
