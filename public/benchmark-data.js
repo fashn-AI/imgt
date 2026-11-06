@@ -393,7 +393,6 @@ export function latencyRows(environment, workload) {
       status: result
         ? `${result.ok}/${result.count} succeeded${result.count > result.ok ? ` · ${result.count - result.ok} failed` : ""}${result.target > result.count ? " · stopped early" : ""}${result.fallbacks ? ` · ${result.fallbacks} originals` : ""}`
         : "Not measured",
-      recommended: profile.id === recommendedProfile,
     };
   });
 }

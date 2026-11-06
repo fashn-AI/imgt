@@ -80,12 +80,9 @@ let benchmarks = await readFile(new URL("benchmarks.html", assets), "utf8");
 benchmarks = benchmarks
   .replace(
     "<!-- LATENCY_CHART -->",
-    chart(
-      latencyRows("live", "gallery-50"),
-      (value) => `${value.toFixed(3)} s`,
-    ),
+    chart(latencyRows("live", "steady-10"), (value) => `${value.toFixed(3)} s`),
   )
-  .replace("<!-- LATENCY_NOTE -->", latencyNote("live"))
+  .replace("<!-- LATENCY_NOTE -->", latencyNote("live", "steady-10"))
   .replace("<!-- COST_CHART -->", chart(costs, currency));
 await writeFile(new URL("benchmarks.html", assets), benchmarks);
 

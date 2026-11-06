@@ -81,10 +81,12 @@
       <div class="header-inner">
         <a class="brand" href="/" aria-label="imgt home">imgt<span>.</span></a>
         <nav aria-label="Main navigation">
-          <a href="/#live-demo">Playground</a><a href="/#nextjs">Next.js</a
-          ><a href="/benchmarks" aria-current="page">Benchmarks</a
-          ><a class="github-link" href="https://github.com/fashn-AI/imgt"
-            >GitHub ↗</a
+          <a href="/#live-demo">Playground</a>
+          <a href="/#nextjs">Next.js</a>
+          <a href="/#configuration">Setup</a>
+          <a href="/benchmarks" aria-current="page">Benchmarks</a>
+          <a class="github-link" href="https://github.com/fashn-AI/imgt"
+            >GitHub <span aria-hidden="true">↗</span></a
           >
         </nav>
       </div>
@@ -97,60 +99,14 @@
           </p>
           <h1>Image benchmarks.</h1>
           <p class="hero-intro">
-            Compare speed and cost across container sizes.
+            Compare cost and speed across container sizes.
           </p>
         </div>
-      </section>
-      <section id="latency" class="content-section">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">01 / SPEED</p>
-            <h2>How long do images take?</h2>
-          </div>
-          <p class="section-intro">
-            Complete response time, p95.<br />
-            Lower is faster.
-          </p>
-        </div>
-        <div class="benchmark-panel">
-          <div class="chart-heading">
-            <label for="environment">Test</label>
-            <select id="environment">
-              <option value="live">Live services</option>
-              <option value="local">Local Docker</option>
-            </select>
-            <label for="workload">Workload</label>
-            <select id="workload">
-              <option value="gallery-50">50 fresh images together</option>
-              <option value="steady-3">3 fresh images / second</option>
-              <option value="steady-10">10 fresh images / second</option>
-              <option value="stress-20">20 fresh images / second</option>
-              <option value="burst-200">200 fresh images together</option>
-            </select>
-          </div>
-          <div
-            id="latency-chart"
-            class="bar-chart"
-            role="group"
-            aria-label="Image response times"
-            aria-live="polite"
-          >
-            <!-- LATENCY_CHART -->
-          </div>
-          <p id="latency-note" class="chart-note"><!-- LATENCY_NOTE --></p>
-        </div>
-        <p class="benchmark-copy">
-          640 px, quality 98, WebP effort 4. Fresh cache keys for every image.
-          Fixed allocations and the primary are warm; the overflow starts cold
-          for each workload. Failed requests stay visible. Local results measure
-          the image service and Worker request flow; Cloudflare results include
-          the origin, R2 and network.
-        </p>
       </section>
       <section id="pricing" class="content-section">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">02 / COST</p>
+            <p class="eyebrow">01 / COST</p>
             <h2>What does capacity cost?</h2>
           </div>
           <p class="section-intro">
@@ -180,6 +136,54 @@
           on-demand rates before credits and delivery charges. imgt assumes
           shared Cloudflare allowances are available. These are estimates, not
           invoices.
+        </p>
+      </section>
+      <section id="latency" class="content-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">02 / SPEED</p>
+            <h2>How long do images take?</h2>
+          </div>
+          <p class="section-intro">
+            Complete response time, p95.<br />
+            Lower is faster.
+          </p>
+        </div>
+        <div class="benchmark-panel">
+          <div class="chart-heading">
+            <label for="environment">Test</label>
+            <select id="environment">
+              <option value="live">Live services</option>
+              <option value="local">Local Docker</option>
+            </select>
+            <label for="workload">Workload</label>
+            <select id="workload">
+              <option value="steady-3">3 fresh images / second</option>
+              <option value="steady-10" selected>
+                10 fresh images / second
+              </option>
+              <option value="stress-20">20 fresh images / second</option>
+              <option value="gallery-50">50 fresh images together</option>
+              <option value="burst-200">200 fresh images together</option>
+            </select>
+          </div>
+          <div
+            id="latency-chart"
+            class="bar-chart"
+            role="group"
+            aria-label="Image response times"
+            aria-live="polite"
+          >
+            <!-- LATENCY_CHART -->
+          </div>
+          <p id="latency-note" class="chart-note"><!-- LATENCY_NOTE --></p>
+        </div>
+        <p class="benchmark-copy">
+          640 px, quality 98, WebP effort 4. Fresh cache keys for every image.
+          Fixed allocations and the primary are warm; the overflow starts cold
+          for each workload. Failed requests stay visible. Local results measure
+          the image service and Worker request flow; Cloudflare results include
+          the origin, R2 and network.
         </p>
       </section>
       <section id="method" class="content-section benchmark-method">
