@@ -1,5 +1,17 @@
 // Aggregate measurements only. Raw runs and image sources stay in research.
 export const profiles = [
+  {
+    id: "tiered",
+    name: "1 CPU + 3 CPU overflow",
+    detail: "3 GiB + 9 GiB during bursts",
+    live: true,
+  },
+  {
+    id: "one-1cpu",
+    name: "1 × 1 CPU",
+    detail: "3 GiB RAM · no overflow · local only",
+    live: false,
+  },
   { id: "four-1cpu", name: "4 × 1 CPU", detail: "12 GiB RAM", live: true },
   { id: "two-2cpu", name: "2 × 2 CPUs", detail: "12 GiB RAM", live: true },
   { id: "two-1cpu", name: "2 × 1 CPU", detail: "6 GiB RAM", live: true },
@@ -17,7 +29,7 @@ export const profiles = [
   },
 ];
 
-export const recommendedProfile = "four-1cpu";
+export const recommendedProfile = "tiered";
 export const costScenario = {
   transforms: 2_250_000,
   requests: 10_000_000,
@@ -31,6 +43,60 @@ export const costScenario = {
 
 export const measurements = {
   local: {
+    tiered: {
+      "gallery-50": {
+        p95Ms: 1498,
+        ok: 50,
+        count: 50,
+      },
+      "steady-3": {
+        p95Ms: 151,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 167,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 388,
+        ok: 600,
+        count: 600,
+      },
+      "burst-200": {
+        p95Ms: 4717,
+        ok: 200,
+        count: 200,
+      },
+    },
+    "one-1cpu": {
+      "gallery-50": {
+        p95Ms: 3912,
+        ok: 50,
+        count: 50,
+      },
+      "steady-3": {
+        p95Ms: 157,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 167,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 16568,
+        ok: 600,
+        count: 600,
+      },
+      "burst-200": {
+        p95Ms: 15316,
+        ok: 200,
+        count: 200,
+      },
+    },
     "two-2cpu": {
       "gallery-50": {
         p95Ms: 2080,
@@ -168,6 +234,33 @@ export const measurements = {
     },
   },
   live: {
+    tiered: {
+      "gallery-50": {
+        p95Ms: 3525,
+        ok: 50,
+        count: 50,
+      },
+      "steady-3": {
+        p95Ms: 1280,
+        ok: 180,
+        count: 180,
+      },
+      "steady-10": {
+        p95Ms: 1239,
+        ok: 600,
+        count: 600,
+      },
+      "stress-20": {
+        p95Ms: 1282,
+        ok: 600,
+        count: 600,
+      },
+      "burst-200": {
+        p95Ms: 11711,
+        ok: 200,
+        count: 200,
+      },
+    },
     "two-2cpu": {
       "gallery-50": {
         p95Ms: 2460,
@@ -300,16 +393,15 @@ export function latencyRows(environment, workload) {
       status: result
         ? `${result.ok}/${result.count} succeeded${result.count > result.ok ? ` · ${result.count - result.ok} failed` : ""}${result.target > result.count ? " · stopped early" : ""}${result.fallbacks ? ` · ${result.fallbacks} originals` : ""}`
         : "Not measured",
-      recommended: profile.id === recommendedProfile,
     };
   });
 }
 
 export function latencyNote(environment, workload) {
   return environment === "live"
-    ? "Live services, measured October 6 from Brazil. Bars show successful-response p95; success counts include every dispatched request."
-    : "Local ARM64 Docker, production Rust image with enforced CPU/RAM quotas. Basic is unavailable through the current native Cloudflare API." +
+    ? "Live services from Brazil. The default ran on production alongside real traffic on November 5, with 50 public FASHN website images; the other profiles ran October 6 with 50 FASHN PNG originals. Bars show successful-response p95; success counts include every dispatched request."
+    : "Local ARM64 Docker, production Rust image with enforced CPU/RAM quotas. The default and 1 × 1 CPU used the November image set; the other profiles used the October set. Basic is unavailable through the current native Cloudflare API." +
         (workload === "stress-20"
-          ? " Basic profiles kept processing after the 30-second arrival window; they did not sustain 20/second."
+          ? " 1 × 1 CPU and the basic profiles kept processing after the 30-second arrival window; they did not sustain 20/second."
           : "");
 }

@@ -1,7 +1,8 @@
 # Benchmarks and pricing
 
 The [benchmark page](https://imgt.fashn.ai/benchmarks) contains response-time and
-estimated-cost charts. These measurements were collected on October 6, 2026.
+estimated-cost charts. The default configuration was measured on November 5, 2026;
+the fixed allocations were measured on October 6, 2026.
 
 ## Default configuration
 
@@ -9,11 +10,12 @@ Since November 2026 the default is an always-on 1-CPU primary container plus a
 3-CPU overflow container that runs only during bursts. It replaced four 1-CPU
 containers after replays of production bursts; see the
 [November 2026 replay](performance.md#primary-and-overflow-containers-november-2026).
-The live measurements below were collected on October 6, 2026 with fixed
-allocations and do not yet include the new default. In those tests four 1-CPU
-containers handled the 200-image bursts and sustained load, and the cheaper
-two-1-CPU pair overloaded. Choose a configuration for your workload using the
-measurements, pricing assumptions and [container sizing guide](configuration.md#container-sizes).
+It returned every image in the November tests below, live and local, and cut the
+measured container and Durable Object usage from about $107 to about $43 a month at
+list prices. Sustained load up to 20/s stayed near 1.3 s p95; 200-image bursts were
+slower than four always-on 1-CPU containers. Choose a
+configuration for your workload using the measurements, pricing assumptions and
+[container sizing guide](configuration.md#container-sizes).
 
 The target includes all FASHN projects: approximately 2.25M monthly transformations
 and a busiest observed 15-minute interval of about 2.9/s. We test 3/s, 10/s and 20/s,
@@ -23,22 +25,39 @@ bursts.
 ## Live response times
 
 Successful complete-response p95, including source fetch, Cloudflare request flow and
-the full response body. Each configuration ran separately from a client in Brazil,
-using 50 real FASHN PNG originals, width 640, quality 98, WebP effort 4 and unique
-query keys. All accepted optimized responses were decoded and checked for the
-requested dimensions and format. Gallery bars use warm containers. Results are finite
-runs, not a global latency guarantee.
+the full response body, from a client in Brazil. Width 640, quality 98, WebP effort 4
+and unique query keys. All accepted optimized responses were decoded and checked for
+the requested width and format. Results are finite runs, not a global latency
+guarantee.
+
+The October fixed allocations each ran separately, using 50 FASHN PNG originals and
+warm containers. That source list has expired. The November default ran on the
+production deployment alongside real traffic, using 50 public FASHN website images:
+41 WebP, 8 PNG and 1 JPEG, median 109 KiB, largest 4.1 MiB. Its primary was warm;
+each workload started after a 45-second pause, so the overflow started cold. Compare
+rows from different dates with care: the source sets differ.
 
 | Allocation | 50 together | 3/s | 10/s | 20/s | 200 together |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 CPU + 3 CPU overflow (Nov 5) | 3.525 s | 1.280 s | 1.239 s | 1.282 s | 11.711 s |
 | 4 × 1 CPU | 2.402 s | 0.934 s | 0.942 s | 1.046 s | 6.836 s |
 | 2 × 2 CPUs | 2.460 s | 1.063 s | 0.968 s | 1.282 s | 7.703 s |
 | 2 × 1 CPU | 4.954 s | 0.990 s | 1.122 s | 19.857 s (7 failures) | 17.321 s |
 | Vercel | 1.100 s | 1.273 s | 1.252 s | 1.219 s | 2.044 s |
 
-The selected profile uses its final warm-gallery and 200-image burst repeat; the
-original repeats remain in the timing details. The quick 3/s phase has 180 arrivals
-and 10/s has 600. The two-2-CPU and four-1-CPU profiles also receive longer
+Every November request succeeded: 1,680 fresh images and 200 edge readbacks in the
+main run, plus 250 fresh images and 200 readbacks in the repeat. The 20/s row for the default is 600 arrivals over
+30 seconds. The default's bursts are slower because one 1-CPU and one 3-CPU container
+share the work instead of four always-on containers, and the overflow wakes during
+the burst. Two 200-image bursts returned p95 9.893 s and 11.711 s; their slowest
+requests spent 6 to 8 seconds in the transform job, including up to 5.4 seconds of
+admission waiting, and 3 to 4 seconds in the Worker, Durable Object and R2 request
+path. Live, the overflow took 84 to 107 of the 200 burst images, fewer than its local
+share of 147; the cause has not been investigated.
+
+The October profiles use their final warm-gallery and 200-image burst repeat, as does
+the November default; the other repeats remain in the timing details. The quick 3/s
+phase has 180 arrivals and 10/s has 600. The two-2-CPU and four-1-CPU profiles also receive longer
 confirmation at 20/s; counts and maximum response times are listed below. The
 two-1-CPU 20/s entry instead includes the longer trial: 619 requests were dispatched
 from a planned 3,600, with seven HTTP 429 admission errors. The run stopped after the
@@ -68,19 +87,32 @@ charts. The original rejection records are retained in research.
 ## Smaller local containers
 
 Production ARM64 Rust image, Docker CPU and memory quotas without swap, original
-bodies replayed in memory, and R2 writes delayed 300 ms. The real Worker gateway,
-coordinator, HTTP service and persistence flow are exercised. These measurements
-exclude Cloudflare provisioning and real origin, R2 and network latency.
+bodies replayed in memory, and R2 writes delayed 300 ms. The real coordinator, HTTP
+service and persistence flow are exercised; October runs also used the Worker gateway.
+These measurements exclude Cloudflare provisioning and real origin, R2 and network
+latency.
+
+The November runs use the November image set with the real `TierDispatcher`. The
+overflow starts asleep for each workload and its cold start is simulated as 460 ms,
+the production median. October rows use the October PNG set.
 
 | Allocation | 50 together | 3/s | 10/s | 20/s | 200 together |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 CPU + 3 CPU overflow (Nov 5) | 1.498 s | 0.151 s | 0.167 s | 0.388 s | 4.717 s |
+| 1 × 1 CPU, no overflow (Nov 5) | 3.912 s | 0.157 s | 0.167 s | 16.568 s | 15.316 s |
 | 4 × 1 CPU | 2.092 s | 0.203 s | 0.243 s | 0.440 s | 7.475 s |
 | 2 × 2 CPUs | 2.080 s | 0.217 s | 0.227 s | 0.339 s | 6.702 s |
 | 2 × 1 CPU | 3.636 s | 0.202 s | 0.296 s | 7.501 s | 12.291 s |
 | 4 × basic | 7.480 s | 1.071 s | 10.067 s | 43.184 s | 24.090 s |
 | 8 × basic | 4.373 s | 0.911 s | 2.209 s | 10.767 s | 13.097 s |
 
-All 7,400 fresh local outputs matched the Sharp control byte for byte. All 7,400 R2
+All 3,260 November local requests succeeded. Without the overflow, one 1-CPU
+container needed 47.5 seconds to finish 30 seconds of 20/s arrivals; with it, 30.2
+seconds. The overflow took 34 of 50 gallery images, 242 of 600 at 20/s and 147 of
+200 in the burst; it stayed asleep at 3/s and 10/s. Peak container memory was 170 MiB
+for the primary and 375 MiB for the overflow.
+
+In October, all 7,400 fresh local outputs matched the Sharp control byte for byte. All 7,400 R2
 readbacks avoided another transform, and 50 concurrent callers shared one uncached
 transform in each profile. No out-of-memory exit occurred. At 20/s, four basic
 containers needed 77.481 seconds to finish 30 seconds of arrivals; eight basic needed
@@ -115,18 +147,28 @@ verification.
 
 Both providers use the same modeled image workload: 2.25M fresh derivatives, 10M total
 image requests, 120 KiB average output, 8.57M billed Vercel read units, 0.14 consumed
-container CPU seconds per transform, and every container awake for a 30-day month.
+container CPU seconds per transform, and fixed containers awake for a 30-day month.
+The overflow is billed for 18% of the month, its share measured in production in
+November 2026: average container memory was 4.6 GiB with a 3 GiB primary.
 Total image requests and output size are assumptions; Vercel cache units cannot be
 translated directly into request counts.
 
 | Allocation | Total RAM | Estimated monthly cost |
 | --- | ---: | ---: |
+| 1 CPU + 3 CPU overflow | 3 GiB + 9 GiB during bursts | $60.18 |
+| 1 × 1 CPU, no overflow (local only) | 3 GiB | $49.61 |
 | 4 × 1 CPU | 12 GiB | $121.52 |
 | 2 × 2 CPUs | 12 GiB | $120.80 |
 | 2 × 1 CPU | 6 GiB | $81.92 |
 | 4 × basic (local only) | 4 GiB | $71.13 |
 | 8 × basic (local only) | 8 GiB | $124.96 |
 | Vercel image meters, iad1 | Managed | $250.93 |
+
+Measured usage matches the model's container lines. At list prices, before
+allowances, FASHN's production deployment used about $107 a month of container
+memory, CPU, disk and Durable Object duration with four 1-CPU containers (October 20
+to November 2 average). With the primary and overflow it used about $43 (November 4
+and 5). These figures cover only those lines, not the full model.
 
 The recent 101K/day snapshot projects to 3.03M fresh derivatives over 30 days. With
 the same 10M total-request budget and other assumptions, four 1-CPU shards model
@@ -152,11 +194,29 @@ sizing minimum, not the renderer's measured working set.
 ## Timing and reliability details
 
 The transform deadline remains 60 seconds and the benchmark client limit is 90
-seconds. Each shard has eight active source/upload jobs, bounded waiting,
-deduplication and 128 distinct pending jobs. Basic and 1-CPU profiles use one native
-encoder per shard; 2-CPU profiles use two. Each image uses one libvips thread. Queued
+seconds. The November default has one coordinator with 96 active and 512 distinct
+jobs, three uploads per vCPU and one native encoder per vCPU; the overflow wakes when
+four uploads wait and stops after 30 idle seconds. October shards each had eight
+active source/upload jobs, bounded waiting, deduplication and 128 distinct pending
+jobs. Basic and 1-CPU profiles use one native encoder per shard; 2-CPU profiles use
+two. Each image uses one libvips thread. Queued
 native work retains its slot until completion after cancellation. The two-minute idle
 stop waits for active work. R2 and edge hits avoid compute.
+
+### 1 CPU + 3 CPU overflow, November 5
+
+Images handled by the overflow are in parentheses.
+
+- first-gallery-50: 50/50 succeeded (28); p95 2.943 s, maximum 2.968 s, total elapsed 3.000 s.
+- gallery-50-initial: 50/50 succeeded (27); p95 3.789 s, maximum 4.202 s, total elapsed 4.204 s.
+- steady-3: 180/180 succeeded (0); p95 1.280 s, maximum 1.755 s, total elapsed 60.450 s.
+- steady-10: 600/600 succeeded (89); p95 1.239 s, maximum 1.675 s, total elapsed 60.576 s.
+- stress-20: 600/600 succeeded (285); p95 1.282 s, maximum 1.764 s, total elapsed 30.861 s.
+- burst-200-initial: 200/200 succeeded (107); p95 9.893 s, maximum 10.399 s, total elapsed 10.441 s.
+- cached-200-initial: 200/200 succeeded; p95 0.196 s, maximum 0.478 s, total elapsed 0.498 s.
+- gallery-50: 50/50 succeeded (26); p95 3.525 s, maximum 4.660 s, total elapsed 4.688 s.
+- burst-200: 200/200 succeeded (84); p95 11.711 s, maximum 13.086 s, total elapsed 13.136 s.
+- cached-200: 200/200 succeeded; p95 0.215 s, maximum 0.237 s, total elapsed 0.265 s.
 
 ### 4 × 1 CPU
 
@@ -199,7 +259,7 @@ stop waits for active work. R2 and edge hits avoid compute.
 - gallery-50: 50/50 succeeded; p95 4.954 s, maximum 5.198 s, total elapsed 5.217 s.
 
 See [performance history](performance.md) for earlier trials and unresolved historical
-failures. These October 6 results supersede older Sharp allocation comparisons for the
+failures. The October 6 results supersede older Sharp allocation comparisons for the
 current Rust capacity decision. Earlier failures remain in the history; this bounded
 test does not establish long-term reliability or Vercel-equivalent burst latency. Raw
 scripts, per-request logs and source URLs stay outside the normal repository.
