@@ -68,16 +68,23 @@ test("uses the configured default quality", () => {
   );
 });
 
-test("accepts every integer quality from 1 to 100", () => {
-  for (let quality = 1; quality <= 100; quality++) {
-    assert.equal(
-      parseImageOptions(
-        imageUrl("https://cdn.example.com/photo.jpg", `&w=640&q=${quality}`),
-        ALLOWED_HOSTS,
-      ).quality,
-      quality,
-    );
-  }
+test("snaps quality to the nearest configured value", () => {
+  const quality = (q: number) =>
+    parseImageOptions(
+      imageUrl("https://cdn.example.com/photo.jpg", `&w=640&q=${q}`),
+      ALLOWED_HOSTS,
+    ).quality;
+  for (const q of [50, 60, 70, 75, 77, 80, 85, 90, 95, 100])
+    assert.equal(quality(q), q);
+  assert.equal(quality(1), 50);
+  assert.equal(quality(76), 77);
+  assert.equal(quality(78), 77);
+  assert.equal(quality(79), 80);
+  assert.equal(quality(98), 100);
+  // Every request maps onto the 10 configured qualities.
+  const seen = new Set<number>();
+  for (let q = 1; q <= 100; q++) seen.add(quality(q));
+  assert.equal(seen.size, 10);
 });
 
 test("rejects empty, nonnumeric, fractional, and out-of-range quality", () => {
@@ -102,16 +109,22 @@ test("rejects empty, nonnumeric, fractional, and out-of-range quality", () => {
   }
 });
 
-test("accepts every integer width from 1 to 3840", () => {
-  for (let width = 1; width <= 3840; width++) {
-    assert.equal(
-      parseImageOptions(
-        imageUrl("https://cdn.example.com/photo.jpg", `&w=${width}`),
-        ALLOWED_HOSTS,
-      ).width,
-      width,
-    );
-  }
+test("rounds widths up to the next configured width", () => {
+  const width = (w: number) =>
+    parseImageOptions(
+      imageUrl("https://cdn.example.com/photo.jpg", `&w=${w}`),
+      ALLOWED_HOSTS,
+    ).width;
+  for (const w of [16, 32, 640, 750, 828, 1080, 1200, 1920, 2048, 3840])
+    assert.equal(width(w), w);
+  assert.equal(width(1), 16);
+  assert.equal(width(641), 750);
+  assert.equal(width(800), 828);
+  assert.equal(width(3000), 3840);
+  // Every accepted width maps onto the 16 configured widths.
+  const seen = new Set<number>();
+  for (let w = 1; w <= 3840; w++) seen.add(width(w));
+  assert.equal(seen.size, 16);
 });
 
 test("rejects missing, empty, invalid, and out-of-range widths", () => {

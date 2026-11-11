@@ -3,13 +3,13 @@
 Configure production source hosts in Cloudflare and keep application and resource
 settings in your repository.
 
-| Location                | What belongs here                                                                 |
-| ----------------------- | --------------------------------------------------------------------------------- |
+| Location                | What belongs here                                                                                                    |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Cloudflare dashboard    | Production `ALLOWED_HOSTS` and optional `CONTAINER_LOCATION_HINT` text variables, and the R2 lifecycle cleanup rule. |
-| `.env`                  | Local source hosts; copy `.env.example` to get started.                           |
-| `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`. |
-| `imgt.config.ts`        | Encoding defaults, source-file size limit, container sizes, idle times and cache lifetimes. |
-| `src/` and `container/` | Fixed resource and safety limits; these are implementation constraints.           |
+| `.env`                  | Local source hosts; copy `.env.example` to get started.                                                              |
+| `wrangler.jsonc`        | Worker/container/bucket names, Cloudflare bindings, rate limiter and `keep_vars`.                                    |
+| `imgt.config.ts`        | Encoding defaults, source-file size limit, container sizes, idle times and cache lifetimes.                          |
+| `src/` and `container/` | Fixed resource and safety limits; these are implementation constraints.                                              |
 
 ## Allowed source hosts
 
@@ -82,15 +82,17 @@ private and use Standard storage. See the [storage cleanup steps](deployment.md#
 
 Edit `imgt.config.ts` to change these settings:
 
-| Setting                     | Default                                                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `transforms.defaultQuality` | 77; must be an integer from 1 to 100.                                                                         |
-| `transforms.maxSourceBytes` | 104,857,600 bytes (100 MiB); must be a positive safe integer. |
-| `transforms.webpEffort`     | 4; accepted range 0–6.                                                                                        |
-| `containers.primary`        | `{ vcpu: 1, idleTimeoutMs: 120000 }`; the container every transform tries first.                                                                                           |
-| `containers.overflow`       | `{ vcpu: 3, idleTimeoutMs: 30000, wakeAtQueuedJobs: 4 }`; started when that many jobs wait for the primary, or `null` to disable.                                          |
-| `cache.minFreshSeconds`     | 14,400 seconds (4 hours).                                                                                     |
-| `cache.maxStaleSeconds`     | 86,400 seconds (24 hours).                                                                                    |
+| Setting                     | Default                                                                                                                           |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `transforms.widths`         | Next.js's default `deviceSizes` and `imageSizes`, 16 to 3840; requested widths round up to the next one.                          |
+| `transforms.qualities`      | 50, 60, 70, 75, 77, 80, 85, 90, 95, 100; requested qualities snap to the nearest one, ties going higher.                          |
+| `transforms.defaultQuality` | 77; must be one of `transforms.qualities`.                                                                                        |
+| `transforms.maxSourceBytes` | 104,857,600 bytes (100 MiB); must be a positive safe integer.                                                                     |
+| `transforms.webpEffort`     | 4; accepted range 0–6.                                                                                                            |
+| `containers.primary`        | `{ vcpu: 1, idleTimeoutMs: 120000 }`; the container every transform tries first.                                                  |
+| `containers.overflow`       | `{ vcpu: 3, idleTimeoutMs: 30000, wakeAtQueuedJobs: 4 }`; started when that many jobs wait for the primary, or `null` to disable. |
+| `cache.minFreshSeconds`     | 14,400 seconds (4 hours).                                                                                                         |
+| `cache.maxStaleSeconds`     | 86,400 seconds (24 hours).                                                                                                        |
 
 Freshness follows source `s-maxage` or `max-age`, with the configured minimum;
 upstream `Age` is subtracted. The stale interval starts after freshness expires.
@@ -102,8 +104,10 @@ Each container's `vcpu` is an integer from 1 to 4, allocated with 3 GiB RAM
 per vCPU. Its idle time must be a positive integer number of milliseconds, up
 to 21,600,000 (6 hours); compute stops after foreground requests and background
 refreshes finish and the idle interval passes. Requests accept integer widths from 1 to 3840 pixels and integer
-qualities from 1 to 100. Each width and quality combination creates a separate
-cached derivative.
+qualities from 1 to 100, then snap to the configured lists. Each configured
+width and quality combination creates a separate cached derivative, so the
+lists bound how many images one source can produce. Both lists must be
+ascending; widths must be at most 3840.
 
 Review `RENDERER_VERSION` in `container/renderer.ts` whenever output pixels or
 encoding defaults change. WebP effort is part of the R2 and Workers Cache keys,

@@ -124,11 +124,11 @@
             <!-- COST_CHART -->
           </div>
           <p class="chart-note">
-            2.25M fresh images per month. Assumes 10M total image requests, 120
-            KiB outputs and fixed containers awake all month; the overflow is
-            awake 18% of the time, as measured in production. Includes the
-            Workers plan, CPU, RAM, disk, Durable Objects, R2 and modeled output
-            transfer. Basic is ¼ CPU / 1 GiB per container, tested locally only.
+            Example workload: 2M fresh images per month. Assumes 10M total image
+            requests, 120 KiB outputs and fixed containers awake all month; the
+            overflow is awake 20% of the time. Includes the Workers plan, CPU,
+            RAM, disk, Durable Objects, R2 and modeled output transfer. Basic is
+            ¼ CPU / 1 GiB per container, tested locally only.
           </p>
         </div>
         <p class="benchmark-copy">
@@ -190,18 +190,17 @@
         <details class="benchmark-details">
           <summary>Test method, reliability and pricing assumptions</summary>
           <p>
-            The traffic target comes from FASHN's projects together: about 2.25M
-            monthly transformations and a busiest observed 15-minute interval of
-            roughly 2.9 transformations/second. Tests at 10 and 20/second add
-            headroom; the dashboard does not reveal second-by-second peaks.
+            The example workload is a site creating about 2M new images a month.
+            Tests at 3, 10 and 20 fresh images/second, plus simultaneous
+            galleries, cover bursts that monthly totals do not reveal.
           </p>
           <p>
             All configurations retain source validation, bounded waiting,
             deduplication and a 60-second transform deadline, with one native
-            encoder per CPU. The default sends work to an always-on 1-CPU
-            primary and starts a 3-CPU overflow when four jobs wait; the
-            overflow stops after 30 idle seconds. October profiles were fixed
-            shards with eight active jobs each. Cache hits avoid compute.
+            encoder per CPU. The default sends work to a 1-CPU primary and
+            starts a 3-CPU overflow when four jobs wait; the overflow stops
+            after 30 idle seconds. October profiles were fixed shards with eight
+            active jobs each. Cache hits avoid compute.
           </p>
           <p>
             Local Docker enforces CPU and RAM limits without swap. Origins are

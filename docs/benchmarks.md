@@ -6,21 +6,20 @@ the fixed allocations were measured on October 6, 2026.
 
 ## Default configuration
 
-Since November 2026 the default is an always-on 1-CPU primary container plus a
+Since November 2026 the default is a 1-CPU primary container plus a
 3-CPU overflow container that runs only during bursts. It replaced four 1-CPU
 containers after replays of production bursts; see the
 [November 2026 replay](performance.md#primary-and-overflow-containers-november-2026).
-It returned every image in the November tests below, live and local, and cut the
-measured container and Durable Object usage from about $107 to about $43 a month at
-list prices. Sustained load up to 20/s stayed near 1.3 s p95; 200-image bursts were
+It returned every image in the November tests below, live and local, and cut
+measured container and Durable Object usage by about 60% at list prices. Sustained
+load up to 20/s stayed near 1.3 s p95; 200-image bursts were
 slower than four always-on 1-CPU containers. Choose a
 configuration for your workload using the measurements, pricing assumptions and
 [container sizing guide](configuration.md#container-sizes).
 
-The target includes all FASHN projects: approximately 2.25M monthly transformations
-and a busiest observed 15-minute interval of about 2.9/s. We test 3/s, 10/s and 20/s,
-plus simultaneous galleries. Fifteen-minute averages do not reveal second-by-second
-bursts.
+The example workload is a site creating about 2M new images a month. We test 3/s,
+10/s and 20/s of fresh images, plus simultaneous galleries, because monthly totals
+do not reveal second-by-second bursts.
 
 ## Live response times
 
@@ -145,34 +144,27 @@ verification.
 
 ## Estimated monthly cost
 
-Both providers use the same modeled image workload: 2.25M fresh derivatives, 10M total
-image requests, 120 KiB average output, 8.57M billed Vercel read units, 0.14 consumed
-container CPU seconds per transform, and fixed containers awake for a 30-day month.
-The overflow is billed for 18% of the month, its share measured in production in
-November 2026: average container memory was 4.6 GiB with a 3 GiB primary.
-Total image requests and output size are assumptions; Vercel cache units cannot be
+Both providers use the same example workload: 2M fresh derivatives, 10M total image
+requests, 120 KiB average output, 8M Vercel cache read units, 0.14 consumed container
+CPU seconds per transform, and fixed containers awake for a 30-day month. The
+overflow is assumed awake for 20% of the month, which fits a site with regular
+bursts. All workload figures are assumptions; Vercel cache units cannot be
 translated directly into request counts.
 
 | Allocation | Total RAM | Estimated monthly cost |
 | --- | ---: | ---: |
-| 1 CPU + 3 CPU overflow | 3 GiB + 9 GiB during bursts | $60.18 |
-| 1 × 1 CPU, no overflow (local only) | 3 GiB | $49.61 |
-| 4 × 1 CPU | 12 GiB | $121.52 |
-| 2 × 2 CPUs | 12 GiB | $120.80 |
-| 2 × 1 CPU | 6 GiB | $81.92 |
-| 4 × basic (local only) | 4 GiB | $71.13 |
-| 8 × basic (local only) | 8 GiB | $124.96 |
-| Vercel image meters, iad1 | Managed | $250.93 |
+| 1 CPU + 3 CPU overflow | 3 GiB + 9 GiB during bursts | $55.32 |
+| 1 × 1 CPU, no overflow (local only) | 3 GiB | $43.59 |
+| 4 × 1 CPU | 12 GiB | $115.50 |
+| 2 × 2 CPUs | 12 GiB | $114.77 |
+| 2 × 1 CPU | 6 GiB | $75.89 |
+| 4 × basic (local only) | 4 GiB | $65.11 |
+| 8 × basic (local only) | 8 GiB | $118.93 |
+| Vercel image meters, iad1 | Managed | $223.20 |
 
-Measured usage matches the model's container lines. At list prices, before
-allowances, FASHN's production deployment used about $107 a month of container
-memory, CPU, disk and Durable Object duration with four 1-CPU containers (October 20
-to November 2 average). With the primary and overflow it used about $43 (November 4
-and 5). These figures cover only those lines, not the full model.
-
-The recent 101K/day snapshot projects to 3.03M fresh derivatives over 30 days. With
-the same 10M total-request budget and other assumptions, four 1-CPU shards model
-$130.01/month. One day is not a measured monthly bill or forecast guarantee.
+Measured production usage matches the model's container lines: moving from four
+1-CPU containers to the primary and overflow cut container memory, CPU, disk and
+Durable Object duration by about 60% at list prices.
 
 imgt includes a $5 Workers plan, consumed CPU, provisioned RAM and disk, Durable
 Object requests and awake duration, R2 storage/operations, Worker invocations/CPU and
@@ -196,7 +188,7 @@ sizing minimum, not the renderer's measured working set.
 The transform deadline remains 60 seconds and the benchmark client limit is 90
 seconds. The November default has one coordinator with 96 active and 512 distinct
 jobs, three uploads per vCPU and one native encoder per vCPU; the overflow wakes when
-four uploads wait and stops after 30 idle seconds. October shards each had eight
+four jobs are queued and stops after 30 idle seconds. October shards each had eight
 active source/upload jobs, bounded waiting, deduplication and 128 distinct pending
 jobs. Basic and 1-CPU profiles use one native encoder per shard; 2-CPU profiles use
 two. Each image uses one libvips thread. Queued

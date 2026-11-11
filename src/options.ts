@@ -15,8 +15,32 @@ export function isValidQuality(quality: number): boolean {
   return Number.isInteger(quality) && quality >= 1 && quality <= 100;
 }
 
-if (!isValidQuality(config.transforms.defaultQuality)) {
-  throw new Error("defaultQuality must be an integer from 1 to 100");
+const { widths, qualities, defaultQuality } = config.transforms;
+const ascending = (values: readonly number[]) =>
+  values.length > 0 &&
+  values.every((value, i) => i === 0 || value > values[i - 1]);
+if (!ascending(widths) || !widths.every(isValidWidth)) {
+  throw new Error(
+    `widths must be ascending integers from 1 to ${MAX_OUTPUT_WIDTH}`,
+  );
+}
+if (!ascending(qualities) || !qualities.every(isValidQuality)) {
+  throw new Error("qualities must be ascending integers from 1 to 100");
+}
+if (!qualities.includes(defaultQuality)) {
+  throw new Error("defaultQuality must be one of qualities");
+}
+
+// Rounds up to the next configured width, or the largest one.
+export function snapWidth(width: number): number {
+  return widths.find((allowed) => allowed >= width) ?? widths.at(-1)!;
+}
+
+// Picks the nearest configured quality; ties choose the higher quality.
+export function snapQuality(quality: number): number {
+  return qualities.reduce((best, allowed) =>
+    Math.abs(allowed - quality) <= Math.abs(best - quality) ? allowed : best,
+  );
 }
 if (
   !Number.isInteger(config.transforms.webpEffort) ||
@@ -93,7 +117,11 @@ export function parseImageOptions(
     throw new ImageError("q must be an integer from 1 to 100", 400);
   }
 
-  return { sourceUrl, width, quality };
+  return {
+    sourceUrl,
+    width: snapWidth(width),
+    quality: snapQuality(quality),
+  };
 }
 
 export function withPrefix(prefix: string, key: string): string {
