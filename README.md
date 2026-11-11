@@ -79,13 +79,15 @@ image.search = new URLSearchParams({
 // Use image.href as an <img> src or fetch it directly.
 ```
 
-| Parameter | Meaning                                                                            |
-| --------- | ---------------------------------------------------------------------------------- |
-| `url`     | Absolute HTTPS source URL on an allowed host. `URLSearchParams` encodes it.        |
-| `w`       | Width: any integer from 1 to 3840 pixels.                                          |
-| `q`       | Quality: any integer from 1 to 100. Defaults to 77.                                |
+| Parameter | Meaning                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------- |
+| `url`     | Absolute HTTPS source URL on an allowed host. `URLSearchParams` encodes it.                   |
+| `w`       | Width: an integer from 1 to 3840, rounded up to the next configured width.                    |
+| `q`       | Quality: an integer from 1 to 100, snapped to the nearest configured quality. Defaults to 77. |
 
-Each width and quality combination has its own cached derivative.
+Each configured width and quality combination has its own cached derivative.
+The lists in `imgt.config.ts` cover Next.js's default sizes, so a client cannot
+create an unlimited number of images from one source.
 
 Output is WebP, with orientation corrected and aspect ratio preserved. Small
 sources are not enlarged. Supported inputs: JPEG, PNG, WebP, and AVIF, up to

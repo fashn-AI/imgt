@@ -31,10 +31,10 @@ export const profiles = [
 
 export const recommendedProfile = "tiered";
 export const costScenario = {
-  transforms: 2_250_000,
+  transforms: 2_000_000,
   requests: 10_000_000,
   outputKiB: 120,
-  readUnits: 8_570_000,
+  readUnits: 8_000_000,
   cpuSeconds: 0.14,
   awakePercent: 100,
   region: "iad1",

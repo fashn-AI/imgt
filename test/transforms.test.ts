@@ -66,12 +66,16 @@ async function serve(t: TestContext, failFirstSource = false) {
   return { h, input, request };
 }
 
-test("integer qualities reach the encoder unchanged and retain separate, reusable derivatives", async (t) => {
+test("qualities snap to the configured list and share derivatives", async (t) => {
   const { h, input, request } = await serve(t);
   let defaultBytes: Buffer | undefined;
   let defaultEtag: string | null = null;
-  for (const quality of [1, 76, 77, 100]) {
-    const first = await h.gateway(request(32, quality));
+  for (const [requested, quality] of [
+    [1, 50],
+    [76, 77],
+    [100, 100],
+  ]) {
+    const first = await h.gateway(request(32, requested));
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("x-imgt-cache"), "MISS");
     assert.equal(first.headers.get("content-type"), "image/webp");
@@ -81,7 +85,11 @@ test("integer qualities reach the encoder unchanged and retain separate, reusabl
       .resize({ width: 32, withoutEnlargement: true, fit: "inside" })
       .webp({ quality, effort: config.transforms.webpEffort })
       .toBuffer();
-    assert.deepEqual(bytes, expected, `quality ${quality} must not be snapped`);
+    assert.deepEqual(
+      bytes,
+      expected,
+      `quality ${requested} must snap to ${quality}`,
+    );
     assert.equal((await sharp(bytes).metadata()).format, "webp");
     const { info } = await sharp(bytes)
       .raw()
@@ -101,7 +109,10 @@ test("integer qualities reach the encoder unchanged and retain separate, reusabl
       defaultEtag = first.headers.get("etag");
     }
   }
-  assert.equal(h.bucket.objects.size, 4);
+  assert.equal(h.bucket.objects.size, 3);
+  const nearby = await h.gateway(request(32, 78));
+  assert.equal(nearby.headers.get("x-imgt-cache"), "R2");
+  assert.deepEqual(Buffer.from(await nearby.arrayBuffer()), defaultBytes);
   const omitted = await h.gateway(request());
   assert.equal(omitted.headers.get("x-imgt-cache"), "R2");
   assert.deepEqual(Buffer.from(await omitted.arrayBuffer()), defaultBytes);
@@ -113,12 +124,12 @@ test("integer qualities reach the encoder unchanged and retain separate, reusabl
   assert.equal(conditional.status, 304);
   assert.equal(conditional.headers.get("etag"), defaultEtag);
   assert.equal((await conditional.arrayBuffer()).byteLength, 0);
-  assert.equal(h.downloads, 4);
-  assert.equal(h.transforms, 4);
-  assert.equal(h.bucket.puts, 4);
+  assert.equal(h.downloads, 3);
+  assert.equal(h.transforms, 3);
+  assert.equal(h.bucket.puts, 3);
 });
 
-test("integer widths resize exactly, never upscale, and keep distinct cached derivatives", async (t) => {
+test("widths round up to the configured list, never upscale, and share derivatives", async (t) => {
   const { h, input, request } = await serve(t);
   for (const width of [0, -1, 3841, 37.5, "bad", ""]) {
     assert.equal((await h.gateway(request(width))).status, 400);
@@ -126,13 +137,13 @@ test("integer widths resize exactly, never upscale, and keep distinct cached der
   assert.equal(h.downloads, 0);
   assert.equal(h.bucket.reads, 0);
   assert.equal(h.transforms, 0);
-  for (const [width, outputWidth, outputHeight] of [
-    [1, 1, 1],
-    [37, 37, 23],
-    [641, 64, 40],
-    [3840, 64, 40],
+  for (const [requested, width, outputWidth, outputHeight] of [
+    [1, 16, 16, 10],
+    [37, 48, 48, 30],
+    [641, 750, 64, 40],
+    [3840, 3840, 64, 40],
   ]) {
-    const first = await h.gateway(request(width, 77));
+    const first = await h.gateway(request(requested, 77));
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("x-imgt-cache"), "MISS");
     const bytes = Buffer.from(await first.arrayBuffer());
@@ -141,7 +152,11 @@ test("integer widths resize exactly, never upscale, and keep distinct cached der
       .resize({ width, withoutEnlargement: true, fit: "inside" })
       .webp({ quality: 77, effort: config.transforms.webpEffort })
       .toBuffer();
-    assert.deepEqual(bytes, expected, `width ${width} must not be snapped`);
+    assert.deepEqual(
+      bytes,
+      expected,
+      `width ${requested} must snap to ${width}`,
+    );
     assert.equal((await sharp(bytes).metadata()).format, "webp");
     const { info } = await sharp(bytes)
       .raw()
@@ -158,6 +173,8 @@ test("integer widths resize exactly, never upscale, and keep distinct cached der
     assert.equal(h.transforms, transforms);
   }
   assert.equal(h.bucket.objects.size, 4);
+  const nearby = await h.gateway(request(700, 77));
+  assert.equal(nearby.headers.get("x-imgt-cache"), "R2");
   assert.equal(h.downloads, 4);
   assert.equal(h.transforms, 4);
   assert.equal(h.bucket.puts, 4);

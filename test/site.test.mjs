@@ -35,8 +35,8 @@ test("built benchmark charts work without scripts and both JSON-LD blocks satisf
   assert.match(latencyChart, /<rect width="[1-9][\d.]*"/);
   assert.match(latencyChart, /4 × 1 CPU/);
   assert.doesNotMatch(latencyChart, /Not tested/);
-  assert.match(benchmarks, /\$120\.80/);
-  assert.match(benchmarks, /\$250\.93/);
+  assert.match(benchmarks, /\$55\.32/);
+  assert.match(benchmarks, /\$223\.20/);
   assert.doesNotMatch(benchmarks, /comparison in progress|cost-inputs/);
   const agents = await readFile(new URL("llms-full.txt", assets), "utf8");
   assert.match(agents, /Source: \/docs\/benchmarks\.md/);

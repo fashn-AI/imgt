@@ -28,13 +28,13 @@ Only derivatives are stored, under `derivatives/v5/<hash>.webp`. The key include
 source URL, width, quality, output format, and encoder effort. ETags hash the
 output bytes. Absolute freshness and stale deadlines are stored in R2 metadata.
 
-| State | Response | Container work |
-| --- | --- | --- |
-| Workers Cache hit | `EDGE` | None |
-| Fresh R2 derivative | `R2` | None |
-| R2 within its stale window | `STALE`, cached for up to 60 seconds | Background revalidation or transform |
-| Expired R2 derivative, source unchanged | `R2` | None |
-| Missing or expired derivative, source changed | `MISS` | Caller waits for a transform |
+| State                                         | Response                             | Container work                       |
+| --------------------------------------------- | ------------------------------------ | ------------------------------------ |
+| Workers Cache hit                             | `EDGE`                               | None                                 |
+| Fresh R2 derivative                           | `R2`                                 | None                                 |
+| R2 within its stale window                    | `STALE`, cached for up to 60 seconds | Background revalidation or transform |
+| Expired R2 derivative, source unchanged       | `R2`                                 | None                                 |
+| Missing or expired derivative, source changed | `MISS`                               | Caller waits for a transform         |
 
 Source `s-maxage` or `max-age` controls freshness, with a configurable four-hour
 minimum and upstream `Age` subtracted. Durations are bounded to 2,147,483,647
@@ -71,8 +71,8 @@ source, parameters, and key before calling the coordinator directly. Every
 origin redirect is checked against the same `ALLOWED_HOSTS` allowlist.
 
 Sources must use HTTPS without credentials or a custom port. Inputs are JPEG,
-PNG, WebP, or AVIF, limited to 100 MiB by default and 50 megapixels. Width accepts any integer
-from 1 to 3840 pixels; quality accepts any integer from 1 to 100 and defaults to 77. Each width and quality combination has a separate cache entry. Output
+PNG, WebP, or AVIF, limited to 100 MiB by default and 50 megapixels. Width accepts an integer
+from 1 to 3840 pixels and rounds up to the next configured width; quality accepts an integer from 1 to 100, snaps to the nearest configured quality and defaults to 77. Each configured width and quality combination has a separate cache entry. Output
 preserves orientation and aspect ratio, never enlarges a small source, and uses
 WebP. `transforms.maxSourceBytes` in `imgt.config.ts` configures the original-file
 byte limit. Declared oversized sources are rejected before upload; the Rust
@@ -82,7 +82,7 @@ Oversized inputs return `413` without being cached.
 One primary Durable Object coordinates every cache miss and accepts up to 512
 distinct jobs. At most 96 jobs read R2, download sources or wait for a
 container at once; the others wait without downloading originals.
-A dispatcher sends each upload to the always-on primary container first, with
+A dispatcher sends each upload to the primary container first, with
 three uploads per vCPU. When `wakeAtQueuedJobs` uploads are waiting, it starts
 the larger overflow container, held by a second Durable Object, and uses both
 until the overflow has been idle for its own short timeout. The primary keeps

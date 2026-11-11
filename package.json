@@ -17,14 +17,14 @@
     "test:container": "node scripts/check-container.mjs"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261001.1",
+    "@cloudflare/workers-types": "5.20261110.1",
     "@types/node": "^24.3.0",
     "prettier": "3.9.6",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "shiki": "4.5.0",
     "tsx": "4.20.5",
     "typescript": "7.0.2",
-    "wrangler": "4.145.0"
+    "wrangler": "4.160.1"
   },
   "description": "Self-hosted image optimization on Cloudflare: Rust/libvips, Workers Cache, and R2.",
   "author": "FASHN AI",
@@ -32,7 +32,12 @@
     "type": "git",
     "url": "git+https://github.com/fashn-AI/imgt.git"
   },
+  "homepage": "https://imgt.fashn.ai",
+  "bugs": "https://github.com/fashn-AI/imgt/issues",
   "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
   "cloudflare": {
     "label": "imgt",
     "bindings": {

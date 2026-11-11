@@ -29,7 +29,13 @@ jobs to the coordinator; every source redirect is checked against the same
 allowlist. Keep the deployment's allowlist consistent across those boundaries.
 
 Run `npm run check` and `npx wrangler deploy --dry-run` before merging.
-Cloudflare's Git integration runs the checks and deploys the project.
+GitHub Actions runs `npm run check` on every pull request.
+
+The image service in `container/rust` is Rust linked against the libvips that
+ships with Sharp. For changes there, or to `container/Dockerfile`, format with
+`cargo fmt --manifest-path container/rust/Cargo.toml` and run
+`npm run test:container`, which builds the Docker image and runs the
+container tests against it.
 
 Keep performance experiments, raw results and source images on research
 branches or outside the normal checkout. Report region, resource limits,
@@ -41,7 +47,7 @@ updates must include both the root and container lockfiles when applicable.
 
 ## Releases
 
-Before the first release, changes are identified by their commit on `main`.
+Changes are identified by their commit on `main` until a version is tagged.
 After local checks and a deployment smoke test pass, create a version tag and
 release notes covering behavior, migration steps, and measured limitations.
 Test the deploy button against a fresh installation before calling a release

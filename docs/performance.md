@@ -1,6 +1,6 @@
 # Performance
 
-imgt uses Rust/libvips with an always-on 1-vCPU primary container and a 3-vCPU
+imgt uses Rust/libvips with a 1-vCPU primary container and a 3-vCPU
 overflow container that runs only during bursts. Each container has 3 GiB RAM per
 vCPU and 2,000 MB disk. Derivatives persist in R2 and Workers Cache, so cache hits
 do not start a container.
@@ -39,12 +39,12 @@ do not start a container.
 
 ## Primary and overflow containers, November 2026
 
-Production ran four always-on 1-vCPU shards. Their reserved memory cost about
-$78 a month (288 GiB-hours a day), while CPU averaged 0.23 vCPU and real memory
-use peaked near 275 MiB per container. Traffic never paused long enough for a
+Production ran four always-on 1-vCPU shards. Reserved memory was most of their
+cost, while CPU averaged under a quarter of a vCPU and real memory use peaked near
+275 MiB per container. Traffic never paused long enough for a
 shard to sleep, and bursts were the only reason to keep four CPUs.
 
-The replay sent the two busiest production windows through the real gateway,
+The replay sent two recorded traffic bursts through the real gateway,
 coordinator and `TierDispatcher` to local Rust containers at effort 4. Arrival
 times, sources and variants came from production logs; encode times were
 calibrated to production (117 ms production mean, 123 ms local). Only the
@@ -52,7 +52,7 @@ overflow cold start was simulated. Production `native_container_ready` logs
 show cold starts of 275–418 ms, so 0.5 seconds is the expected case and
 5 seconds a pessimistic bound.
 
-| Nov 1 burst, 1,758 jobs | p50 | p90 | p99 | Max |
+| First burst, 1,758 jobs | p50 | p90 | p99 | Max |
 | --- | ---: | ---: | ---: | ---: |
 | Today: four 1-vCPU shards | 2.56 s | 5.70 s | 7.08 s | 7.46 s |
 | One always-on 3-vCPU container | 2.29 s | 6.56 s | 8.05 s | 8.98 s |
@@ -64,21 +64,21 @@ In the expected case, the primary served 577 jobs and the overflow 1,181. The
 overflow started once and stayed awake for 110 seconds. Dispatch waits reached
 p90 1.76 s and coordinator admission waits p90 0.28 s. Jobs keep their
 admission slot while they wait for a container, so a slow cold start raises both
-waits together (p90 2.05 s and 3.57 s at 5 seconds). The full Nov 2 window
+waits together (p90 2.05 s and 3.57 s at 5 seconds). The second burst
 (393 jobs) finished at p50 1.17 s, p90 4.36 s and max 11.2 s, with two overflow
 starts and 118 seconds awake. The 11.2-second job was equally slow in every
-configuration. With a 5-second cold start, 441 Nov 1 jobs took over 5 seconds. No replay
+configuration. With a 5-second cold start, 441 first-burst jobs took over 5 seconds. No replay
 returned an error. Peak memory was about 220 MiB on the
 primary and 610 MiB on the overflow.
 
 Including both container Durable Objects, estimated cost is about $33 a month
 plus about $62 a month times the fraction of time the overflow is awake.
 Without per-minute production history, that fraction is estimated at 10–33
-percent, or $39–$53 a month against about $107 for today's four containers and
+percent, or $39–$53 a month, less than half the cost of today's four containers and
 their Durable Objects. If the overflow never slept, the cost would be about $95.
 
 WebP effort is part of the R2 derivative key and the Workers Cache key. Effort 2
-replayed the Nov 1 burst at p90 2.22 s instead of 3.51 s, but changing effort
+replayed the first burst at p90 2.22 s instead of 3.51 s, but changing effort
 re-encodes every cached image once, so it remains a separate decision.
 
 ## Rust capacity and horizontal scaling, October 6, 2026
@@ -127,12 +127,10 @@ decoded as the requested 640px WebP. No image or version-check failure occurred 
 final deployment check.
 
 The public benchmark now has two charts: latency by workload and estimated monthly
-cost. It uses 2.25M fresh derivatives, 10M assumed image requests, 120 KiB average
-output, 0.14 consumed CPU seconds per transform, 30-day R2 retention and all replicas
-awake for the full month. Four 1-CPU shards model about $122/month; the smaller pair
-about $82. At the recent 101K/day snapshot, the four-shard estimate is $130/month with
-the same other assumptions. Shared account allowances are assumed available, and the
-estimate is not an invoice. Vercel remains faster for the measured simultaneous
+cost. It models an example workload with 30-day R2 retention and all replicas awake
+for the full month; four 1-CPU shards cost about $40/month more than the smaller
+pair. Shared account allowances are assumed available, and the estimate is not an
+invoice. Vercel remains faster for the measured simultaneous
 galleries. Complete timings, counts, pricing sources and limitations are in [the
 benchmark report](benchmarks.md).
 
@@ -201,7 +199,7 @@ without starting compute. Changed sources, weak or absent validators, redirects
 and older cache entries use the regular transform path. Source cache-policy
 changes still invalidate storage; deadlines and single-flight persistence
 remain enforced. This refresh change retained renderer v4 because no encoding options or pixels
-change. The evaluated FASHN media origin supports a strong ETag and returned
+change. The evaluated production media origin supports a strong ETag and returned
 HTTP 304 to a conditional GET.
 
 Three alternating local replays compared unconditional renewal with conditional
@@ -305,8 +303,8 @@ CPU allocation. A migration would need a native AMD64 comparison, output
 qualification, the complete two-encoder HTTP workload, and measured Cloudflare
 startup or CPU savings sufficient to justify owning another service runtime.
 
-The research branch is `renan/rust-libvips-research`; prototypes and raw results
-remain outside the normal checkout. No production implementation, allocation or
+Prototypes and raw results remain in a separate research branch, outside the
+normal checkout. No production implementation, allocation or
 deployment changed for this investigation.
 
 ## Rust HTTP qualification follow-up, October 2026
@@ -790,7 +788,7 @@ usage, logs, and transfer are separate from the container memory estimate.
 
 ## Vercel quality comparison
 
-A comparison of the viewer's local imgt integration and its Vercel staging
+A comparison of a Next.js app's local imgt integration and its Vercel staging
 deployment found both requested the same original sources at width 384 and
 quality 75, with WebP output. Downloaded files had identical dimensions.
 The browser reported different density-adjusted natural widths because the
@@ -850,7 +848,7 @@ needed for this comparison.
 ### Live scaling and backend comparison
 
 A live comparison requested the same 50 PNG sources at width 640, quality 98
-and WebP format from imgt and the viewer's Vercel backend. Extra source query
+and WebP format from imgt and a Next.js app's Vercel backend. Extra source query
 parameters created distinct derivative keys without changing source bytes.
 Both requests entered through the providers' GRU edge locations; Cloudflare
 placed containers in North America. The 60-second sustained workload used

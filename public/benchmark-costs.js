@@ -1,6 +1,6 @@
 // USD rates checked against provider documentation on 2026-10-06.
-// An overflow container is billed only while awake; production measured
-// about 18% in November 2026 (4.6 GiB average memory with a 3 GiB primary).
+// An overflow container is billed only while awake; the model assumes 20% of
+// the month, a bursty site's pattern.
 export const allocations = [
   { name: "1 × 1 CPU", shards: 1, cpu: 1, memory: 3, disk: 2 },
   { name: "2 × 1 CPU", shards: 2, cpu: 1, memory: 3, disk: 2 },
@@ -16,7 +16,7 @@ export const allocations = [
     cpu: 1,
     memory: 3,
     disk: 2,
-    overflow: { cpu: 3, memory: 9, disk: 2, awakePercent: 18 },
+    overflow: { cpu: 3, memory: 9, disk: 2, awakePercent: 20 },
   },
 ];
 

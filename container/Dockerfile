@@ -13,7 +13,7 @@ COPY rust/Cargo.toml rust/Cargo.lock ./
 COPY rust/src ./src
 ARG IMGT_TEST_FEATURES=""
 ENV CARGO_BUILD_JOBS=2 \
-    RUSTFLAGS="-C link-arg=-Wl,-rpath,/native -C link-arg=/native/libvips-cpp.so.8.18.6"
+    RUSTFLAGS="-C link-arg=-Wl,-rpath,/native -C link-arg=/native/libvips-cpp.so.8.18.7"
 RUN IMGT_RENDERER_VERSION=$(cat /native/renderer-version) cargo build --locked --release --features "$IMGT_TEST_FEATURES"
 
 FROM debian:bookworm-slim
