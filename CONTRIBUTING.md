@@ -59,3 +59,6 @@ or encoding defaults. Changing `transforms.webpEffort` requires a version bump
 so a running container with the old effort cannot populate the new cache keys.
 
 Changes to this project are distributed under the [MIT license](LICENSE).
+
+Everyone taking part in the project follows the
+[Code of Conduct](CODE_OF_CONDUCT.md).
