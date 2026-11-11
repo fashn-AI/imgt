@@ -810,36 +810,46 @@ test("full shard rejects distinct jobs while accepting duplicates", async () => 
   assert.equal(h.transforms, MAX_DISTINCT_JOBS);
 });
 
-test("a 100-image burst runs concurrently without waiting for R2 writes and still deduplicates", async (t) => {
-  const persistence = deferred();
-  let active = 0;
-  let peak = 0;
-  const h = createHarness({
-    transform: async (body) => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Response(body).arrayBuffer();
-      await new Promise((resolve) => setImmediate(resolve));
-      active -= 1;
-      return new Response("webp");
-    },
-  });
-  h.bucket.putGate = persistence.promise;
-  t.after(async () => {
-    persistence.resolve();
-    await h.drain();
-  });
-  const responses = await Promise.all(
-    Array.from({ length: 100 }, (_, id) => h.gateway(imageRequest(`?v=${id}`))),
-  );
-  assert.ok(responses.every((response) => response.status === 200));
-  assert.equal(peak, MAX_ACTIVE_JOBS);
-  assert.equal(h.downloads, 100);
-  assert.equal(h.transforms, 100);
-  assert.equal(h.bucket.objects.size, 0);
-  assert.equal((await h.gateway(imageRequest("?v=0"))).status, 200);
-  assert.equal(h.transforms, 100);
-});
+test(
+  "a 100-image burst runs concurrently without waiting for R2 writes and still deduplicates",
+  { timeout: 10_000 },
+  async (t) => {
+    const persistence = deferred();
+    // Hold every transform until the coordinator has admitted a full set, so
+    // the peak does not depend on how fast the first jobs finish.
+    const full = deferred();
+    let active = 0;
+    let peak = 0;
+    const h = createHarness({
+      transform: async (body) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        if (active === MAX_ACTIVE_JOBS) full.resolve();
+        await new Response(body).arrayBuffer();
+        await full.promise;
+        active -= 1;
+        return new Response("webp");
+      },
+    });
+    h.bucket.putGate = persistence.promise;
+    t.after(async () => {
+      persistence.resolve();
+      await h.drain();
+    });
+    const responses = await Promise.all(
+      Array.from({ length: 100 }, (_, id) =>
+        h.gateway(imageRequest(`?v=${id}`)),
+      ),
+    );
+    assert.ok(responses.every((response) => response.status === 200));
+    assert.equal(peak, MAX_ACTIVE_JOBS);
+    assert.equal(h.downloads, 100);
+    assert.equal(h.transforms, 100);
+    assert.equal(h.bucket.objects.size, 0);
+    assert.equal((await h.gateway(imageRequest("?v=0"))).status, 200);
+    assert.equal(h.transforms, 100);
+  },
+);
 
 test("queued jobs expire within the original deadline without downloading their source", async () => {
   const started = deferred();
