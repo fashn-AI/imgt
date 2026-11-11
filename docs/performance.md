@@ -44,7 +44,7 @@ cost, while CPU averaged under a quarter of a vCPU and real memory use peaked ne
 275 MiB per container. Traffic never paused long enough for a
 shard to sleep, and bursts were the only reason to keep four CPUs.
 
-The replay sent the two busiest production windows through the real gateway,
+The replay sent two recorded traffic bursts through the real gateway,
 coordinator and `TierDispatcher` to local Rust containers at effort 4. Arrival
 times, sources and variants came from production logs; encode times were
 calibrated to production (117 ms production mean, 123 ms local). Only the
@@ -52,7 +52,7 @@ overflow cold start was simulated. Production `native_container_ready` logs
 show cold starts of 275–418 ms, so 0.5 seconds is the expected case and
 5 seconds a pessimistic bound.
 
-| Nov 1 burst, 1,758 jobs | p50 | p90 | p99 | Max |
+| First burst, 1,758 jobs | p50 | p90 | p99 | Max |
 | --- | ---: | ---: | ---: | ---: |
 | Today: four 1-vCPU shards | 2.56 s | 5.70 s | 7.08 s | 7.46 s |
 | One always-on 3-vCPU container | 2.29 s | 6.56 s | 8.05 s | 8.98 s |
@@ -64,10 +64,10 @@ In the expected case, the primary served 577 jobs and the overflow 1,181. The
 overflow started once and stayed awake for 110 seconds. Dispatch waits reached
 p90 1.76 s and coordinator admission waits p90 0.28 s. Jobs keep their
 admission slot while they wait for a container, so a slow cold start raises both
-waits together (p90 2.05 s and 3.57 s at 5 seconds). The full Nov 2 window
+waits together (p90 2.05 s and 3.57 s at 5 seconds). The second burst
 (393 jobs) finished at p50 1.17 s, p90 4.36 s and max 11.2 s, with two overflow
 starts and 118 seconds awake. The 11.2-second job was equally slow in every
-configuration. With a 5-second cold start, 441 Nov 1 jobs took over 5 seconds. No replay
+configuration. With a 5-second cold start, 441 first-burst jobs took over 5 seconds. No replay
 returned an error. Peak memory was about 220 MiB on the
 primary and 610 MiB on the overflow.
 
@@ -78,7 +78,7 @@ percent, or $39–$53 a month, less than half the cost of today's four container
 their Durable Objects. If the overflow never slept, the cost would be about $95.
 
 WebP effort is part of the R2 derivative key and the Workers Cache key. Effort 2
-replayed the Nov 1 burst at p90 2.22 s instead of 3.51 s, but changing effort
+replayed the first burst at p90 2.22 s instead of 3.51 s, but changing effort
 re-encodes every cached image once, so it remains a separate decision.
 
 ## Rust capacity and horizontal scaling, October 6, 2026
