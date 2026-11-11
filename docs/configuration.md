@@ -85,7 +85,7 @@ Edit `imgt.config.ts` to change these settings:
 | Setting                     | Default                                                                                                                           |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `transforms.widths`         | Next.js's default `deviceSizes` and `imageSizes`, 16 to 3840; requested widths round up to the next one.                          |
-| `transforms.qualities`      | 50, 60, 70, 75, 77, 80, 85, 90, 95, 100; requested qualities snap to the nearest one, ties going higher.                          |
+| `transforms.qualities`      | 50, 60, 70, 75, 77, 80, 85, 90, 95, 98, 100; requested qualities snap to the nearest one, ties going higher.                      |
 | `transforms.defaultQuality` | 77; must be one of `transforms.qualities`.                                                                                        |
 | `transforms.maxSourceBytes` | 104,857,600 bytes (100 MiB); must be a positive safe integer.                                                                     |
 | `transforms.webpEffort`     | 4; accepted range 0–6.                                                                                                            |

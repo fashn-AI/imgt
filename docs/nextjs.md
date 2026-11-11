@@ -28,7 +28,7 @@ export default nextConfig;
 
 Set `images.qualities` to the values your Next.js components use; this example
 uses 77. imgt snaps each quality to the nearest value in
-`transforms.qualities` (50, 60, 70, 75, 77, 80, 85, 90, 95 and 100 by default);
+`transforms.qualities` (50, 60, 70, 75, 77, 80, 85, 90, 95, 98 and 100 by default);
 add any other value your components use.
 
 Create `image-loader.ts` at the project root:
