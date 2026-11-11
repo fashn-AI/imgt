@@ -74,7 +74,7 @@ test("snaps quality to the nearest configured value", () => {
       imageUrl("https://cdn.example.com/photo.jpg", `&w=640&q=${q}`),
       ALLOWED_HOSTS,
     ).quality;
-  for (const q of [50, 60, 70, 75, 77, 80, 85, 90, 95, 98, 100])
+  for (const q of [50, 60, 70, 75, 77, 80, 85, 90, 92, 95, 98, 100])
     assert.equal(quality(q), q);
   assert.equal(quality(1), 50);
   assert.equal(quality(76), 77);
@@ -82,10 +82,10 @@ test("snaps quality to the nearest configured value", () => {
   assert.equal(quality(79), 80);
   assert.equal(quality(97), 98);
   assert.equal(quality(99), 100);
-  // Every request maps onto the 11 configured qualities.
+  // Every request maps onto the 12 configured qualities.
   const seen = new Set<number>();
   for (let q = 1; q <= 100; q++) seen.add(quality(q));
-  assert.equal(seen.size, 11);
+  assert.equal(seen.size, 12);
 });
 
 test("rejects empty, nonnumeric, fractional, and out-of-range quality", () => {
